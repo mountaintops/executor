@@ -3,6 +3,7 @@ import { Effect, Option, Predicate, Schema } from "effect";
 import {
   ScopeId,
   SourceDetectionResult,
+  ToolResult,
   Usage,
   definePlugin,
   resolveSecretBackedMap,
@@ -28,6 +29,69 @@ import type {
   GoogleDiscoveryStoredSourceData,
 } from "./types";
 import { GoogleDiscoveryStoredSourceData as GoogleDiscoveryStoredSourceDataSchema } from "./types";
+
+// ---------------------------------------------------------------------------
+// Upstream-error message extraction
+// ---------------------------------------------------------------------------
+
+const GOOGLE_BODY_CAP = 1024;
+const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
+const UpstreamErrorMessageBody = Schema.Struct({ errorMessage: Schema.String });
+const UpstreamNestedErrorBody = Schema.Struct({ error: UpstreamMessageBody });
+const UpstreamErrorsArrayBody = Schema.Struct({
+  errors: Schema.Array(
+    Schema.Struct({
+      detail: Schema.optional(Schema.String),
+      message: Schema.optional(Schema.String),
+      title: Schema.optional(Schema.String),
+    }),
+  ),
+});
+
+const decodeUpstreamMessageBody = Schema.decodeUnknownOption(UpstreamMessageBody);
+const decodeUpstreamErrorMessageBody = Schema.decodeUnknownOption(UpstreamErrorMessageBody);
+const decodeUpstreamNestedErrorBody = Schema.decodeUnknownOption(UpstreamNestedErrorBody);
+const decodeUpstreamErrorsArrayBody = Schema.decodeUnknownOption(UpstreamErrorsArrayBody);
+
+const googleClampedStringify = (value: unknown): string => {
+  let s: string;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: JSON.stringify may throw on cycles; fall back to String() so the upstream body can still be surfaced as ToolError.details fallback text
+  try {
+    s = JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  return s.length > GOOGLE_BODY_CAP ? `${s.slice(0, GOOGLE_BODY_CAP)}…` : s;
+};
+
+const firstNonEmpty = (...values: readonly (string | undefined)[]): string | undefined =>
+  values.find((value) => value !== undefined && value.length > 0);
+
+const googleExtractUpstreamMessage = (body: unknown, status: number): string => {
+  if (typeof body === "string") {
+    return body.length > 0 ? body : `Upstream returned HTTP ${status}`;
+  }
+  const nested = Option.getOrUndefined(decodeUpstreamNestedErrorBody(body));
+  const messageBody = Option.getOrUndefined(decodeUpstreamMessageBody(body));
+  const errorMessageBody = Option.getOrUndefined(decodeUpstreamErrorMessageBody(body));
+  const errorsBody = Option.getOrUndefined(decodeUpstreamErrorsArrayBody(body));
+  const arrayMessage = errorsBody?.errors
+    .map(({ detail, message: upstreamMessage, title }) =>
+      firstNonEmpty(detail, upstreamMessage, title),
+    )
+    .find((message) => message !== undefined);
+  const message = firstNonEmpty(
+    nested?.error.message,
+    messageBody?.message,
+    errorMessageBody?.errorMessage,
+    arrayMessage,
+  );
+  if (message !== undefined) return message;
+  if (body !== null && typeof body === "object") {
+    return googleClampedStringify(body);
+  }
+  return `Upstream returned HTTP ${status}`;
+};
 
 // ---------------------------------------------------------------------------
 // Public input / output shapes
@@ -381,11 +445,27 @@ export const googleDiscoveryPlugin = definePlugin(() => ({
   extension: makeGoogleDiscoveryPluginExtension,
 
   invokeTool: ({ ctx, toolRow, args }) =>
-    invokeGoogleDiscoveryTool({
-      ctx: ctx as PluginCtx<GoogleDiscoveryStore>,
-      toolId: toolRow.id,
-      toolScope: decodeString(toolRow.scope_id),
-      args,
+    Effect.gen(function* () {
+      const result = yield* invokeGoogleDiscoveryTool({
+        ctx: ctx as PluginCtx<GoogleDiscoveryStore>,
+        toolId: toolRow.id,
+        toolScope: decodeString(toolRow.scope_id),
+        args,
+      });
+      const ok = result.status >= 200 && result.status < 300;
+      if (!ok) {
+        return ToolResult.fail({
+          code: "upstream_http_error",
+          status: result.status,
+          message: googleExtractUpstreamMessage(result.error, result.status),
+          details: result.error,
+        });
+      }
+      return ToolResult.ok({
+        status: result.status,
+        headers: result.headers,
+        data: result.data,
+      });
     }),
 
   resolveAnnotations: ({ ctx, sourceId, toolRows }) =>

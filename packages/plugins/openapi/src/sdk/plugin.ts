@@ -7,6 +7,7 @@ import {
   SecretId,
   SourceDetectionResult,
   StorageError,
+  ToolResult,
   definePlugin,
   tool,
   resolveSecretBackedMap,
@@ -56,6 +57,77 @@ import {
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------
+
+const STRINGIFIED_BODY_CAP = 1024;
+const UpstreamMessageBody = Schema.Struct({ message: Schema.String });
+const UpstreamErrorMessageBody = Schema.Struct({ errorMessage: Schema.String });
+const UpstreamNestedErrorBody = Schema.Struct({ error: UpstreamMessageBody });
+const UpstreamErrorsArrayBody = Schema.Struct({
+  errors: Schema.Array(
+    Schema.Struct({
+      detail: Schema.optional(Schema.String),
+      message: Schema.optional(Schema.String),
+      title: Schema.optional(Schema.String),
+    }),
+  ),
+});
+const UpstreamDescriptionBody = Schema.Struct({
+  detail: Schema.optional(Schema.String),
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+});
+
+const decodeUpstreamMessageBody = Schema.decodeUnknownOption(UpstreamMessageBody);
+const decodeUpstreamErrorMessageBody = Schema.decodeUnknownOption(UpstreamErrorMessageBody);
+const decodeUpstreamNestedErrorBody = Schema.decodeUnknownOption(UpstreamNestedErrorBody);
+const decodeUpstreamErrorsArrayBody = Schema.decodeUnknownOption(UpstreamErrorsArrayBody);
+const decodeUpstreamDescriptionBody = Schema.decodeUnknownOption(UpstreamDescriptionBody);
+
+const clampedStringify = (value: unknown): string => {
+  let s: string;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: JSON.stringify may throw on cycles; fall back to String() so the upstream body can still be surfaced as ToolError.details fallback text
+  try {
+    s = JSON.stringify(value);
+  } catch {
+    s = String(value);
+  }
+  return s.length > STRINGIFIED_BODY_CAP ? `${s.slice(0, STRINGIFIED_BODY_CAP)}…` : s;
+};
+
+const firstNonEmpty = (...values: readonly (string | undefined)[]): string | undefined =>
+  values.find((value) => value !== undefined && value.length > 0);
+
+// Walk known upstream error-body shapes so ToolError.message stays concise
+// while ToolError.details preserves the original body.
+const extractUpstreamMessage = (body: unknown, status: number): string => {
+  if (typeof body === "string") {
+    return body.length > 0 ? body : `Upstream returned HTTP ${status}`;
+  }
+  const nested = Option.getOrUndefined(decodeUpstreamNestedErrorBody(body));
+  const messageBody = Option.getOrUndefined(decodeUpstreamMessageBody(body));
+  const errorMessageBody = Option.getOrUndefined(decodeUpstreamErrorMessageBody(body));
+  const errorsBody = Option.getOrUndefined(decodeUpstreamErrorsArrayBody(body));
+  const descriptionBody = Option.getOrUndefined(decodeUpstreamDescriptionBody(body));
+  const arrayMessage = errorsBody?.errors
+    .map(({ detail, message: upstreamMessage, title }) =>
+      firstNonEmpty(detail, upstreamMessage, title),
+    )
+    .find((message) => message !== undefined);
+  const message = firstNonEmpty(
+    nested?.error.message,
+    messageBody?.message,
+    errorMessageBody?.errorMessage,
+    arrayMessage,
+    descriptionBody?.detail,
+    descriptionBody?.title,
+    descriptionBody?.description,
+  );
+  if (message !== undefined) return message;
+  if (body !== null && typeof body === "object") {
+    return clampedStringify(body);
+  }
+  return `Upstream returned HTTP ${status}`;
+};
 
 export type HeaderValue = HeaderValueValue;
 export type ConfiguredHeaderValue = ConfiguredHeaderValueValue;
@@ -1193,7 +1265,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             name: "previewSpec",
             description: "Preview an OpenAPI document before adding it as a source",
             inputSchema: PreviewSpecInputStandardSchema,
-            execute: (input) => self.previewSpec(input),
+            execute: (input) => Effect.map(self.previewSpec(input), ToolResult.ok),
           }),
           tool({
             name: "addSource",
@@ -1204,7 +1276,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             },
             inputSchema: AddSourceInputStandardSchema,
             outputSchema: AddSourceOutputStandardSchema,
-            execute: (input) => self.addSpec(input),
+            execute: (input) => Effect.map(self.addSpec(input), ToolResult.ok),
           }),
         ],
       },
@@ -1283,7 +1355,20 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           httpClientLayer,
         );
 
-        return result;
+        const ok = result.status >= 200 && result.status < 300;
+        if (!ok) {
+          return ToolResult.fail({
+            code: "upstream_http_error",
+            status: result.status,
+            message: extractUpstreamMessage(result.error, result.status),
+            details: result.error,
+          });
+        }
+        return ToolResult.ok({
+          status: result.status,
+          headers: result.headers,
+          data: result.data,
+        });
       }),
 
     resolveAnnotations: ({ ctx, sourceId, toolRows }) =>

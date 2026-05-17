@@ -1,4 +1,4 @@
-import { Effect, Match, Option, Predicate } from "effect";
+import { Effect, Predicate } from "effect";
 import * as Cause from "effect/Cause";
 import type {
   Executor,
@@ -8,8 +8,31 @@ import type {
   InvokeOptions,
   Source,
 } from "@executor-js/sdk/core";
+import { isToolResult } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
+
+const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
+
+const wrapOutputTypeScript = (outputTypeScript?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"} } | { ok: false; error: ToolError }`;
+
+const withToolResultDefinitions = (
+  definitions?: Record<string, string>,
+): Record<string, string> => ({
+  ...(definitions ?? {}),
+  ToolError: TOOL_ERROR_TYPESCRIPT,
+});
+
+const newCorrelationId = (): string => {
+  // 8-hex-char correlation id; enough entropy to disambiguate within a
+  // single deployment without leaking host process info.
+  return Math.floor(Math.random() * 0x1_0000_0000)
+    .toString(16)
+    .padStart(8, "0");
+};
 
 /**
  * Extract the source namespace from a tool path. Tool paths look like
@@ -22,44 +45,6 @@ const extractSourceNamespace = (path: string): string => {
   const idx = path.indexOf(".");
   return idx === -1 ? path : path.slice(0, idx);
 };
-
-const hasStringMessage = (value: unknown): value is { readonly message: string } =>
-  value !== null &&
-  typeof value === "object" &&
-  "message" in value &&
-  typeof value.message === "string";
-
-const messageFromErrorLike = (value: unknown): string | undefined => {
-  if (hasStringMessage(value)) {
-    return value.message;
-  }
-  return undefined;
-};
-
-const renderToolErrorMessage = (error: unknown): string =>
-  messageFromErrorLike(error) ??
-  (typeof error === "undefined" ? "Tool execution failed" : renderUnknownPrimitive(error));
-
-const renderUnknownPrimitive = (value: unknown): string =>
-  Match.value(value).pipe(
-    Match.when(Match.string, (s) => s),
-    Match.whenOr(Match.number, Match.boolean, Match.bigint, Match.symbol, (x) => x.toString()),
-    Match.option,
-    Option.getOrElse(() => "Tool execution failed"),
-  );
-
-type ToolResultEnvelope = {
-  readonly error?: unknown;
-  readonly data?: unknown;
-};
-
-const isToolResultEnvelope = (value: unknown): value is ToolResultEnvelope =>
-  value !== null && typeof value === "object" && ("error" in value || "data" in value);
-
-const hasToolResultError = (
-  value: ToolResultEnvelope,
-): value is ToolResultEnvelope & { readonly error: unknown } =>
-  value.error !== null && value.error !== undefined;
 
 /**
  * Bridges QuickJS `tools.someSource.someOp(args)` calls into
@@ -87,35 +72,46 @@ export const makeExecutorToolInvoker = (
     const result = yield* executor.tools.invoke(path as ToolId, args, options.invokeOptions).pipe(
       Effect.catchCause((cause): Effect.Effect<never, ExecutionToolError> => {
         const err = cause.reasons.find(Cause.isFailReason)?.error;
-        if (!isElicitationDeclinedError(err)) {
+        if (isElicitationDeclinedError(err)) {
           return Effect.fail(
             new ExecutionToolError({
-              message: renderToolErrorMessage(err),
-              cause: err ?? cause,
+              message: `Tool "${err.toolId}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
+              cause: err,
             }),
           );
         }
-        return Effect.fail(
-          new ExecutionToolError({
-            message: `Tool "${err.toolId}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
-            cause: err,
+        // Any other failure here is an infra/plugin defect. Emit an
+        // opaque generic with a correlation id so internal context (URLs
+        // with tokens, DB connection strings, file paths in stacks)
+        // can't leak through Error.message into the sandbox. The full
+        // cause is logged with the same correlation id so operators can
+        // still trace the failure.
+        const correlationId = newCorrelationId();
+        return Effect.logError("tool dispatch failed", cause).pipe(
+          Effect.annotateLogs({
+            "executor.correlation_id": correlationId,
+            "mcp.tool.name": path,
           }),
+          Effect.flatMap(() =>
+            Effect.fail(
+              new ExecutionToolError({
+                message: `${OPAQUE_DEFECT_MESSAGE} [${correlationId}]`,
+                cause: err ?? cause,
+              }),
+            ),
+          ),
         );
       }),
     );
-    if (!isToolResultEnvelope(result)) {
+
+    // Strict: plugins emit ToolResult<T>. Anything else is treated as a
+    // raw success value and wrapped — keeps the sandbox-facing contract
+    // uniform without forcing every tiny test plugin to import
+    // `ToolResult.ok`.
+    if (isToolResult(result)) {
       return result;
     }
-    if (hasToolResultError(result)) {
-      return yield* new ExecutionToolError({
-        message: renderToolErrorMessage(result.error),
-        cause: result.error,
-      });
-    }
-    if ("data" in result) {
-      return result.data;
-    }
-    return result;
+    return { ok: true, data: result };
   }),
 });
 
@@ -513,7 +509,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: schema.outputTypeScript,
-    typeScriptDefinitions: schema.typeScriptDefinitions,
+    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
 });

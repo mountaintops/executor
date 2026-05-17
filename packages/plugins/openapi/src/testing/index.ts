@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Predicate, Ref, Schema, Scope } from "effect";
+import { Context, Data, Effect, Layer, Option, Predicate, Ref, Schema, Scope } from "effect";
 import {
   HttpClient,
   HttpRouter,
@@ -13,7 +13,7 @@ import {
   OpenApi,
 } from "effect/unstable/httpapi";
 import { OAuthTestServer, serveTestHttpServerLayer } from "@executor-js/sdk/testing";
-import type { ScopeId } from "@executor-js/sdk/core";
+import { isToolResult, type ScopeId } from "@executor-js/sdk/core";
 import type { OpenApiPluginExtension, OpenApiSpecConfig } from "../sdk/plugin";
 
 export class OpenApiTestServerAddressError extends Data.TaggedError(
@@ -617,4 +617,56 @@ export const TestLayers = {
   httpApi: OpenApiHttpApiTestServer.layer,
   echo: OpenApiEchoTestServer.layer,
   echoWithOAuth: OpenApiEchoTestServer.layerWithOAuth,
+};
+
+const OpenApiTransportEnvelope = Schema.Struct({
+  status: Schema.Number,
+  headers: Schema.Record(Schema.String, Schema.String),
+  data: Schema.Unknown,
+});
+
+const decodeOpenApiTransportEnvelope = Schema.decodeUnknownOption(OpenApiTransportEnvelope);
+
+export interface OpenApiInvocationResult<TData = Record<string, unknown> | unknown[] | null> {
+  readonly status: number | null;
+  readonly headers: Record<string, string> | null;
+  readonly data: TData;
+  readonly error: unknown;
+}
+
+export const unwrapInvocation = <TData = Record<string, unknown> | null>(
+  raw: unknown,
+): OpenApiInvocationResult<TData> => {
+  if (!isToolResult(raw)) {
+    return {
+      status: null,
+      headers: null,
+      data: raw as TData,
+      error: null,
+    };
+  }
+  if (raw.ok) {
+    const inner = raw.data;
+    const wrapped = Option.getOrUndefined(decodeOpenApiTransportEnvelope(inner));
+    if (wrapped !== undefined) {
+      return {
+        status: wrapped.status,
+        headers: wrapped.headers,
+        data: wrapped.data as TData,
+        error: null,
+      };
+    }
+    return {
+      status: null,
+      headers: null,
+      data: inner as TData,
+      error: null,
+    };
+  }
+  return {
+    status: raw.error.status ?? null,
+    headers: null,
+    data: null as TData,
+    error: raw.error.details ?? raw.error,
+  };
 };

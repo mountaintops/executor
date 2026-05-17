@@ -8,6 +8,7 @@ import {
   Predicate,
   Result,
   Scope,
+  Schema,
   ScopedCache,
 } from "effect";
 import type { HttpClient } from "effect/unstable/http";
@@ -22,6 +23,7 @@ import {
   ScopeId,
   SecretId,
   SourceDetectionResult,
+  ToolResult,
   definePlugin,
   resolveSecretBackedMap as resolveSharedSecretBackedMap,
   type PluginCtx,
@@ -193,6 +195,24 @@ const toBinding = (entry: McpToolManifestEntry): McpToolBinding =>
   });
 
 const MCP_PLUGIN_ID = "mcp";
+const McpTextContent = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String });
+const McpToolCallEnvelope = Schema.Struct({
+  isError: Schema.optional(Schema.Boolean),
+  content: Schema.optional(Schema.Array(Schema.Unknown)),
+});
+
+const decodeMcpTextContent = Schema.decodeUnknownOption(McpTextContent);
+const decodeMcpToolCallEnvelope = Schema.decodeUnknownOption(McpToolCallEnvelope);
+
+const extractMcpErrorMessage = (content: unknown): string => {
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      const decoded = Option.getOrUndefined(decodeMcpTextContent(item));
+      if (decoded !== undefined && decoded.text.length > 0) return decoded.text;
+    }
+  }
+  return "MCP tool returned an error";
+};
 
 /** Match `token` as a separator-bounded run inside a URL hostname or path,
  *  used as a low-confidence detection hint when wire-shape detection fails.
@@ -1726,7 +1746,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           });
         }
 
-        return yield* invokeMcpTool({
+        const raw = yield* invokeMcpTool({
           toolId: toolRow.id,
           toolName: entry.binding.toolName,
           args,
@@ -1764,6 +1784,16 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           pendingConnectors: runtime.pendingConnectors,
           elicit,
         });
+
+        const envelope = Option.getOrUndefined(decodeMcpToolCallEnvelope(raw));
+        if (envelope?.isError === true) {
+          return ToolResult.fail({
+            code: "mcp_tool_error",
+            message: extractMcpErrorMessage(envelope.content),
+            details: { content: envelope.content },
+          });
+        }
+        return ToolResult.ok(raw);
       }).pipe(
         Effect.withSpan("mcp.plugin.invoke_tool", {
           attributes: {

@@ -12,6 +12,7 @@ import {
   SecretId,
   SourceDetectionResult,
   StorageError,
+  ToolResult,
   type PluginCtx,
   type StorageFailure,
   type ToolAnnotations,
@@ -64,6 +65,19 @@ import {
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------
+
+const GraphqlErrorBody = Schema.Struct({ message: Schema.String });
+const GraphqlErrorsBody = Schema.Array(Schema.Unknown);
+const decodeGraphqlErrorBody = Schema.decodeUnknownOption(GraphqlErrorBody);
+const decodeGraphqlErrorsBody = Schema.decodeUnknownOption(GraphqlErrorsBody);
+
+const decodeGraphqlErrors = (errors: unknown): readonly unknown[] | undefined =>
+  Option.getOrUndefined(decodeGraphqlErrorsBody(errors));
+
+const extractGraphqlErrorMessage = (errors: readonly unknown[]): string | undefined =>
+  errors
+    .map((error) => Option.getOrUndefined(decodeGraphqlErrorBody(error))?.message)
+    .find((message) => message !== undefined && message.length > 0);
 
 export type HeaderValue = HeaderValueValue;
 export type GraphqlCredentialValue = ConfiguredGraphqlCredentialValue;
@@ -994,7 +1008,7 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
             },
             inputSchema: StaticAddSourceInputStandardSchema,
             outputSchema: StaticAddSourceOutputStandardSchema,
-            execute: (input) => self.addSource(input),
+            execute: (input) => Effect.map(self.addSource(input), ToolResult.ok),
           }),
         ],
       },
@@ -1057,7 +1071,28 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
           httpClientLayer,
         );
 
-        return result;
+        const errors = decodeGraphqlErrors(result.errors);
+        if (errors !== undefined && errors.length > 0) {
+          const firstMessage = extractGraphqlErrorMessage(errors);
+          return ToolResult.fail({
+            code: "graphql_errors",
+            message: firstMessage !== undefined ? firstMessage : "GraphQL request returned errors",
+            details: { errors },
+          });
+        }
+        if (result.status < 200 || result.status >= 300) {
+          return ToolResult.fail({
+            code: "graphql_http_error",
+            status: result.status,
+            message: `GraphQL request failed with HTTP ${result.status}`,
+            details: {
+              status: result.status,
+              data: result.data,
+              errors: result.errors,
+            },
+          });
+        }
+        return ToolResult.ok(result.data);
       }),
 
     resolveAnnotations: ({ ctx, sourceId, toolRows }) =>

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@effect/vitest";
 import { Effect, Predicate } from "effect";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
   ConnectionId,
@@ -13,7 +14,7 @@ import {
   SecretId,
   TokenMaterial,
 } from "@executor-js/sdk";
-import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeTestConfig, serveTestHttpApp } from "@executor-js/sdk/testing";
 import { memorySecretsPlugin } from "@executor-js/sdk/testing";
 
 import { graphqlPlugin } from "./plugin";
@@ -196,9 +197,8 @@ describe("graphqlPlugin real protocol server", () => {
       });
 
       expect(result).toEqual({
-        status: 200,
+        ok: true,
         data: { hello: "Hello Ada" },
-        errors: null,
       });
 
       const requests = yield* server.requests;
@@ -206,6 +206,46 @@ describe("graphqlPlugin real protocol server", () => {
       expect(requests[0]?.headers["x-static"]).toBe("abc");
       expect(new URL(requests[0]!.url).searchParams.get("token")).toBe("qp-token");
       expect(requests[0]?.payload.variables).toEqual({ name: "Ada" });
+    }),
+  );
+
+  it.effect("surfaces non-2xx invocation responses as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp((request) =>
+        Effect.gen(function* () {
+          const webRequest = yield* HttpServerRequest.toWeb(request);
+          const body = yield* Effect.promise(() => webRequest.text());
+          if (body.includes("__schema")) {
+            return HttpServerResponse.jsonUnsafe({ data: introspectionResult });
+          }
+          return HttpServerResponse.text("temporary upstream outage", {
+            status: 503,
+            contentType: "text/plain",
+          });
+        }),
+      );
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [graphqlPlugin()] as const }),
+      );
+
+      yield* executor.graphql.addSource({
+        endpoint: server.url("/graphql"),
+        scope: TEST_SCOPE,
+        namespace: "http_error_graph",
+      });
+
+      const result = yield* executor.tools.invoke("http_error_graph.query.hello", {
+        name: "Ada",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "graphql_http_error",
+          status: 503,
+          message: "GraphQL request failed with HTTP 503",
+        },
+      });
     }),
   );
 
@@ -251,9 +291,8 @@ describe("graphqlPlugin real protocol server", () => {
       });
 
       expect(result).toEqual({
-        status: 200,
+        ok: true,
         data: { hello: "Hello Ada" },
-        errors: null,
       });
 
       const requests = yield* server.requests;
@@ -425,7 +464,7 @@ describe("graphqlPlugin", () => {
         },
         { onElicitation: "accept-all" },
       );
-      expect(result).toEqual({ toolCount: 2, namespace: "via_static" });
+      expect(result).toEqual({ ok: true, data: { toolCount: 2, namespace: "via_static" } });
       expect(yield* executor.graphql.getSource("via_static", String(userScope))).toBeNull();
       expect((yield* executor.graphql.getSource("via_static", String(orgScope)))?.scope).toBe(
         orgScope,
@@ -729,7 +768,7 @@ describe("graphqlPlugin", () => {
       });
 
       expect(result).toMatchObject({
-        status: 200,
+        ok: true,
         data: { hello: "Hello Ada" },
       });
       const requests = yield* server.requests;
@@ -843,7 +882,7 @@ describe("graphqlPlugin", () => {
       });
 
       expect(result).toMatchObject({
-        status: 200,
+        ok: true,
         data: { hello: "Hello Ada" },
       });
       const requests = yield* server.requests;
@@ -915,7 +954,7 @@ describe("graphqlPlugin", () => {
         });
 
         expect(result).toMatchObject({
-          status: 200,
+          ok: true,
           data: { hello: "Hello Ada" },
         });
         const requests = yield* server.requests;

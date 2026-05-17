@@ -26,6 +26,7 @@ import { makeTestConfig, serveOAuthTestServer } from "@executor-js/sdk/testing";
 import {
   addOpenApiTestSource,
   serveOpenApiHttpApiTestServer,
+  unwrapInvocation,
 } from "@executor-js/plugin-openapi/testing";
 
 import { openApiPlugin } from "./plugin";
@@ -226,25 +227,21 @@ describe("OpenAPI client_credentials OAuth", () => {
       );
       // Invoking the tool injects the freshly-minted bearer via
       // ctx.connections.accessToken.
-      const result = (yield* userExec.tools.invoke(
-        "petstore.items.echoHeaders",
-        {},
-        autoApprove,
-      )) as {
-        data: { authorization?: string } | null;
-        error: unknown;
-      };
+      const result = unwrapInvocation(
+        yield* userExec.tools.invoke("petstore.items.echoHeaders", {}, autoApprove),
+      );
       expect(result.error).toBeNull();
-      const bearer = result.data?.authorization?.replace(/^Bearer\s+/i, "");
+      const data = result.data as EchoHeaders | null;
+      const bearer = data?.authorization?.replace(/^Bearer\s+/i, "");
       expect(bearer).toBeDefined();
       expect(yield* oauth.acceptsAccessToken(bearer!)).toBe(true);
 
       // The connection lives at the innermost (user) scope, which
       // preserves per-user credential resolution: if each user has
-      // their own `dealcloud_client_id`/`dealcloud_client_secret`
-      // shadowed at their user scope, each user mints their own
-      // token. A single shared connection slot still lets every caller
-      // reach the right physical row through scoped credential bindings.
+      // their own OAuth client credentials shadowed at their user
+      // scope, each user mints their own token. A single shared
+      // connection slot still lets every caller reach the right
+      // physical row through scoped credential bindings.
       const userConnections = yield* userExec.connections.list();
       const connection = userConnections.find((c) => c.id === completedConnection.connectionId);
       expect(connection).toBeDefined();
