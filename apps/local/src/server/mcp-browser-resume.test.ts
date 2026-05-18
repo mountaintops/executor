@@ -140,6 +140,9 @@ const readApproval = (structured: unknown): { readonly executionId: string; read
   expect(record).not.toHaveProperty("interaction");
   expect(typeof record.executionId).toBe("string");
   expect(typeof record.approvalUrl).toBe("string");
+  expect(record.resumePrompt).toBe(
+    "Return text to the user telling them to approve the action at this approvalUrl. Only after you have prompted the user, call the `resume` tool with this executionId; `resume` will wait for the user's browser decision.",
+  );
   const { executionId, approvalUrl } = record as {
     readonly executionId: string;
     readonly approvalUrl: string;
@@ -166,7 +169,10 @@ describe("local MCP browser approval resume", () => {
       { name: "browser-resume-test-client", version: "1.0.0" },
       { capabilities: {} },
     );
-    const transport = new StreamableHTTPClientTransport(new URL("/mcp", TEST_BASE_URL), { fetch });
+    const transport = new StreamableHTTPClientTransport(
+      new URL("/mcp?elicitation_mode=browser", TEST_BASE_URL),
+      { fetch },
+    );
 
     await mcpClient.connect(transport);
 
@@ -231,6 +237,11 @@ const approveInBrowserThenResume = async (
   const sessionId = approval.url.searchParams.get("mcp_session_id");
   expect(sessionId).not.toBeNull();
 
+  const resume = client.callTool({
+    name: "resume",
+    arguments: { executionId: approval.executionId },
+  });
+
   const approvalResponse = await fetch(
     new URL(
       `/api/mcp-sessions/${encodeURIComponent(sessionId!)}/executions/${encodeURIComponent(approval.executionId)}/resume`,
@@ -247,8 +258,5 @@ const approveInBrowserThenResume = async (
   );
   expect(approvalResponse.status).toBe(200);
 
-  return await client.callTool({
-    name: "resume",
-    arguments: { executionId: approval.executionId },
-  });
+  return await resume;
 };
