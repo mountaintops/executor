@@ -9,7 +9,7 @@ import type * as Cause from "effect/Cause";
 
 import { FormElicitation, ToolId, UrlElicitation } from "@executor-js/sdk";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
-import { dynamicUiPlugin } from "@executor-js/plugin-dynamic-ui";
+import { dynamicUiPlugin, filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./server";
 
@@ -37,7 +37,6 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
 });
 
 const DYNAMIC_UI_PLUGIN = dynamicUiPlugin();
-const ENABLED_FEATURE_FLAGS = { isEnabled: () => Effect.succeed(true) };
 
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */
 const withClient = async <E extends Cause.YieldableError>(
@@ -46,7 +45,7 @@ const withClient = async <E extends Cause.YieldableError>(
   fn: (client: Client) => Promise<void>,
   config?: Pick<
     ExecutorMcpServerConfig<E>,
-    "debug" | "elicitationMode" | "browserApprovalStore" | "plugins" | "renderUiFallbackUrl" | "featureFlags"
+    "debug" | "elicitationMode" | "browserApprovalStore" | "plugins" | "renderUiFallbackUrl"
   >,
 ) => {
   const mcpServer = await Effect.runPromise(createExecutorMcpServer({ engine, ...config }));
@@ -170,7 +169,7 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
-  it("does not expose dynamic UI tools when the feature flag is disabled", async () => {
+  it("does not expose dynamic UI tools when the host filters the plugin at its exit point", async () => {
     await withClient(
       makeStubEngine({}),
       APPS_ELICITATION_CAPS,
@@ -181,7 +180,7 @@ describe("MCP host server — native elicitation mode", () => {
         expect(names).not.toContain("execute-action");
         expect(names).not.toContain("execute-action-resume");
       },
-      { plugins: [DYNAMIC_UI_PLUGIN], featureFlags: { isEnabled: () => Effect.succeed(false) } },
+      { plugins: filterDynamicUiMcpPlugins([DYNAMIC_UI_PLUGIN], false) },
     );
   });
 
@@ -208,7 +207,6 @@ describe("MCP host server — native elicitation mode", () => {
       },
       {
         plugins: [DYNAMIC_UI_PLUGIN],
-        featureFlags: ENABLED_FEATURE_FLAGS,
         renderUiFallbackUrl: () => "https://executor.test/render?code=42",
       },
     );
@@ -230,7 +228,7 @@ describe("MCP host server — native elicitation mode", () => {
           code: 'function App() { return <Card className="p-4" />; }',
         });
       },
-      { plugins: [DYNAMIC_UI_PLUGIN], featureFlags: ENABLED_FEATURE_FLAGS },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
     );
   });
 
@@ -256,7 +254,7 @@ describe("MCP host server — native elicitation mode", () => {
           },
         });
       },
-      { plugins: [DYNAMIC_UI_PLUGIN], featureFlags: ENABLED_FEATURE_FLAGS },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
     );
   });
 
@@ -281,7 +279,7 @@ describe("MCP host server — native elicitation mode", () => {
         expect(textOf(result)).toContain("Hardcoded live-data array");
         expect(textOf(result)).toContain("useQuery");
       },
-      { plugins: [DYNAMIC_UI_PLUGIN], featureFlags: ENABLED_FEATURE_FLAGS },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
     );
   });
 
@@ -324,7 +322,7 @@ describe("MCP host server — native elicitation mode", () => {
         expect(componentDestructure.isError).toBe(true);
         expect(textOf(componentDestructure)).toContain('Provided global "Card"');
       },
-      { plugins: [DYNAMIC_UI_PLUGIN], featureFlags: ENABLED_FEATURE_FLAGS },
+      { plugins: [DYNAMIC_UI_PLUGIN] },
     );
   });
 
@@ -621,7 +619,6 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
           approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,
         },
         plugins: [DYNAMIC_UI_PLUGIN],
-        featureFlags: ENABLED_FEATURE_FLAGS,
       },
     );
   });
@@ -674,7 +671,6 @@ describe("MCP host server — client without elicitation (pause/resume)", () => 
           approvalUrl: (executionId) => `https://executor.test/resume/${executionId}`,
         },
         plugins: [DYNAMIC_UI_PLUGIN],
-        featureFlags: ENABLED_FEATURE_FLAGS,
       },
     );
   });

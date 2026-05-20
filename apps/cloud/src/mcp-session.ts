@@ -13,6 +13,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 
 import { createExecutorMcpServer } from "@executor-js/host-mcp";
+import { filterDynamicUiMcpPlugins } from "@executor-js/plugin-dynamic-ui";
 import {
   buildExecuteDescription,
   formatPausedExecution,
@@ -31,7 +32,7 @@ import { UserStoreService } from "./auth/context";
 import { resolveOrganization } from "./auth/resolve-organization";
 import { DbService, combinedSchema, resolveConnectionString } from "./services/db";
 import { makeExecutionStack } from "./services/execution-stack";
-import { PostHogFeatureFlags } from "./services/feature-flags";
+import { isGeneratedUiMcpAppsEnabled, PostHogFeatureFlags } from "./services/feature-flags";
 import { makeMcpWorkerTransport, type McpWorkerTransport } from "./services/mcp-worker-transport";
 import { DoTelemetryLive } from "./services/telemetry";
 import { captureCause } from "./observability";
@@ -355,11 +356,30 @@ export class McpSessionDO extends DurableObject {
   ) {
     const self = this;
     return Effect.gen(function* () {
+      const featureFlagContext = {
+        distinctId: sessionMeta.userId,
+        accountId: sessionMeta.userId,
+        organizationId: sessionMeta.organizationId,
+        groups: { organization: sessionMeta.organizationId },
+      };
+      const generatedUiMcpAppsEnabled = yield* isGeneratedUiMcpAppsEnabled(featureFlagContext).pipe(
+        Effect.catch((error: unknown) =>
+          Effect.sync(() => {
+            console.error("[executor:mcp] generated UI feature flag failed", error);
+            return false;
+          }),
+        ),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "feature.generated_ui_mcp_apps.enabled": generatedUiMcpAppsEnabled,
+      });
+
       const { executor, engine, plugins } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
       );
+      const mcpPlugins = filterDynamicUiMcpPlugins(plugins, generatedUiMcpAppsEnabled);
       // Build the description here so the postgres query it runs
       // (`executor.sources.list`) lands as a child of
       // `McpSessionDO.createRuntime`. host-mcp would otherwise call
@@ -370,15 +390,9 @@ export class McpSessionDO extends DurableObject {
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
-        plugins,
+        plugins: mcpPlugins,
         parentSpan: () => self.currentRequestSpan ?? undefined,
         debug: env.EXECUTOR_MCP_DEBUG === "true",
-        featureFlagContext: {
-          distinctId: sessionMeta.userId,
-          accountId: sessionMeta.userId,
-          organizationId: sessionMeta.organizationId,
-          groups: { organization: sessionMeta.organizationId },
-        },
         renderUiFallbackUrl: (code) => {
           const origin = env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh";
           const url = new URL("/plugins/dynamic-ui/render", origin);

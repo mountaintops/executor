@@ -169,7 +169,8 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
           createExecutorMcpServer({
             ...config,
             renderUiFallbackUrl:
-              config.renderUiFallbackUrl ?? ((code) => renderUiFallbackUrlForRequest(request, code)),
+              config.renderUiFallbackUrl ??
+              ((code) => renderUiFallbackUrlForRequest(request, code)),
             browserApprovalStore: {
               takeResponse: (executionId) =>
                 Effect.sync(() => {

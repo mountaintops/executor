@@ -322,68 +322,68 @@ export function DynamicUiShell({
     toolsRef.current = createToolsProxy(app, requestTrustedInteraction);
     runRef.current = createRunFn(app, requestTrustedInteraction);
 
-      // Handle tool input — fires on init (including page reload) with
-      // the tool arguments. For generative UI the arguments contain { code }.
-      app.ontoolinput = (params: { arguments?: Record<string, unknown> }) => {
-        const code = params.arguments?.code;
-        if (code && typeof code === "string") {
-          renderCode(code);
-        }
+    // Handle tool input — fires on init (including page reload) with
+    // the tool arguments. For generative UI the arguments contain { code }.
+    app.ontoolinput = (params: { arguments?: Record<string, unknown> }) => {
+      const code = params.arguments?.code;
+      if (code && typeof code === "string") {
+        renderCode(code);
+      }
+    };
+
+    app.ontoolresult = (result: CallToolResult) => {
+      const structured = result.structuredContent as Record<string, unknown> | undefined;
+      const code = structured?.code;
+
+      if (code && typeof code === "string") {
+        renderCode(code);
+        return;
+      }
+
+      // Not a generative UI result — render a data view
+      const DataView = () => {
+        const text = result.content?.find((c) => c.type === "text")?.text;
+        const isError = (result as { isError?: boolean }).isError;
+        const data = structured as Record<string, unknown> | undefined;
+
+        return (
+          <Components.Card>
+            <Components.CardContent className="pt-4">
+              {isError ? (
+                <Components.Alert variant="destructive">
+                  <Components.AlertCircle className="h-4 w-4" />
+                  <Components.AlertTitle>Error</Components.AlertTitle>
+                  <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
+                    {text ?? "Unknown error"}
+                  </Components.AlertDescription>
+                </Components.Alert>
+              ) : (
+                <pre className="text-xs font-mono whitespace-pre-wrap overflow-auto max-h-[80vh]">
+                  {data ? JSON.stringify(data, null, 2) : (text ?? "(no result)")}
+                </pre>
+              )}
+            </Components.CardContent>
+          </Components.Card>
+        );
       };
+      setComponent(() => DataView);
+      rendererRef.current = null;
+      setRenderer(null);
+      setError(null);
+    };
 
-      app.ontoolresult = (result: CallToolResult) => {
-        const structured = result.structuredContent as Record<string, unknown> | undefined;
-        const code = structured?.code;
+    app.onerror = (err) => {
+      console.error("[executor-shell] App error:", err);
+    };
 
-        if (code && typeof code === "string") {
-          renderCode(code);
-          return;
-        }
+    app.onhostcontextchanged = (ctx: McpUiHostContext) => {
+      setHostContext((prev) => ({ ...prev, ...ctx }));
+      applyTheme(ctx);
+    };
 
-        // Not a generative UI result — render a data view
-        const DataView = () => {
-          const text = result.content?.find((c) => c.type === "text")?.text;
-          const isError = (result as { isError?: boolean }).isError;
-          const data = structured as Record<string, unknown> | undefined;
-
-          return (
-            <Components.Card>
-              <Components.CardContent className="pt-4">
-                {isError ? (
-                  <Components.Alert variant="destructive">
-                    <Components.AlertCircle className="h-4 w-4" />
-                    <Components.AlertTitle>Error</Components.AlertTitle>
-                    <Components.AlertDescription className="font-mono text-xs whitespace-pre-wrap">
-                      {text ?? "Unknown error"}
-                    </Components.AlertDescription>
-                  </Components.Alert>
-                ) : (
-                  <pre className="text-xs font-mono whitespace-pre-wrap overflow-auto max-h-[80vh]">
-                    {data ? JSON.stringify(data, null, 2) : (text ?? "(no result)")}
-                  </pre>
-                )}
-              </Components.CardContent>
-            </Components.Card>
-          );
-        };
-        setComponent(() => DataView);
-        rendererRef.current = null;
-        setRenderer(null);
-        setError(null);
-      };
-
-      app.onerror = (err) => {
-        console.error("[executor-shell] App error:", err);
-      };
-
-      app.onhostcontextchanged = (ctx: McpUiHostContext) => {
-        setHostContext((prev) => ({ ...prev, ...ctx }));
-        applyTheme(ctx);
-      };
-
-      (app as { onteardown?: () => Promise<Record<string, never>> }).onteardown = async () => {
-        return {};
-      };
+    (app as { onteardown?: () => Promise<Record<string, never>> }).onteardown = async () => {
+      return {};
+    };
   }, [app, renderCode, requestTrustedInteraction]);
 
   // Apply initial host context

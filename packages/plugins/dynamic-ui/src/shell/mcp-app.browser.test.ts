@@ -761,7 +761,6 @@ const startMcpHarnessForEngine = async <E extends Cause.YieldableError>(
     createExecutorMcpServer({
       engine,
       plugins: [dynamicUiPlugin()],
-      featureFlags: { isEnabled: () => Effect.succeed(true) },
     }),
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

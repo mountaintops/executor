@@ -62,7 +62,9 @@ import { ExecutorApi } from "@executor-js/api";
 import {
   startServer,
   runMcpStdioServer,
-  getExecutor,
+  getExecutorBundle,
+  filterDynamicUiMcpPlugins,
+  isGeneratedUiMcpAppsEnabled,
   makeLocalEnvFeatureFlags,
 } from "@executor-js/local";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
@@ -763,7 +765,7 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
         const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
 
         try {
-          const executor = await getExecutor();
+          const executor = await getExecutorBundle();
           const server = await startServer({
             port,
             hostname: host,
@@ -779,11 +781,15 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
     );
 
     try {
+      const featureFlags = makeLocalEnvFeatureFlags();
+      const generatedUiMcpAppsEnabled = yield* isGeneratedUiMcpAppsEnabled(featureFlags);
+      const mcpPlugins = filterDynamicUiMcpPlugins(web.executor.plugins, generatedUiMcpAppsEnabled);
+
       yield* Effect.promise(() =>
         runMcpStdioServer({
-          executor: web.executor,
+          executor: web.executor.executor,
           codeExecutor: makeQuickJsExecutor(),
-          featureFlags: makeLocalEnvFeatureFlags(),
+          plugins: mcpPlugins,
           renderUiFallbackUrl: (code) => {
             const url = new URL("/plugins/dynamic-ui/render", web.baseUrl);
             url.hash = `code=${encodeURIComponent(code)}`;

@@ -1,10 +1,7 @@
 import { env } from "cloudflare:workers";
-import { Data, Effect, Layer, Option, Schema } from "effect";
-import {
-  FeatureFlags,
-  type FeatureFlagContext,
-  type FeatureFlagsShape,
-} from "@executor-js/host-mcp";
+import { Context, Data, Effect, Layer, Option, Schema } from "effect";
+
+import { DYNAMIC_UI_MCP_APPS_FEATURE_FLAG } from "@executor-js/plugin-dynamic-ui";
 
 class PostHogFeatureFlagError extends Data.TaggedError("PostHogFeatureFlagError")<{
   readonly cause: unknown;
@@ -15,7 +12,26 @@ const FeatureFlagsResponse = Schema.Struct({
 });
 const decodeFeatureFlagsResponse = Schema.decodeUnknownOption(FeatureFlagsResponse);
 
-const postHogHost = (): string => (env.POSTHOG_HOST ?? "https://us.i.posthog.com").replace(/\/$/, "");
+export type FeatureFlagContext = {
+  readonly distinctId?: string;
+  readonly accountId?: string;
+  readonly organizationId?: string;
+  readonly groups?: Record<string, string>;
+};
+
+export type FeatureFlagsShape = {
+  readonly isEnabled: (
+    flag: string,
+    context: FeatureFlagContext,
+  ) => Effect.Effect<boolean, PostHogFeatureFlagError>;
+};
+
+export class CloudFeatureFlags extends Context.Service<CloudFeatureFlags, FeatureFlagsShape>()(
+  "executor.cloud/FeatureFlags",
+) {}
+
+const postHogHost = (): string =>
+  (env.POSTHOG_HOST ?? "https://us.i.posthog.com").replace(/\/$/, "");
 
 const flagValueEnabled = (value: unknown): boolean =>
   value !== false && value !== null && value !== undefined;
@@ -63,4 +79,11 @@ export const makePostHogFeatureFlags = (): FeatureFlagsShape => ({
     }).pipe(Effect.withSpan("feature_flags.posthog.is_enabled", { attributes: { flag } })),
 });
 
-export const PostHogFeatureFlags = Layer.succeed(FeatureFlags, makePostHogFeatureFlags());
+export const isGeneratedUiMcpAppsEnabled = (context: FeatureFlagContext) =>
+  CloudFeatureFlags.asEffect().pipe(
+    Effect.flatMap((featureFlags) =>
+      featureFlags.isEnabled(DYNAMIC_UI_MCP_APPS_FEATURE_FLAG, context),
+    ),
+  );
+
+export const PostHogFeatureFlags = Layer.succeed(CloudFeatureFlags, makePostHogFeatureFlags());

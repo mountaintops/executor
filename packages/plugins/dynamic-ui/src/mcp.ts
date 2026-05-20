@@ -10,7 +10,6 @@ import { z } from "zod/v4";
 
 import {
   defineMcpContribution,
-  FEATURE_FLAG_GENERATED_UI_MCP_APPS,
   type McpPluginContribution,
   type McpPluginRegisterContext,
   type McpToolResult,
@@ -304,15 +303,6 @@ export const availableNamespacesSection = (description: string): string | undefi
   return start >= 0 ? description.slice(start).trim() : undefined;
 };
 
-export const stripGenerativeUiSection = (description: string): string => {
-  const start = sectionStart(description, "## Generative UI");
-  if (start < 0) return description;
-
-  const namespaces = availableNamespacesSection(description);
-  const before = description.slice(0, start).trimEnd();
-  return namespaces ? `${before}\n\n${namespaces}` : before;
-};
-
 const extractGenerativeUiBody = (description: string): string | undefined => {
   const start = sectionStart(description, "## Generative UI");
   if (start < 0) return undefined;
@@ -485,30 +475,8 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
 
   return defineMcpContribution({
     id: "dynamic-ui",
-    prepareExecuteDescription: stripGenerativeUiSection,
     register: (ctx: McpPluginRegisterContext) =>
       Effect.gen(function* () {
-        const enabled = yield* ctx.featureFlags
-          .isEnabled(FEATURE_FLAG_GENERATED_UI_MCP_APPS, ctx.featureFlagContext)
-          .pipe(
-            Effect.catch((error: unknown) =>
-              Effect.sync(() => {
-                ctx.debugLog("dynamic_ui.feature_flag.error", {
-                  flag: FEATURE_FLAG_GENERATED_UI_MCP_APPS,
-                  error: String(error),
-                });
-                return false;
-              }),
-            ),
-          );
-
-        ctx.debugLog("dynamic_ui.feature_flag", {
-          flag: FEATURE_FLAG_GENERATED_UI_MCP_APPS,
-          enabled,
-        });
-
-        if (!enabled) return;
-
         renderUiTool = registerAppTool(
           ctx.server,
           "render-ui",
@@ -557,12 +525,10 @@ export const dynamicUiMcpContribution = (): McpPluginContribution => {
               );
             }
 
-            return Promise.resolve(
-              {
-                content: [{ type: "text" as const, text: "Rendered interactive UI component." }],
-                structuredContent: { code },
-              } satisfies McpToolResult,
-            );
+            return Promise.resolve({
+              content: [{ type: "text" as const, text: "Rendered interactive UI component." }],
+              structuredContent: { code },
+            } satisfies McpToolResult);
           },
         );
 
