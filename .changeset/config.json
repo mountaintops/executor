@@ -5,7 +5,6 @@
   "fixed": [
     [
       "@executor-js/sdk",
-      "@executor-js/storage-core",
       "@executor-js/codemode-core",
       "@executor-js/runtime-quickjs",
       "@executor-js/execution",
@@ -29,13 +28,11 @@
   "updateInternalDependencies": "patch",
   "ignore": [
     "@executor-js/local",
-    "@executor-js/storage-file",
     "@executor-js/host-mcp",
     "@executor-js/ir",
     "@executor-js/runtime-deno-subprocess",
     "@executor-js/marketing",
     "@executor-js/runtime-dynamic-worker",
-    "@executor-js/storage-postgres",
     "@executor-js/plugin-workos-vault",
     "@executor-js/example-promise-sdk",
     "@executor-js/app"
