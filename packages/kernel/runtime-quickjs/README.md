@@ -1,13 +1,13 @@
-# @executor/runtime-quickjs
+# @executor-js/runtime-quickjs
 
-[QuickJS](https://github.com/justjake/quickjs-emscripten) sandbox runtime for `@executor/execution`. Runs untrusted TypeScript/JavaScript in a WASM-backed interpreter with configurable timeout, memory limit, and stack size — safe enough to execute LLM-generated code that calls your registered tools.
+[QuickJS](https://github.com/justjake/quickjs-emscripten) sandbox runtime for `@executor-js/execution`. Runs untrusted TypeScript/JavaScript in a WASM-backed interpreter with configurable timeout, memory limit, and stack size — safe enough to execute LLM-generated code that calls your registered tools.
 
 ## Install
 
 ```sh
-bun add @executor/execution @executor/runtime-quickjs
+bun add @executor-js/execution @executor-js/runtime-quickjs
 # or
-npm install @executor/execution @executor/runtime-quickjs
+npm install @executor-js/execution @executor-js/runtime-quickjs
 ```
 
 ## Usage
@@ -15,11 +15,11 @@ npm install @executor/execution @executor/runtime-quickjs
 Pass a `makeQuickJsExecutor()` as the `codeExecutor` when building the execution engine:
 
 ```ts
-import { createExecutor } from "@executor/sdk";
-import { createExecutionEngine } from "@executor/execution";
-import { makeQuickJsExecutor } from "@executor/runtime-quickjs";
+import { createExecutor } from "@executor-js/sdk";
+import { createExecutionEngine } from "@executor-js/execution";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
-const executor = await createExecutor({ scope: { name: "my-app" } });
+const executor = await createExecutor({ onElicitation: "accept-all" });
 
 const engine = createExecutionEngine({
   executor,
@@ -33,23 +33,22 @@ const engine = createExecutionEngine({
 
 ### Options
 
-| Option              | Default    | Description                                  |
-| ------------------- | ---------- | -------------------------------------------- |
-| `timeoutMs`         | `5_000`    | Max wall-clock time per execution            |
-| `memoryLimitBytes`  | `64 * 1MB` | Max memory the VM can allocate               |
-| `maxStackSizeBytes` | `1 * 1MB`  | Max call-stack depth                         |
+| Option              | Default    | Description                       |
+| ------------------- | ---------- | --------------------------------- |
+| `timeoutMs`         | `300_000`  | Max wall-clock time per execution |
+| `memoryLimitBytes`  | `64 * 1MB` | Max memory the VM can allocate    |
+| `maxStackSizeBytes` | `1 * 1MB`  | Max call-stack depth              |
 
 ### Swapping the QuickJS build
 
 ```ts
-import { setQuickJSModule } from "@executor/runtime-quickjs";
-import { newQuickJSAsyncWASMModuleFromVariant } from "quickjs-emscripten";
-import variant from "@jitl/quickjs-ng-wasmfile-release-sync";
+import { setQuickJSModule } from "@executor-js/runtime-quickjs";
+import { newQuickJSWASMModule } from "quickjs-emscripten";
 
-setQuickJSModule(await newQuickJSAsyncWASMModuleFromVariant(variant));
+setQuickJSModule(await newQuickJSWASMModule());
 ```
 
-Use this when you want a different WASM variant (e.g. debug builds, QuickJS-NG) than the default bundled one.
+Use this when you want a different WASM variant (e.g. debug builds, QuickJS-NG) than the default bundled one. `newQuickJSWASMModule()` defaults to the release-sync variant; pass a different `@jitl/quickjs-*` variant to swap it.
 
 ## Status
 

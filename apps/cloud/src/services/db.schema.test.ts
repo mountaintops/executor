@@ -13,8 +13,9 @@
 // `./db`) actually contains every executor-schema export AND that drizzle
 // surfaces them all under `db._.fullSchema`.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { Effect } from "effect";
 import postgres from "postgres";
 
 import * as cloudSchema from "./schema";
@@ -23,10 +24,7 @@ import { combinedSchema } from "./db";
 
 describe("combinedSchema", () => {
   it("spreads every cloud + executor schema export", () => {
-    const expected = new Set([
-      ...Object.keys(cloudSchema),
-      ...Object.keys(executorSchema),
-    ]);
+    const expected = new Set([...Object.keys(cloudSchema), ...Object.keys(executorSchema)]);
     for (const key of expected) {
       expect(combinedSchema, `combinedSchema missing "${key}"`).toHaveProperty(key);
     }
@@ -44,18 +42,26 @@ describe("combinedSchema", () => {
   // getters could theoretically drop tables if evaluated before their
   // declarations. Construct a drizzle instance and walk its fullSchema
   // to catch that class of bug too.
-  it("drizzle(combinedSchema) exposes every table under _.fullSchema", () => {
+  it.effect("drizzle(combinedSchema) exposes every table under _.fullSchema", () =>
     // postgres() lazily connects — safe to build with a dummy url, we
     // never .query() so no socket is opened.
-    const sql = postgres("postgres://u:p@127.0.0.1:1/x", { max: 1 });
-    try {
-      const db = drizzle(sql, { schema: combinedSchema });
-      const fullSchema = (db as unknown as { _: { fullSchema: Record<string, unknown> } })._.fullSchema;
-      for (const key of Object.keys(executorSchema)) {
-        expect(fullSchema, `fullSchema missing "${key}"`).toHaveProperty(key);
-      }
-    } finally {
-      sql.end({ timeout: 0 }).catch(() => undefined);
-    }
-  });
+    Effect.acquireRelease(
+      Effect.sync(() => postgres("postgres://u:p@127.0.0.1:1/x", { max: 1 })),
+      (sql) => Effect.promise(() => sql.end({ timeout: 0 })),
+    ).pipe(
+      Effect.flatMap((sql) =>
+        Effect.sync(() => {
+          const db = drizzle(sql, { schema: combinedSchema });
+          const drizzleInternals = (
+            value: unknown,
+          ): { _: { fullSchema: Record<string, unknown> } } =>
+            value as { _: { fullSchema: Record<string, unknown> } };
+          const fullSchema = drizzleInternals(db)._.fullSchema;
+          for (const key of Object.keys(executorSchema)) {
+            expect(fullSchema, `fullSchema missing "${key}"`).toHaveProperty(key);
+          }
+        }),
+      ),
+    ),
+  );
 });

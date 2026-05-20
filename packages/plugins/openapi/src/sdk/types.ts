@@ -1,4 +1,16 @@
 import { Schema } from "effect";
+import { ScopedSecretCredentialInput, SecretBackedValue } from "@executor-js/sdk/shared";
+import {
+  OAuth2Flow as HttpOAuth2Flow,
+  OAuth2SourceConfig as SharedOAuth2SourceConfig,
+  type OAuth2FlowType,
+  type OAuth2SourceConfigType,
+} from "@executor-js/sdk/http-source";
+
+export const OAuth2Flow = HttpOAuth2Flow;
+export type OAuth2Flow = OAuth2FlowType;
+export const OAuth2SourceConfig = SharedOAuth2SourceConfig;
+export type OAuth2SourceConfig = OAuth2SourceConfigType;
 
 // ---------------------------------------------------------------------------
 // Branded IDs
@@ -11,7 +23,7 @@ export type OperationId = typeof OperationId.Type;
 // HTTP
 // ---------------------------------------------------------------------------
 
-export const HttpMethod = Schema.Literal(
+export const HttpMethod = Schema.Literals([
   "get",
   "put",
   "post",
@@ -20,80 +32,120 @@ export const HttpMethod = Schema.Literal(
   "head",
   "options",
   "trace",
-);
+]);
 export type HttpMethod = typeof HttpMethod.Type;
 
-export const ParameterLocation = Schema.Literal("path", "query", "header", "cookie");
+export const AnnotationPolicy = Schema.Struct({
+  requireApprovalFor: Schema.optional(Schema.Array(HttpMethod)),
+}).annotate({ identifier: "OpenApiAnnotationPolicy" });
+export type AnnotationPolicy = typeof AnnotationPolicy.Type;
+
+export const ParameterLocation = Schema.Literals(["path", "query", "header", "cookie"]);
 export type ParameterLocation = typeof ParameterLocation.Type;
 
 // ---------------------------------------------------------------------------
 // Extracted operation
 // ---------------------------------------------------------------------------
 
-export class OperationParameter extends Schema.Class<OperationParameter>("OperationParameter")({
+export const OperationParameter = Schema.Struct({
   name: Schema.String,
   location: ParameterLocation,
   required: Schema.Boolean,
-  schema: Schema.optionalWith(Schema.Unknown, { as: "Option" }),
-  style: Schema.optionalWith(Schema.String, { as: "Option" }),
-  explode: Schema.optionalWith(Schema.Boolean, { as: "Option" }),
-  allowReserved: Schema.optionalWith(Schema.Boolean, { as: "Option" }),
-  description: Schema.optionalWith(Schema.String, { as: "Option" }),
-}) {}
+  schema: Schema.OptionFromOptional(Schema.Unknown),
+  style: Schema.OptionFromOptional(Schema.String),
+  explode: Schema.OptionFromOptional(Schema.Boolean),
+  allowReserved: Schema.OptionFromOptional(Schema.Boolean),
+  description: Schema.OptionFromOptional(Schema.String),
+});
+export type OperationParameter = typeof OperationParameter.Type;
 
-export class OperationRequestBody extends Schema.Class<OperationRequestBody>(
-  "OperationRequestBody",
-)({
-  required: Schema.Boolean,
+/**
+ * OpenAPI 3.x `Encoding Object` (§4.8.15). Declared per-property inside a
+ * multipart/form-data or application/x-www-form-urlencoded request body.
+ *
+ * - `contentType` — for multipart, overrides the per-part `Content-Type`
+ *   header (e.g. `application/json` for a JSON-encoded metadata part).
+ * - `style` / `explode` / `allowReserved` — for form-urlencoded, control
+ *   array / object serialization the same way parameter-level style does.
+ */
+export const EncodingObject = Schema.Struct({
+  contentType: Schema.OptionFromOptional(Schema.String),
+  style: Schema.OptionFromOptional(Schema.String),
+  explode: Schema.OptionFromOptional(Schema.Boolean),
+  allowReserved: Schema.OptionFromOptional(Schema.Boolean),
+});
+export type EncodingObject = typeof EncodingObject.Type;
+
+export const MediaBinding = Schema.Struct({
   contentType: Schema.String,
-  schema: Schema.optionalWith(Schema.Unknown, { as: "Option" }),
-}) {}
+  schema: Schema.OptionFromOptional(Schema.Unknown),
+  encoding: Schema.OptionFromOptional(Schema.Record(Schema.String, EncodingObject)),
+});
+export type MediaBinding = typeof MediaBinding.Type;
 
-export class ExtractedOperation extends Schema.Class<ExtractedOperation>("ExtractedOperation")({
+export const OperationRequestBody = Schema.Struct({
+  required: Schema.Boolean,
+  /** Default media type — first declared in spec order (not JSON-first).
+   *  Used when the caller does not override via the tool's `contentType` arg. */
+  contentType: Schema.String,
+  /** Schema of the default media type. Kept for backward compat with stored
+   *  bindings from before `contents` was added. */
+  schema: Schema.OptionFromOptional(Schema.Unknown),
+  /** All declared media types in spec order. Populated by `extract.ts`
+   *  going forward; older persisted bindings may have this unset and will
+   *  fall back to `{contentType, schema}`. */
+  contents: Schema.OptionFromOptional(Schema.Array(MediaBinding)),
+});
+export type OperationRequestBody = typeof OperationRequestBody.Type;
+
+export const ExtractedOperation = Schema.Struct({
   operationId: OperationId,
   method: HttpMethod,
   pathTemplate: Schema.String,
-  summary: Schema.optionalWith(Schema.String, { as: "Option" }),
-  description: Schema.optionalWith(Schema.String, { as: "Option" }),
+  summary: Schema.OptionFromOptional(Schema.String),
+  description: Schema.OptionFromOptional(Schema.String),
   tags: Schema.Array(Schema.String),
   parameters: Schema.Array(OperationParameter),
-  requestBody: Schema.optionalWith(OperationRequestBody, { as: "Option" }),
-  inputSchema: Schema.optionalWith(Schema.Unknown, { as: "Option" }),
-  outputSchema: Schema.optionalWith(Schema.Unknown, { as: "Option" }),
-  deprecated: Schema.optionalWith(Schema.Boolean, { default: () => false }),
-}) {}
+  requestBody: Schema.OptionFromOptional(OperationRequestBody),
+  inputSchema: Schema.OptionFromOptional(Schema.Unknown),
+  outputSchema: Schema.OptionFromOptional(Schema.Unknown),
+  deprecated: Schema.Boolean,
+});
+export type ExtractedOperation = typeof ExtractedOperation.Type;
 
-export class ServerVariable extends Schema.Class<ServerVariable>("ServerVariable")({
+export const ServerVariable = Schema.Struct({
   default: Schema.String,
-  enum: Schema.optionalWith(Schema.Array(Schema.String), { as: "Option" }),
-  description: Schema.optionalWith(Schema.String, { as: "Option" }),
-}) {}
+  enum: Schema.OptionFromOptional(Schema.Array(Schema.String)),
+  description: Schema.OptionFromOptional(Schema.String),
+});
+export type ServerVariable = typeof ServerVariable.Type;
 
-export class ServerInfo extends Schema.Class<ServerInfo>("ServerInfo")({
+export const ServerInfo = Schema.Struct({
   url: Schema.String,
-  description: Schema.optionalWith(Schema.String, { as: "Option" }),
-  variables: Schema.optionalWith(Schema.Record({ key: Schema.String, value: ServerVariable }), {
-    as: "Option",
-  }),
-}) {}
+  description: Schema.OptionFromOptional(Schema.String),
+  variables: Schema.OptionFromOptional(Schema.Record(Schema.String, ServerVariable)),
+});
+export type ServerInfo = typeof ServerInfo.Type;
 
-export class ExtractionResult extends Schema.Class<ExtractionResult>("ExtractionResult")({
-  title: Schema.optionalWith(Schema.String, { as: "Option" }),
-  version: Schema.optionalWith(Schema.String, { as: "Option" }),
+export const ExtractionResult = Schema.Struct({
+  title: Schema.OptionFromOptional(Schema.String),
+  version: Schema.OptionFromOptional(Schema.String),
   servers: Schema.Array(ServerInfo),
   operations: Schema.Array(ExtractedOperation),
-}) {}
+});
+export type ExtractionResult = typeof ExtractionResult.Type;
 
 // ---------------------------------------------------------------------------
 // Operation binding — minimal invocation data (no schemas/metadata)
 // ---------------------------------------------------------------------------
 
-export class OperationBinding extends Schema.Class<OperationBinding>("OperationBinding")({
+export const OperationBinding = Schema.Struct({
   method: HttpMethod,
   pathTemplate: Schema.String,
   parameters: Schema.Array(OperationParameter),
-  requestBody: Schema.optionalWith(OperationRequestBody, { as: "Option" }),
-}) {}
+  requestBody: Schema.OptionFromOptional(OperationRequestBody),
+});
+export type OperationBinding = typeof OperationBinding.Type;
 
 // ---------------------------------------------------------------------------
 // Invocation
@@ -103,109 +155,53 @@ export class OperationBinding extends Schema.Class<OperationBinding>("OperationB
  * A header value — either a static string or a reference to a secret.
  * Stored as JSON-serializable data.
  */
-export const HeaderValue = Schema.Union(
-  Schema.String,
-  Schema.Struct({
-    secretId: Schema.String,
-    prefix: Schema.optional(Schema.String),
-  }),
-);
+export const HeaderValue = SecretBackedValue;
 export type HeaderValue = typeof HeaderValue.Type;
 
-// ---------------------------------------------------------------------------
-// OAuth2 auth — applied as Authorization: Bearer <token> at invocation time.
-// Tokens are stored as secrets; the bearer value is resolved (and refreshed)
-// on every request via withRefreshedAccessToken.
-// ---------------------------------------------------------------------------
+export const ConfiguredHeaderBinding = Schema.Struct({
+  kind: Schema.Literal("binding"),
+  slot: Schema.String,
+  prefix: Schema.optional(Schema.String),
+}).annotate({ identifier: "OpenApiConfiguredHeaderBinding" });
+export type ConfiguredHeaderBinding = typeof ConfiguredHeaderBinding.Type;
 
-export class OAuth2Auth extends Schema.Class<OAuth2Auth>("OpenApiOAuth2Auth")({
-  kind: Schema.Literal("oauth2"),
-  /** Key into `components.securitySchemes` this auth came from. */
-  securitySchemeName: Schema.String,
-  /** Which flow produced this auth. Only authorizationCode is supported end-to-end today. */
-  flow: Schema.Literal("authorizationCode"),
-  /** Token endpoint (from the flow) — used for refresh. */
-  tokenUrl: Schema.String,
-  clientIdSecretId: Schema.String,
-  clientSecretSecretId: Schema.NullOr(Schema.String),
-  accessTokenSecretId: Schema.String,
-  refreshTokenSecretId: Schema.NullOr(Schema.String),
-  tokenType: Schema.String,
-  /** Epoch ms when the access token expires; null if the server did not declare an expiry. */
-  expiresAt: Schema.NullOr(Schema.Number),
-  /** Scope string as returned by the token endpoint. */
-  scope: Schema.NullOr(Schema.String),
-  /** Scopes this auth was granted (for display + refresh). */
-  scopes: Schema.Array(Schema.String),
-}) {}
+export const ConfiguredHeaderValue = Schema.Union([Schema.String, ConfiguredHeaderBinding]);
+export type ConfiguredHeaderValue = typeof ConfiguredHeaderValue.Type;
+
+export const OpenApiCredentialInput = Schema.Union([
+  ScopedSecretCredentialInput,
+  HeaderValue,
+  ConfiguredHeaderValue,
+]);
+export type OpenApiCredentialInput = typeof OpenApiCredentialInput.Type;
 
 // ---------------------------------------------------------------------------
-// Annotation policy — per-source override of the HTTP-method-based default
-// for `requiresApproval`. If `requireApprovalFor` is set, it replaces the
-// default set ({POST, PUT, PATCH, DELETE}) wholesale: any method present
-// requires approval, any method absent does not.
+// OAuth2 source config — carries source-owned slots and API-level config to
+// kick off a fresh sign-in from the source detail UI without needing any
+// one user's live connection to still exist.
+//
+// Split of responsibilities:
+//   - The Source owns: the OAuth config (tokenUrl, authorizationUrl,
+//     client credential slots, connection slot, scopes, flow,
+//     securitySchemeName).
+//     Values are a property of the target API, identical for every user
+//     signing into this source. Source-owned = reconnect works even if
+//     the connection row has been removed.
+//   - The Connection owns: live access/refresh tokens, token expiry,
+//     provider state the refresh path reads from. The connection's
+//     `providerState` caches the refresh-relevant bits of the config
+//     so the refresh loop never reaches back into source storage.
+//
+// This is a deliberate small duplication (scopes + tokenUrl and the static
+// client credential ids referenced by slots appear in source bindings and
+// connection providerState). The values are static per source so the two
+// copies can't drift under normal reconnect flows.
 // ---------------------------------------------------------------------------
 
-export class AnnotationPolicy extends Schema.Class<AnnotationPolicy>(
-  "OpenApiAnnotationPolicy",
-)({
-  requireApprovalFor: Schema.optional(Schema.Array(HttpMethod)),
-}) {}
-
-export class InvocationConfig extends Schema.Class<InvocationConfig>("InvocationConfig")({
-  baseUrl: Schema.String,
-  /** Headers applied to every request. Values can reference secrets. */
-  headers: Schema.optionalWith(Schema.Record({ key: Schema.String, value: HeaderValue }), {
-    default: () => ({}),
-  }),
-  /**
-   * Optional OAuth2 auth — if set, the invoker resolves/refreshes the
-   * access token and injects `Authorization: Bearer <token>` on every
-   * request. Coexists with `headers` but wins for the Authorization header.
-   */
-  oauth2: Schema.optionalWith(OAuth2Auth, { as: "Option" }),
-}) {}
-
-// ---------------------------------------------------------------------------
-// Pending OAuth session — persisted between startOAuth and completeOAuth
-// ---------------------------------------------------------------------------
-
-export class OpenApiOAuthSession extends Schema.Class<OpenApiOAuthSession>(
-  "OpenApiOAuthSession",
-)({
-  /** Display name used for the stored token secret labels. */
-  displayName: Schema.String,
-  securitySchemeName: Schema.String,
-  /** For now only authorizationCode is supported end-to-end; clientCredentials is follow-up work. */
-  flow: Schema.Literal("authorizationCode"),
-  tokenUrl: Schema.String,
-  redirectUrl: Schema.String,
-  clientIdSecretId: Schema.String,
-  clientSecretSecretId: Schema.NullOr(Schema.String),
-  /**
-   * Executor scope id where the minted access/refresh token secrets will
-   * land when `completeOAuth` runs. Typically the innermost (per-user)
-   * scope. Persisted in the session so the callback that completes the
-   * flow writes tokens to the same tenancy the caller intended at
-   * `startOAuth` time.
-   */
-  tokenScope: Schema.String,
-  /**
-   * Pre-decided secret ids for the minted access + refresh tokens. The
-   * caller names these so the source's `OAuth2Auth` can reference the
-   * same ids regardless of which scope actually owns the value —
-   * `ctx.secrets.get` resolves them via fallthrough (innermost first),
-   * so per-user tokens shadow org-level fallbacks on the same source.
-   */
-  accessTokenSecretId: Schema.String,
-  refreshTokenSecretId: Schema.NullOr(Schema.String),
-  scopes: Schema.Array(Schema.String),
-  codeVerifier: Schema.String,
-}) {}
-
-export class InvocationResult extends Schema.Class<InvocationResult>("InvocationResult")({
+export const InvocationResult = Schema.Struct({
   status: Schema.Number,
-  headers: Schema.Record({ key: Schema.String, value: Schema.String }),
+  headers: Schema.Record(Schema.String, Schema.String),
   data: Schema.NullOr(Schema.Unknown),
   error: Schema.NullOr(Schema.Unknown),
-}) {}
+});
+export type InvocationResult = typeof InvocationResult.Type;

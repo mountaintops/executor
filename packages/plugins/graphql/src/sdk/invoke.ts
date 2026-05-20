@@ -1,12 +1,9 @@
 import { Effect, Layer, Option } from "effect";
-import { HttpClient, HttpClientRequest } from "@effect/platform";
+import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { resolveSecretBackedMap } from "@executor-js/sdk/core";
 
 import { GraphqlInvocationError } from "./errors";
-import {
-  type HeaderValue,
-  type OperationBinding,
-  InvocationResult,
-} from "./types";
+import { type HeaderValue, type OperationBinding, InvocationResult } from "./types";
 
 // ---------------------------------------------------------------------------
 // Header resolution — resolves secret refs at invocation time
@@ -21,38 +18,18 @@ export const resolveHeaders = (
     (acc, [, value]) => (typeof value === "string" ? acc : acc + 1),
     0,
   );
-  return Effect.gen(function* () {
-    // Resolve secret-backed headers in parallel. Missing / failing
-    // lookups drop the header rather than fail the invocation, same
-    // as the serial version.
-    const values = yield* Effect.all(
-      entries.map(([name, value]) =>
-        typeof value === "string"
-          ? Effect.succeed<{ readonly name: string; readonly value: string | null }>({
-              name,
-              value,
-            })
-          : secrets.get(value.secretId).pipe(
-              Effect.catchAll(() => Effect.succeed<string | null>(null)),
-              Effect.map((secret) => ({
-                name,
-                value:
-                  secret === null
-                    ? null
-                    : value.prefix
-                      ? `${value.prefix}${secret}`
-                      : secret,
-              })),
-            ),
-      ),
-      { concurrency: "unbounded" },
-    );
-    const resolved: Record<string, string> = {};
-    for (const { name, value } of values) {
-      if (value !== null) resolved[name] = value;
-    }
-    return resolved;
+  return resolveSecretBackedMap({
+    values: headers,
+    getSecret: (secretId) => secrets.get(secretId).pipe(Effect.catch(() => Effect.succeed(null))),
+    missing: "drop",
+    onMissing: (name) =>
+      new GraphqlInvocationError({
+        message: `Missing secret for header "${name}"`,
+        statusCode: Option.none(),
+      }),
   }).pipe(
+    Effect.catch(() => Effect.succeed<Record<string, string> | undefined>(undefined)),
+    Effect.map((resolved) => resolved ?? {}),
     Effect.withSpan("plugin.graphql.secret.resolve", {
       attributes: {
         "plugin.graphql.headers.total": entries.length,
@@ -60,6 +37,23 @@ export const resolveHeaders = (
       },
     }),
   );
+};
+
+const endpointWithQueryParams = (endpoint: string, queryParams: Record<string, string>): string => {
+  if (Object.keys(queryParams).length === 0) return endpoint;
+  const url = new URL(endpoint);
+  for (const [name, value] of Object.entries(queryParams)) {
+    url.searchParams.set(name, value);
+  }
+  return url.toString();
+};
+
+export const endpointForTelemetry = (endpoint: string): string => {
+  if (!URL.canParse(endpoint)) return endpoint;
+  const url = new URL(endpoint);
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 };
 
 // ---------------------------------------------------------------------------
@@ -83,16 +77,20 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
   args: Record<string, unknown>,
   endpoint: string,
   resolvedHeaders: Record<string, string>,
+  resolvedQueryParams: Record<string, string> = {},
 ) {
   const client = yield* HttpClient.HttpClient;
+  const requestEndpoint = endpointWithQueryParams(endpoint, resolvedQueryParams);
+  const telemetryEndpoint = endpointForTelemetry(endpoint);
 
   yield* Effect.annotateCurrentSpan({
     "http.method": "POST",
-    "http.url": endpoint,
-    "plugin.graphql.endpoint": endpoint,
+    "http.url": telemetryEndpoint,
+    "plugin.graphql.endpoint": telemetryEndpoint,
     "plugin.graphql.operation_kind": operation.kind,
     "plugin.graphql.field_name": operation.fieldName,
     "plugin.graphql.headers.resolved_count": Object.keys(resolvedHeaders).length,
+    "plugin.graphql.query_params.resolved_count": Object.keys(resolvedQueryParams).length,
   });
 
   // Build the GraphQL request body
@@ -108,9 +106,9 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     Object.assign(variables, args.variables);
   }
 
-  let request = HttpClientRequest.post(endpoint).pipe(
+  let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
-    HttpClientRequest.bodyUnsafeJson({
+    HttpClientRequest.bodyJsonUnsafe({
       query: operation.operationString,
       variables: Object.keys(variables).length > 0 ? variables : undefined,
     }),
@@ -124,7 +122,7 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     Effect.mapError(
       (err) =>
         new GraphqlInvocationError({
-          message: `GraphQL request failed: ${err.message}`,
+          message: "GraphQL request failed",
           statusCode: Option.none(),
           cause: err,
         }),
@@ -135,7 +133,7 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
   const contentType = response.headers["content-type"] ?? null;
 
   const body: unknown = isJsonContentType(contentType)
-    ? yield* response.json.pipe(Effect.catchAll(() => response.text))
+    ? yield* response.json.pipe(Effect.catch(() => response.text))
     : yield* response.text;
 
   // GraphQL responses are always 200 with { data, errors }
@@ -148,7 +146,7 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     "plugin.graphql.error_count": hasErrors ? gqlBody!.errors!.length : 0,
   });
 
-  return new InvocationResult({
+  return InvocationResult.make({
     status,
     data: gqlBody?.data ?? null,
     errors: hasErrors ? gqlBody!.errors : null,
@@ -164,22 +162,14 @@ export const invokeWithLayer = (
   args: Record<string, unknown>,
   endpoint: string,
   resolvedHeaders: Record<string, string>,
+  resolvedQueryParams: Record<string, string>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient>,
 ) =>
-  invoke(operation, args, endpoint, resolvedHeaders).pipe(
+  invoke(operation, args, endpoint, resolvedHeaders, resolvedQueryParams).pipe(
     Effect.provide(httpClientLayer),
-    Effect.mapError((err) =>
-      err instanceof GraphqlInvocationError
-        ? err
-        : new GraphqlInvocationError({
-            message: err instanceof Error ? err.message : String(err),
-            statusCode: Option.none(),
-            cause: err,
-          }),
-    ),
     Effect.withSpan("plugin.graphql.invoke", {
       attributes: {
-        "plugin.graphql.endpoint": endpoint,
+        "plugin.graphql.endpoint": endpointForTelemetry(endpoint),
         "plugin.graphql.operation_kind": operation.kind,
         "plugin.graphql.field_name": operation.fieldName,
       },

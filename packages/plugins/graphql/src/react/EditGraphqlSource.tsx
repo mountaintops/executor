@@ -1,37 +1,53 @@
-import { useState } from "react";
-import { useAtomValue, useAtomSet, Result } from "@effect-atom/atom-react";
-import { graphqlSourceAtom, updateGraphqlSource } from "./atoms";
-import { useScope } from "@executor/react/api/scope-context";
-import { sourceWriteKeys } from "@executor/react/api/reactivity-keys";
-import { useSecretPickerSecrets } from "@executor/react/plugins/use-secret-picker-secrets";
+import { useMemo, useState } from "react";
+import { useAtomValue, useAtomSet } from "@effect/atom-react";
+import * as Exit from "effect/Exit";
+import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { graphqlSourceAtom, graphqlSourceBindingsAtom } from "./atoms";
 import {
-  headerValueToState,
-  headersFromState,
-  type HeaderState,
-} from "@executor/react/plugins/secret-header-auth";
-import { HeadersList } from "@executor/react/plugins/headers-list";
+  configureSource,
+  connectionsAtom,
+  setSourceCredentialBinding,
+} from "@executor-js/react/api/atoms";
+import { useScope, useUserScope } from "@executor-js/react/api/scope-context";
+import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
+import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
 import {
-  ApprovalPolicyToggles,
-  GRAPHQL_OPERATION_TOKENS,
-} from "@executor/react/plugins/approval-policy-field";
+  httpCredentialsFromConfiguredCredentialBindings,
+  serializeHttpCredentials,
+  type HttpCredentialsState,
+} from "@executor-js/react/plugins/http-credentials";
+import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
+import { useCredentialTargetScope } from "@executor-js/react/plugins/credential-target-scope";
 import {
-  SourceIdentityFields,
-  useSourceIdentity,
-} from "@executor/react/plugins/source-identity";
-import { Button } from "@executor/react/components/button";
+  useSourceCredentialBindingScopes,
+  useSourceCredentialBindingWriter,
+} from "@executor-js/react/plugins/source-credential-bindings";
+import { Button } from "@executor-js/react/components/button";
 import {
   CardStack,
   CardStackContent,
-  CardStackEntryField,
-} from "@executor/react/components/card-stack";
-import { FieldLabel } from "@executor/react/components/field";
-import { Input } from "@executor/react/components/input";
-import { Badge } from "@executor/react/components/badge";
+  CardStackEntry,
+  CardStackEntryContent,
+  CardStackEntryDescription,
+  CardStackEntryTitle,
+} from "@executor-js/react/components/card-stack";
+import { FilterTabs } from "@executor-js/react/components/filter-tabs";
+import {
+  SourceOAuthConnectionControl,
+  sourceOAuthConnectionUiState,
+} from "@executor-js/react/plugins/source-oauth-connection";
+import { Badge } from "@executor-js/react/components/badge";
+import { type CredentialBindingRef, ScopeId } from "@executor-js/sdk/shared";
+import {
+  SecretCredentialSlotBindings,
+  secretCredentialSlotsFromHttpConfig,
+} from "@executor-js/react/plugins/credential-slot-bindings";
+import { GraphqlSourceFields } from "./GraphqlSourceFields";
+import type { GraphqlSourceAuthInput } from "../sdk/types";
 import type { StoredGraphqlSource } from "../sdk/store";
 
-// UI only needs the fields the API exposes; `scope` on the SDK interface
-// isn't part of the HTTP response.
-type EditableSource = Omit<StoredGraphqlSource, "scope">;
+type EditableSource = StoredGraphqlSource;
+type AuthMode = "none" | "oauth2";
 
 // ---------------------------------------------------------------------------
 // Edit form
@@ -40,68 +56,105 @@ type EditableSource = Omit<StoredGraphqlSource, "scope">;
 function EditForm(props: {
   sourceId: string;
   initial: EditableSource;
+  bindings: readonly CredentialBindingRef[];
   onSave: () => void;
 }) {
-  const scopeId = useScope();
-  const doUpdate = useAtomSet(updateGraphqlSource, { mode: "promise" });
+  const displayScope = useScope();
+  const userScope = useUserScope();
+  const sourceScope = ScopeId.make(props.initial.scope);
+  const {
+    credentialTargetScope: oauthCredentialTargetScope,
+    setCredentialTargetScope: setOAuthCredentialTargetScope,
+  } = useCredentialTargetScope({
+    sourceScope,
+    initialTargetScope: userScope,
+  });
+  const doConfigure = useAtomSet(configureSource, { mode: "promiseExit" });
+  const setConnectionBinding = useAtomSet(setSourceCredentialBinding, { mode: "promise" });
   const secretList = useSecretPickerSecrets();
+  const connectionsResult = useAtomValue(connectionsAtom(userScope));
 
   const identity = useSourceIdentity({
     fallbackName: props.initial.name,
     fallbackNamespace: props.initial.namespace,
   });
   const [endpoint, setEndpoint] = useState(props.initial.endpoint);
-  const [headers, setHeaders] = useState<HeaderState[]>(() =>
-    Object.entries(props.initial.headers ?? {}).map(([name, value]) =>
-      headerValueToState(name, value),
-    ),
+  const credentials = useMemo<HttpCredentialsState>(
+    () =>
+      httpCredentialsFromConfiguredCredentialBindings({
+        headers: props.initial.headers,
+        queryParams: props.initial.queryParams,
+        bindings: props.bindings,
+      }),
+    [props.bindings, props.initial.headers, props.initial.queryParams],
   );
-  const [annotationPolicy, setAnnotationPolicy] = useState<readonly string[] | undefined>(
-    () => {
-      const stored = props.initial.annotationPolicy?.requireApprovalFor;
-      return stored ? [...stored] : undefined;
-    },
-  );
+  const [authMode, setAuthMode] = useState<AuthMode>(props.initial.auth.kind);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [authDirty, setAuthDirty] = useState(false);
+  const { busyKey, setSecretBinding, clearBinding } = useSourceCredentialBindingWriter({
+    displayScope,
+    source: { id: props.sourceId, scope: sourceScope },
+    onError: setError,
+  });
 
   const identityDirty = identity.name.trim() !== props.initial.name.trim();
-
-  const handleHeadersChange = (next: HeaderState[]) => {
-    setHeaders(next);
-    setDirty(true);
-  };
+  const metadataDirty = identityDirty || endpoint.trim() !== props.initial.endpoint.trim();
+  const dirty = metadataDirty || authDirty;
+  const oauth2 = props.initial.auth.kind === "oauth2" ? props.initial.auth : null;
+  const connections = AsyncResult.isSuccess(connectionsResult) ? connectionsResult.value : [];
+  const { credentialScopeOptions, secretBindingScopes, scopeRanks } =
+    useSourceCredentialBindingScopes({ sourceScope });
+  const secretSlots = secretCredentialSlotsFromHttpConfig({
+    headers: props.initial.headers,
+    queryParams: props.initial.queryParams,
+  });
+  const oauthConnectionState = oauth2
+    ? sourceOAuthConnectionUiState({
+        bindings: props.bindings,
+        connectionSlot: oauth2.connectionSlot,
+        tokenScope: oauthCredentialTargetScope,
+        scopeRanks,
+        credentialScopeOptions,
+        connections,
+      })
+    : null;
+  const oauthRequestCredentials = serializeHttpCredentials(credentials);
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
-    try {
-      await doUpdate({
-        path: { scopeId, namespace: props.sourceId },
-        payload: {
-          name: identity.name.trim() || undefined,
-          endpoint: endpoint.trim() || undefined,
-          headers: headersFromState(headers),
-          annotationPolicy:
-            annotationPolicy === undefined
-              ? null
-              : {
-                  requireApprovalFor: annotationPolicy as readonly (
-                    | "query"
-                    | "mutation"
-                  )[],
-                },
-        },
-        reactivityKeys: sourceWriteKeys,
-      });
-      setDirty(false);
-      props.onSave();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to update source");
-    } finally {
-      setSaving(false);
+    const config: {
+      name?: string;
+      endpoint?: string;
+      auth?: GraphqlSourceAuthInput;
+    } = {
+      name: metadataDirty ? identity.name.trim() || undefined : undefined,
+      endpoint: metadataDirty ? endpoint.trim() || undefined : undefined,
+    };
+    if (authDirty) {
+      config.auth = authMode === "oauth2" ? { oauth2: {} } : { kind: "none" };
     }
+    const exit = await doConfigure({
+      params: { scopeId: displayScope },
+      payload: {
+        source: { id: props.sourceId, scope: sourceScope },
+        scope: sourceScope,
+        type: "graphql",
+        config,
+      },
+      reactivityKeys: sourceWriteKeys,
+    });
+
+    if (Exit.isFailure(exit)) {
+      setError("Failed to update source");
+      setSaving(false);
+      return;
+    }
+
+    setAuthDirty(false);
+    props.onSave();
+    setSaving(false);
   };
 
   return (
@@ -122,44 +175,96 @@ function EditForm(props: {
         </Badge>
       </div>
 
-      <SourceIdentityFields identity={identity} namespaceReadOnly />
+      <GraphqlSourceFields
+        endpoint={endpoint}
+        onEndpointChange={setEndpoint}
+        identity={identity}
+        namespaceReadOnly
+      />
 
-      <CardStack>
-        <CardStackContent className="border-t-0">
-          <CardStackEntryField label="Endpoint">
-            <Input
-              value={endpoint}
-              onChange={(e) => {
-                setEndpoint((e.target as HTMLInputElement).value);
-                setDirty(true);
-              }}
-              placeholder="https://api.example.com/graphql"
-              className="font-mono text-sm"
+      {secretSlots.length > 0 && (
+        <CardStack>
+          <CardStackContent className="border-t-0">
+            <CardStackEntry>
+              <CardStackEntryContent>
+                <CardStackEntryTitle>Request credentials</CardStackEntryTitle>
+                <CardStackEntryDescription>
+                  Headers and query parameters sent with every GraphQL request.
+                </CardStackEntryDescription>
+              </CardStackEntryContent>
+            </CardStackEntry>
+            <SecretCredentialSlotBindings
+              slots={secretSlots}
+              bindingScopes={secretBindingScopes}
+              bindingRows={props.bindings}
+              scopeRanks={scopeRanks}
+              secrets={secretList}
+              sourceId={props.sourceId}
+              sourceName={identity.name}
+              credentialScopeOptions={credentialScopeOptions}
+              busyKey={busyKey}
+              onSetSecretBinding={setSecretBinding}
+              onClearBinding={clearBinding}
             />
-          </CardStackEntryField>
-        </CardStackContent>
-      </CardStack>
+          </CardStackContent>
+        </CardStack>
+      )}
 
-      <section className="space-y-2.5">
-        <FieldLabel>Headers</FieldLabel>
-        <HeadersList
-          headers={headers}
-          onHeadersChange={handleHeadersChange}
-          existingSecrets={secretList}
-          sourceName={identity.name}
-        />
+      {/* Temporarily hidden while we revisit GraphQL OAuth discovery and UX. */}
+      <section className="hidden space-y-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium text-foreground">Authentication</span>
+          <FilterTabs<AuthMode>
+            tabs={[
+              { value: "none", label: "None" },
+              { value: "oauth2", label: "OAuth" },
+            ]}
+            value={authMode}
+            onChange={(value) => {
+              setAuthMode(value);
+              setAuthDirty(true);
+            }}
+          />
+        </div>
+        {authMode === "oauth2" && (
+          <p className="text-xs text-muted-foreground">
+            OAuth sign-in is available from the source header after saving.
+          </p>
+        )}
       </section>
 
-      <ApprovalPolicyToggles
-        tokens={GRAPHQL_OPERATION_TOKENS}
-        value={annotationPolicy}
-        onChange={(next) => {
-          setAnnotationPolicy(next);
-          setDirty(true);
-        }}
-        layout="list"
-        description="Choose which operation kinds require approval before a tool call runs."
-      />
+      {oauth2 && oauthConnectionState && (
+        <SourceOAuthConnectionControl
+          popupName="graphql-oauth"
+          pluginId="graphql"
+          namespace={slugifyNamespace(props.initial.namespace) || "graphql"}
+          fallbackNamespace="graphql"
+          endpoint={endpoint.trim()}
+          tokenScope={oauthCredentialTargetScope}
+          onTokenScopeChange={setOAuthCredentialTargetScope}
+          credentialScopeOptions={credentialScopeOptions}
+          connectionId={oauthConnectionState.connectionId}
+          sourceLabel={`${identity.name.trim() || props.initial.namespace || "GraphQL"} OAuth`}
+          headers={oauthRequestCredentials.headers}
+          queryParams={oauthRequestCredentials.queryParams}
+          isConnected={oauthConnectionState.isConnected}
+          buttonIsConnected={oauthConnectionState.buttonIsConnected}
+          statusLabel={oauthConnectionState.statusLabel}
+          onConnected={async (connectionId) => {
+            await setConnectionBinding({
+              params: { scopeId: oauthCredentialTargetScope },
+              payload: {
+                scope: oauthCredentialTargetScope,
+                source: { id: props.sourceId, scope: sourceScope },
+                slotKey: oauth2.connectionSlot,
+                value: { kind: "connection", connectionId },
+              },
+              reactivityKeys: [...sourceWriteKeys, ...connectionWriteKeys],
+            });
+          }}
+          signInLabel={oauthConnectionState.signInLabel}
+        />
+      )}
 
       {error && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
@@ -171,7 +276,7 @@ function EditForm(props: {
         <Button variant="ghost" onClick={props.onSave}>
           Cancel
         </Button>
-        <Button onClick={handleSave} disabled={(!dirty && !identityDirty) || saving}>
+        <Button onClick={handleSave} disabled={!dirty || saving}>
           {saving ? "Saving…" : "Save changes"}
         </Button>
       </div>
@@ -185,9 +290,16 @@ function EditForm(props: {
 
 export default function EditGraphqlSource(props: { sourceId: string; onSave: () => void }) {
   const scopeId = useScope();
+  const userScope = useUserScope();
   const sourceResult = useAtomValue(graphqlSourceAtom(scopeId, props.sourceId));
+  const source =
+    AsyncResult.isSuccess(sourceResult) && sourceResult.value ? sourceResult.value : null;
+  const sourceScope = source ? ScopeId.make(source.scope) : scopeId;
+  const bindingsResult = useAtomValue(
+    graphqlSourceBindingsAtom(userScope, props.sourceId, sourceScope),
+  );
 
-  if (!Result.isSuccess(sourceResult) || !sourceResult.value) {
+  if (!AsyncResult.isSuccess(sourceResult) || !source || !AsyncResult.isSuccess(bindingsResult)) {
     return (
       <div className="space-y-6">
         <div>
@@ -198,5 +310,12 @@ export default function EditGraphqlSource(props: { sourceId: string; onSave: () 
     );
   }
 
-  return <EditForm sourceId={props.sourceId} initial={sourceResult.value} onSave={props.onSave} />;
+  return (
+    <EditForm
+      sourceId={props.sourceId}
+      initial={source as EditableSource}
+      bindings={bindingsResult.value}
+      onSave={props.onSave}
+    />
+  );
 }

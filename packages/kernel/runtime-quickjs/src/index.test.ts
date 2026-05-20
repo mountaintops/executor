@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
-import type { SandboxToolInvoker } from "@executor/codemode-core";
+import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { makeQuickJsExecutor } from "./index";
 
 class UnknownToolError extends Data.TaggedError("UnknownToolError")<{
@@ -17,7 +17,10 @@ const makeTestInvoker = (
     if (!handler) {
       return Effect.fail(new UnknownToolError({ path }));
     }
-    return Effect.try(() => handler(args));
+    return Effect.try({
+      try: () => handler(args),
+      catch: (error) => error,
+    });
   },
 });
 
@@ -118,6 +121,52 @@ describe("quickjs executor", () => {
     }),
   );
 
+  it.effect("internal defects reach the sandbox as an opaque generic only", () =>
+    Effect.gen(function* () {
+      // Plugin defect carrying sensitive context. The bridge's reject
+      // path must strip everything except the canonical
+      // "Internal tool error [<corrId>]" shape — or fall back to the
+      // bare generic if the upstream invoker hasn't already stamped
+      // the correlation id (this test exercises the latter path
+      // because it bypasses makeExecutorToolInvoker).
+      const invoker: SandboxToolInvoker = {
+        invoke: () =>
+          Effect.fail(
+            Object.assign(
+              new Error("Authorization: Bearer SECRET_TOKEN_xyz failed against host 10.0.0.5"),
+              {
+                stack: "Error\n    at /home/svc/executor/packages/plugins/foo:142:11",
+              },
+            ) as never,
+          ),
+      };
+
+      const result = yield* executor.execute(
+        `
+        try {
+          await tools.leaky.call({});
+          return "should not reach";
+        } catch (e) {
+          return e.message;
+        }
+        `,
+        invoker,
+      );
+
+      expect(result.error).toBeUndefined();
+      const message = String(result.result);
+      // Either the canonical opaque generic with a correlation id, or
+      // the bare fallback. Neither must contain any sensitive context.
+      expect(
+        message === "Internal tool error" || /^Internal tool error \[[0-9a-f]{8}\]$/.test(message),
+      ).toBe(true);
+      expect(message).not.toContain("SECRET_TOKEN_xyz");
+      expect(message).not.toContain("Authorization");
+      expect(message).not.toContain("10.0.0.5");
+      expect(message).not.toContain("packages/plugins");
+    }),
+  );
+
   it.effect("handles unknown tool path", () =>
     Effect.gen(function* () {
       const invoker = makeTestInvoker({});
@@ -154,6 +203,22 @@ describe("quickjs executor", () => {
       expect(result.result).toBe("done");
       expect(result.logs).toContainEqual("[log] hello from sandbox");
       expect(result.logs).toContainEqual("[warn] a warning");
+    }),
+  );
+
+  it.effect("applies a memory limit by default", () =>
+    Effect.gen(function* () {
+      const defaultExecutor = makeQuickJsExecutor({ timeoutMs: 5_000 });
+
+      const result = yield* defaultExecutor.execute(
+        `
+        return new ArrayBuffer(128 * 1024 * 1024).byteLength;
+        `,
+        makeTestInvoker({}),
+      );
+
+      expect(result.result).toBeNull();
+      expect(result.error).toBeDefined();
     }),
   );
 

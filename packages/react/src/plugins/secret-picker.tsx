@@ -2,6 +2,7 @@ import { useState, type ChangeEvent, type FocusEvent } from "react";
 import { PlusIcon } from "lucide-react";
 
 import { Input } from "../components/input";
+import { Badge } from "../components/badge";
 import {
   Command,
   CommandEmpty,
@@ -11,9 +12,11 @@ import {
   CommandSeparator,
 } from "../components/command";
 import { Popover, PopoverAnchor, PopoverContent } from "../components/popover";
+import { useScopeStack } from "../api/scope-context";
 
 export interface SecretPickerSecret {
   readonly id: string;
+  readonly scopeId: string;
   readonly name: string;
   readonly provider?: string;
 }
@@ -32,17 +35,38 @@ const providerLabel = (key: string | undefined): string => {
 
 export function SecretPicker(props: {
   readonly value: string | null;
-  readonly onSelect: (secretId: string) => void;
+  readonly valueScopeId?: string;
+  readonly onSelect: (secretId: string, scopeId: string) => void;
   readonly secrets: readonly SecretPickerSecret[];
   readonly placeholder?: string;
-  /** When provided, renders a "+ New secret" row at the bottom of the dropdown. */
+  /** When provided, renders a "+ New secret" row at the top of the dropdown. */
   readonly onCreateNew?: () => void;
 }) {
-  const { value, onSelect, secrets, placeholder = "Search secrets…", onCreateNew } = props;
+  const {
+    value,
+    valueScopeId,
+    onSelect,
+    secrets,
+    placeholder = "Search secrets…",
+    onCreateNew,
+  } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const scopeStack = useScopeStack();
+  const scopeLabel = (scopeId: string): string => {
+    const index = scopeStack.findIndex((entry) => String(entry.id) === scopeId);
+    if (index === 0) return "Personal";
+    if (index > 0) return scopeStack[index]?.name || "Organization";
+    return "Scoped";
+  };
 
-  const selected = secrets.find((secret) => secret.id === value) ?? null;
+  const selected =
+    secrets.find(
+      (secret) =>
+        secret.id === value && (valueScopeId === undefined || secret.scopeId === valueScopeId),
+    ) ??
+    secrets.find((secret) => secret.id === value) ??
+    null;
 
   const grouped = new Map<string, SecretPickerSecret[]>();
   for (const secret of secrets) {
@@ -68,7 +92,7 @@ export function SecretPicker(props: {
       <Popover open={open} onOpenChange={setOpen} modal={false}>
         <PopoverAnchor asChild>
           <Input
-            value={open ? query : selected ? selected.name : ""}
+            value={open ? query : selected ? selected.name : (value ?? "")}
             onChange={(event: ChangeEvent<HTMLInputElement>) => {
               setQuery(event.target.value);
               if (!open) setOpen(true);
@@ -98,37 +122,8 @@ export function SecretPicker(props: {
           <Command shouldFilter={false}>
             <CommandList>
               <CommandEmpty>No secrets found</CommandEmpty>
-              {groups.map(([label, items]) => {
-                const lowerQuery = query.toLowerCase();
-                const filtered = lowerQuery
-                  ? items.filter(
-                      (secret) =>
-                        secret.name.toLowerCase().includes(lowerQuery) ||
-                        secret.id.toLowerCase().includes(lowerQuery),
-                    )
-                  : items;
-                if (filtered.length === 0) return null;
-                return (
-                  <CommandGroup key={label} heading={showGroupHeadings ? label : undefined}>
-                    {filtered.map((secret) => (
-                      <CommandItem
-                        key={secret.id}
-                        value={`${secret.name} ${secret.id}`}
-                        onSelect={() => {
-                          onSelect(secret.id);
-                          setOpen(false);
-                          setQuery("");
-                        }}
-                      >
-                        <span className="truncate">{secret.name}</span>
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                );
-              })}
               {onCreateNew && (
                 <>
-                  {secrets.length > 0 && <CommandSeparator />}
                   <CommandGroup>
                     <CommandItem
                       value="__create_new__"
@@ -143,8 +138,40 @@ export function SecretPicker(props: {
                       <span>New secret</span>
                     </CommandItem>
                   </CommandGroup>
+                  {secrets.length > 0 && <CommandSeparator />}
                 </>
               )}
+              {groups.map(([label, items]) => {
+                const lowerQuery = query.toLowerCase();
+                const filtered = lowerQuery
+                  ? items.filter(
+                      (secret) =>
+                        secret.name.toLowerCase().includes(lowerQuery) ||
+                        secret.id.toLowerCase().includes(lowerQuery),
+                    )
+                  : items;
+                if (filtered.length === 0) return null;
+                return (
+                  <CommandGroup key={label} heading={showGroupHeadings ? label : undefined}>
+                    {filtered.map((secret) => (
+                      <CommandItem
+                        key={`${secret.scopeId}:${secret.id}`}
+                        value={`${secret.name} ${secret.id} ${secret.scopeId}`}
+                        onSelect={() => {
+                          onSelect(secret.id, secret.scopeId);
+                          setOpen(false);
+                          setQuery("");
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{secret.name}</span>
+                        <Badge variant="outline" className="ml-2 shrink-0 text-[10px]">
+                          {scopeLabel(secret.scopeId)}
+                        </Badge>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                );
+              })}
             </CommandList>
           </Command>
         </PopoverContent>

@@ -1,20 +1,14 @@
-export { parse } from "./parse";
+export { parse, resolveSpecText, fetchSpecText } from "./parse";
 export { extract } from "./extract";
-export {
-  invoke,
-  invokeWithLayer,
-  resolveHeaders,
-  annotationsForOperation,
-} from "./invoke";
+export { invoke, invokeWithLayer, resolveHeaders, annotationsForOperation } from "./invoke";
 export {
   openApiPlugin,
   type OpenApiSpecConfig,
+  type OpenApiConfigureCredentialInput,
+  type OpenApiConfigureInput,
   type OpenApiPluginExtension,
   type OpenApiPluginOptions,
-  type OpenApiUpdateSourceInput,
-  type OpenApiStartOAuthInput,
-  type OpenApiStartOAuthResponse,
-  type OpenApiCompleteOAuthInput,
+  type OpenApiSourceRef,
 } from "./plugin";
 export {
   openapiSchema,
@@ -52,12 +46,12 @@ export {
 } from "./errors";
 
 export {
+  EncodingObject,
   ExtractedOperation,
   ExtractionResult,
-  InvocationConfig,
   InvocationResult,
-  OAuth2Auth,
-  OpenApiOAuthSession,
+  MediaBinding,
+  OAuth2SourceConfig,
   OperationBinding,
   OperationParameter,
   OperationRequestBody,

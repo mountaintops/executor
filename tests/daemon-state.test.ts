@@ -2,11 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "@effect/platform";
-import * as PlatformError from "@effect/platform/Error";
-import * as PlatformPath from "@effect/platform/Path";
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, FileSystem, Layer, Path, PlatformError } from "effect";
 
 import {
   acquireDaemonStartLock,
@@ -23,11 +20,11 @@ import {
 } from "../apps/cli/src/daemon-state";
 
 const fileSystemError = (method: string, cause: unknown) =>
-  new PlatformError.SystemError({
+  PlatformError.systemError({
+    _tag: "Unknown",
     module: "FileSystem",
     method,
-    reason: "Unknown",
-    description: cause instanceof Error ? cause.message : String(cause),
+    description: "FileSystem operation failed",
     cause,
   });
 
@@ -49,30 +46,33 @@ const fileSystemLayer = FileSystem.layerNoop({
     }),
   remove: (path, options) =>
     Effect.tryPromise({
-      try: () => rm(path, { recursive: options?.recursive ?? false, force: options?.force ?? false }),
+      try: () =>
+        rm(path, { recursive: options?.recursive ?? false, force: options?.force ?? false }),
       catch: (cause) => fileSystemError("remove", cause),
     }),
 });
 
-const daemonStateLayer = Layer.merge(fileSystemLayer, PlatformPath.layer);
+const daemonStateLayer = Layer.merge(fileSystemLayer, Path.layer);
 
-const withDaemonDataDir = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | PlatformPath.Path>) =>
-  Effect.gen(function* () {
-    const prev = process.env.EXECUTOR_DATA_DIR;
-    const dir = mkdtempSync(join(tmpdir(), "executor-daemon-state-test-"));
-    process.env.EXECUTOR_DATA_DIR = dir;
-
-    try {
-      return yield* effect;
-    } finally {
-      if (prev === undefined) {
-        delete process.env.EXECUTOR_DATA_DIR;
-      } else {
-        process.env.EXECUTOR_DATA_DIR = prev;
-      }
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }).pipe(Effect.provide(daemonStateLayer));
+const withDaemonDataDir = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const prev = process.env.EXECUTOR_DATA_DIR;
+      const dir = mkdtempSync(join(tmpdir(), "executor-daemon-state-test-"));
+      process.env.EXECUTOR_DATA_DIR = dir;
+      return { dir, prev };
+    }),
+    () => effect,
+    ({ dir, prev }) =>
+      Effect.sync(() => {
+        if (prev === undefined) {
+          delete process.env.EXECUTOR_DATA_DIR;
+        } else {
+          process.env.EXECUTOR_DATA_DIR = prev;
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }),
+  ).pipe(Effect.provide(daemonStateLayer));
 
 describe("daemon state", () => {
   it("normalizes local host aliases", () => {

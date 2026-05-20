@@ -5,144 +5,98 @@
 // operation set. Raw-text sources assert the no-op branch.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import http from "node:http";
-import { AddressInfo } from "node:net";
+import { Effect, Schema } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 
-import { ScopeId } from "@executor/sdk";
+import { ScopeId } from "@executor-js/sdk";
+import {
+  makeOpenApiHttpApiTestSpecPayload,
+  serveMutableOpenApiSpecTestServer,
+} from "@executor-js/plugin-openapi/testing";
 
 import { asOrg } from "./__test-harness__/api-harness";
 
-const specV1 = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Refresh Fixture", version: "1.0.0" },
-  paths: {
-    "/ping": {
-      get: {
-        operationId: "ping",
-        summary: "ping",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-  },
-});
+const PingEndpoint = HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown });
+const PongEndpoint = HttpApiEndpoint.get("pong", "/pong", { success: Schema.Unknown });
 
-const specV2 = JSON.stringify({
-  openapi: "3.0.0",
-  info: { title: "Refresh Fixture", version: "2.0.0" },
-  paths: {
-    "/ping": {
-      get: {
-        operationId: "ping",
-        summary: "ping",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-    "/pong": {
-      get: {
-        operationId: "pong",
-        summary: "pong",
-        responses: { "200": { description: "ok" } },
-      },
-    },
-  },
-});
+const RefreshGroupV1 = HttpApiGroup.make("default", { topLevel: true }).add(PingEndpoint);
+const RefreshGroupV2 = HttpApiGroup.make("default", { topLevel: true })
+  .add(PingEndpoint)
+  .add(PongEndpoint);
 
-// Mutable ref: tests flip `current` between v1 and v2 around the
-// refresh call. Using a single server keeps the URL stable across
-// both addSpec and refresh — the plugin persists the original URL,
-// so the second fetch goes back to the same endpoint.
-const serveMutableSpec = () => {
-  const state = { current: specV1, requests: 0 };
-  const server = http.createServer((req, res) => {
-    state.requests++;
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(state.current);
-  });
-  return new Promise<{
-    baseUrl: string;
-    setSpec: (s: string) => void;
-    requestCount: () => number;
-    close: () => Promise<void>;
-  }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      resolve({
-        baseUrl: `http://127.0.0.1:${port}`,
-        setSpec: (s) => {
-          state.current = s;
-        },
-        requestCount: () => state.requests,
-        close: () =>
-          new Promise((r) => {
-            server.close(() => r());
-          }),
-      });
-    });
-  });
-};
+const refreshApi = (version: "1.0.0" | "2.0.0") =>
+  HttpApi.make("refreshFixture")
+    .add(version === "1.0.0" ? RefreshGroupV1 : RefreshGroupV2)
+    .annotateMerge(OpenApi.annotations({ title: "Refresh Fixture", version }));
+
+const makeRefreshSpecText = () => makeOpenApiHttpApiTestSpecPayload(refreshApi("1.0.0")).spec;
 
 describe("sources.refresh (HTTP)", () => {
   it.effect("addSpec from URL → canRefresh:true; refresh re-fetches and updates tools", () =>
-    Effect.gen(function* () {
-      const server = yield* Effect.promise(() => serveMutableSpec());
-      try {
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveMutableOpenApiSpecTestServer({
+          initialApi: refreshApi("1.0.0"),
+        });
         const org = `org_${crypto.randomUUID()}`;
         const namespace = `ns_${crypto.randomUUID().replace(/-/g, "_")}`;
 
         yield* asOrg(org, (client) =>
           client.openapi.addSpec({
-            path: { scopeId: ScopeId.make(org) },
-            payload: { spec: `${server.baseUrl}/spec.json`, namespace },
+            params: { scopeId: ScopeId.make(org) },
+            payload: {
+              spec: { kind: "url", url: server.specUrl },
+              name: namespace,
+              baseUrl: server.baseUrl,
+              namespace,
+            },
           }),
         );
 
         const before = yield* asOrg(org, (client) =>
-          client.sources.list({ path: { scopeId: ScopeId.make(org) } }),
+          client.sources.list({ params: { scopeId: ScopeId.make(org) } }),
         );
         const beforeSource = before.find((s) => s.id === namespace);
         expect(beforeSource?.canRefresh).toBe(true);
 
         const fetchedBefore = yield* asOrg(org, (client) =>
           client.openapi.getSource({
-            path: { scopeId: ScopeId.make(org), namespace },
+            params: { scopeId: ScopeId.make(org), namespace },
           }),
         );
-        expect(fetchedBefore?.config.sourceUrl).toBe(`${server.baseUrl}/spec.json`);
+        expect(fetchedBefore?.config.sourceUrl).toBe(server.specUrl);
 
         const beforeTools = yield* asOrg(org, (client) =>
           client.sources.tools({
-            path: { scopeId: ScopeId.make(org), sourceId: namespace },
+            params: { scopeId: ScopeId.make(org), sourceId: namespace },
           }),
         );
         expect(beforeTools.length).toBe(1);
-        expect(beforeTools.some((t) => t.name.startsWith("ping"))).toBe(true);
-        expect(beforeTools.some((t) => t.name.startsWith("pong"))).toBe(false);
+        expect(beforeTools.some((t) => t.id.endsWith(".default.ping"))).toBe(true);
+        expect(beforeTools.some((t) => t.id.endsWith(".default.pong"))).toBe(false);
 
         // Flip the remote to v2 (adds `pong`) and trigger refresh.
-        server.setSpec(specV2);
-        const requestsBefore = server.requestCount();
+        yield* server.setApi(refreshApi("2.0.0"));
+        const requestsBefore = yield* server.requestCount;
 
         const refreshResult = yield* asOrg(org, (client) =>
           client.sources.refresh({
-            path: { scopeId: ScopeId.make(org), sourceId: namespace },
+            params: { scopeId: ScopeId.make(org), sourceId: namespace },
           }),
         );
         expect(refreshResult.refreshed).toBe(true);
-        expect(server.requestCount()).toBeGreaterThan(requestsBefore);
+        expect(yield* server.requestCount).toBeGreaterThan(requestsBefore);
 
         const afterTools = yield* asOrg(org, (client) =>
           client.sources.tools({
-            path: { scopeId: ScopeId.make(org), sourceId: namespace },
+            params: { scopeId: ScopeId.make(org), sourceId: namespace },
           }),
         );
         expect(afterTools.length).toBe(2);
-        expect(afterTools.some((t) => t.name.startsWith("ping"))).toBe(true);
-        expect(afterTools.some((t) => t.name.startsWith("pong"))).toBe(true);
-      } finally {
-        yield* Effect.promise(() => server.close());
-      }
-    }),
+        expect(afterTools.some((t) => t.id.endsWith(".default.ping"))).toBe(true);
+        expect(afterTools.some((t) => t.id.endsWith(".default.pong"))).toBe(true);
+      }),
+    ),
   );
 
   it.effect("addSpec from raw text → canRefresh:false; refresh is a no-op", () =>
@@ -152,13 +106,18 @@ describe("sources.refresh (HTTP)", () => {
 
       yield* asOrg(org, (client) =>
         client.openapi.addSpec({
-          path: { scopeId: ScopeId.make(org) },
-          payload: { spec: specV1, namespace },
+          params: { scopeId: ScopeId.make(org) },
+          payload: {
+            spec: { kind: "blob", value: makeRefreshSpecText() },
+            name: namespace,
+            baseUrl: "https://api.example.test",
+            namespace,
+          },
         }),
       );
 
       const sources = yield* asOrg(org, (client) =>
-        client.sources.list({ path: { scopeId: ScopeId.make(org) } }),
+        client.sources.list({ params: { scopeId: ScopeId.make(org) } }),
       );
       const row = sources.find((s) => s.id === namespace);
       expect(row?.canRefresh).toBe(false);
@@ -168,7 +127,7 @@ describe("sources.refresh (HTTP)", () => {
       // server should not 500 if a caller slips through.
       const result = yield* asOrg(org, (client) =>
         client.sources.refresh({
-          path: { scopeId: ScopeId.make(org), sourceId: namespace },
+          params: { scopeId: ScopeId.make(org), sourceId: namespace },
         }),
       );
       expect(result.refreshed).toBe(true);

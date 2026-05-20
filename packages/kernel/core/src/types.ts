@@ -23,7 +23,7 @@ export interface Tool {
 
 /** Invoke a tool by path from inside a sandbox */
 export interface SandboxToolInvoker {
-  invoke(input: { path: string; args: unknown }): Effect.Effect<unknown, unknown>;
+  invoke(input: { path: string; args: unknown }): Effect.Effect<unknown, unknown, never>;
 }
 
 /** Result of executing code in a sandbox */
@@ -50,7 +50,7 @@ export interface CodeExecutor<E extends Cause.YieldableError = CodeExecutionErro
 export const unknownInputSchema: StandardSchema = {
   "~standard": {
     version: 1,
-    vendor: "@executor/codemode-core",
+    vendor: "@executor-js/codemode-core",
     validate: (value: unknown) => ({
       value,
     }),

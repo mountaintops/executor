@@ -8,10 +8,5 @@ export default defineConfig({
   dts: false,
   sourcemap: true,
   clean: true,
-  external: [
-    /^effect/,
-    /^@effect\//,
-    "commander",
-    "jiti",
-  ],
+  external: [/^effect/, /^@effect\//, "commander", "jiti"],
 });

@@ -1,17 +1,21 @@
 import { Effect } from "effect";
-import { GenericServerException, NotFoundException } from "@workos-inc/node/worker";
 
 import {
-  defineSchema,
+  dateColumn,
+  type FumaRow,
+  type FumaTables,
+  nullableTextColumn,
+  scopedExecutorTable,
   StorageError,
   type SecretProvider,
   type StorageDeps,
   type StorageFailure,
-} from "@executor/sdk";
+  textColumn,
+} from "@executor-js/sdk/core";
 
 import {
-  WorkOSVaultClientError,
   type WorkOSVaultClient,
+  type WorkOSVaultClientError,
   type WorkOSVaultObject,
 } from "./client";
 
@@ -33,66 +37,42 @@ const KEK_NOT_READY_BACKOFF_MS = 1000;
 // table just tracks what we know about and lets us enumerate.
 // ---------------------------------------------------------------------------
 
-export const workosVaultSchema = defineSchema({
-  workos_vault_metadata: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      purpose: { type: "string", required: false },
-      created_at: { type: "date", required: true },
-    },
-  },
-});
+export const workosVaultSchema = {
+  workos_vault_metadata: scopedExecutorTable("workos_vault_metadata", {
+    name: textColumn("name"),
+    purpose: nullableTextColumn("purpose"),
+    created_at: dateColumn("created_at"),
+  }),
+} satisfies FumaTables;
 
 export type WorkosVaultSchema = typeof workosVaultSchema;
 
-interface MetadataRow {
-  readonly id: string;
-  readonly scope_id: string;
-  readonly name: string;
-  readonly purpose?: string | null;
-  readonly created_at: Date;
-}
+type MetadataRow = FumaRow<WorkosVaultSchema["workos_vault_metadata"]>;
 
 // ---------------------------------------------------------------------------
 // WorkosVaultStore — typed metadata-store the plugin uses internally.
 // ---------------------------------------------------------------------------
 
 export interface WorkosVaultStore {
-  readonly get: (
-    id: string,
-    scope: string,
-  ) => Effect.Effect<MetadataRow | null, StorageFailure>;
+  readonly get: (id: string, scope: string) => Effect.Effect<MetadataRow | null, StorageFailure>;
   readonly upsert: (row: MetadataRow) => Effect.Effect<void, StorageFailure>;
-  readonly remove: (
-    id: string,
-    scope: string,
-  ) => Effect.Effect<boolean, StorageFailure>;
+  readonly remove: (id: string, scope: string) => Effect.Effect<boolean, StorageFailure>;
   readonly list: () => Effect.Effect<readonly MetadataRow[], StorageFailure>;
 }
 
-export const makeWorkosVaultStore = (
-  deps: StorageDeps<WorkosVaultSchema>,
-): WorkosVaultStore => {
-  const { adapter: db } = deps;
+export const makeWorkosVaultStore = (deps: StorageDeps<WorkosVaultSchema>): WorkosVaultStore => {
+  const { fuma } = deps;
+  const scopeIds = deps.scopes.map((scope) => String(scope.id));
 
   // Every read/write to a specific row pins BOTH `id` and `scope_id`.
-  // The store runs behind the SDK's scoped adapter (which auto-injects
-  // `scope_id IN (stack)`), so a bare `{id}` filter resolves to any
-  // row in the stack in adapter-iteration order. For shadowed rows
-  // (same id at multiple scopes), that landed the update/delete on the
-  // wrong scope. Callers thread the target scope in so every mutation
-  // targets a single, unambiguous row.
+  // Scope is a normal FumaDB predicate here, not hidden behavior.
   const findScoped = (id: string, scope: string) =>
-    db
-      .findOne({
-        model: "workos_vault_metadata",
-        where: [
-          { field: "id", value: id },
-          { field: "scope_id", value: scope },
-        ],
-      })
+    fuma
+      .use("workos_vault_metadata.findFirst", (db) =>
+        db.findFirst("workos_vault_metadata", {
+          where: (b) => b.and(b("id", "=", id), b("scope_id", "=", scope)),
+        }),
+      )
       .pipe(Effect.map((row): MetadataRow | null => row ?? null));
 
   return {
@@ -101,53 +81,55 @@ export const makeWorkosVaultStore = (
       Effect.gen(function* () {
         const existing = yield* findScoped(row.id, row.scope_id);
         if (existing) {
-          yield* db.update({
-            model: "workos_vault_metadata",
-            where: [
-              { field: "id", value: row.id },
-              { field: "scope_id", value: row.scope_id },
-            ],
-            update: {
-              name: row.name,
-              purpose: row.purpose ?? null,
-              // created_at preserved from existing
-            },
-          });
+          yield* fuma.use("workos_vault_metadata.updateMany", (db) =>
+            db.updateMany("workos_vault_metadata", {
+              where: (b) => b.and(b("id", "=", row.id), b("scope_id", "=", row.scope_id)),
+              set: {
+                name: row.name,
+                purpose: row.purpose ?? null,
+              },
+            }),
+          );
           return;
         }
-        yield* db.create({
-          model: "workos_vault_metadata",
-          data: {
-            id: row.id,
-            scope_id: row.scope_id,
-            name: row.name,
-            purpose: row.purpose ?? null,
-            created_at: row.created_at,
-          },
-          forceAllowId: true,
-        });
+        yield* fuma
+          .use("workos_vault_metadata.create", (db) =>
+            db.create("workos_vault_metadata", {
+              id: row.id,
+              scope_id: row.scope_id,
+              name: row.name,
+              purpose: row.purpose ?? null,
+              created_at: row.created_at,
+            }),
+          )
+          .pipe(Effect.asVoid);
       }),
     remove: (id, scope) =>
       Effect.gen(function* () {
         const existing = yield* findScoped(id, scope);
         if (!existing) return false;
-        yield* db.delete({
-          model: "workos_vault_metadata",
-          where: [
-            { field: "id", value: id },
-            { field: "scope_id", value: scope },
-          ],
-        });
+        yield* fuma.use("workos_vault_metadata.deleteMany", (db) =>
+          db.deleteMany("workos_vault_metadata", {
+            where: (b) => b.and(b("id", "=", id), b("scope_id", "=", scope)),
+          }),
+        );
         return true;
       }),
     list: () =>
-      db.findMany({ model: "workos_vault_metadata" }).pipe(
-        Effect.map((rows): readonly MetadataRow[] =>
-          [...rows].sort(
-            (l, r) => l.created_at.getTime() - r.created_at.getTime(),
+      fuma
+        .use("workos_vault_metadata.findMany", (db) =>
+          db.findMany("workos_vault_metadata", {
+            where: (b) =>
+              scopeIds.length === 1
+                ? b("scope_id", "=", scopeIds[0]!)
+                : b("scope_id", "in", [...scopeIds]),
+          }),
+        )
+        .pipe(
+          Effect.map((rows): readonly MetadataRow[] =>
+            [...rows].sort((l, r) => l.created_at.getTime() - r.created_at.getTime()),
           ),
         ),
-      ),
   };
 };
 
@@ -155,35 +137,11 @@ export const makeWorkosVaultStore = (
 // Vault helpers — scope-prefixed object naming + 409-retry upsert.
 // ---------------------------------------------------------------------------
 
-const unwrapVaultError = (error: unknown): unknown =>
-  error instanceof WorkOSVaultClientError ? error.cause : error;
+const isStatusError = (error: WorkOSVaultClientError, status: number): boolean =>
+  error.status === status;
 
-const isStatusError = (error: unknown, status: number): boolean => {
-  const cause = unwrapVaultError(error);
-  return (
-    ((cause instanceof GenericServerException ||
-      cause instanceof NotFoundException) &&
-      cause.status === status) ||
-    (typeof cause === "object" &&
-      cause !== null &&
-      "status" in cause &&
-      typeof (cause as { status: unknown }).status === "number" &&
-      (cause as { status: number }).status === status)
-  );
-};
-
-const isKekNotReadyError = (error: unknown): boolean => {
-  const cause = unwrapVaultError(error);
-  const message =
-    cause instanceof Error
-      ? cause.message
-      : typeof cause === "string"
-        ? cause
-        : typeof cause === "object" && cause !== null && "message" in cause
-          ? String((cause as { message: unknown }).message)
-          : "";
-  return message.includes("KEK was created but is not yet ready");
-};
+const isKekNotReadyError = (error: WorkOSVaultClientError): boolean =>
+  error.retryKind === "kek_not_ready";
 
 // Default context builder. Each semantic piece of a scope id lives in
 // its own vault-context key so WorkOS's KEK matcher sees individual
@@ -198,13 +156,9 @@ const isKekNotReadyError = (error: unknown): boolean => {
 //
 // Callers with other scope shapes can override via
 // `WorkOSVaultSecretProviderOptions.contextForScope`.
-export type WorkOSVaultContextForScope = (
-  scopeId: string,
-) => Record<string, string>;
+export type WorkOSVaultContextForScope = (scopeId: string) => Record<string, string>;
 
-export const defaultWorkOSVaultContextForScope: WorkOSVaultContextForScope = (
-  scopeId,
-) => {
+export const defaultWorkOSVaultContextForScope: WorkOSVaultContextForScope = (scopeId) => {
   const m = scopeId.match(/^user-org:([^:]+):([^:]+)$/);
   const base: Record<string, string> = {
     app: "executor",
@@ -214,11 +168,13 @@ export const defaultWorkOSVaultContextForScope: WorkOSVaultContextForScope = (
   return base;
 };
 
-const secretObjectName = (
-  prefix: string,
-  scopeId: string,
-  secretId: string,
-): string => `${prefix}/${scopeId}/secrets/${secretId}`;
+const encodeObjectNameSegment = (segment: string): string => encodeURIComponent(segment);
+
+const secretObjectName = (prefix: string, scopeId: string, secretId: string): string =>
+  `${prefix}/${encodeObjectNameSegment(scopeId)}/secrets/${encodeObjectNameSegment(secretId)}`;
+
+const legacySecretObjectName = (prefix: string, scopeId: string, secretId: string): string =>
+  `${prefix}/${scopeId}/secrets/${secretId}`;
 
 const loadSecretObject = (
   client: WorkOSVaultClient,
@@ -227,9 +183,24 @@ const loadSecretObject = (
   secretId: string,
 ): Effect.Effect<WorkOSVaultObject | null, WorkOSVaultClientError, never> =>
   client.readObjectByName(secretObjectName(prefix, scopeId, secretId)).pipe(
-    Effect.catchAll((error) =>
-      isStatusError(error, 404) ? Effect.succeed(null) : Effect.fail(error),
-    ),
+    Effect.catch((error: WorkOSVaultClientError) => {
+      if (isStatusError(error, 400)) return Effect.succeed(null);
+      if (!isStatusError(error, 404)) return Effect.fail(error);
+
+      const encodedName = secretObjectName(prefix, scopeId, secretId);
+      const legacyName = legacySecretObjectName(prefix, scopeId, secretId);
+      if (legacyName === encodedName) return Effect.succeed(null);
+
+      return client
+        .readObjectByName(legacyName)
+        .pipe(
+          Effect.catch((legacyError: WorkOSVaultClientError) =>
+            isStatusError(legacyError, 404) || isStatusError(legacyError, 400)
+              ? Effect.succeed(null)
+              : Effect.fail(legacyError),
+          ),
+        );
+    }),
   );
 
 const upsertSecretValue = (
@@ -262,7 +233,7 @@ const upsertSecretValue = (
         context: contextForScope(scopeId),
       });
     }).pipe(
-      Effect.catchAll((error) => {
+      Effect.catch((error: WorkOSVaultClientError) => {
         if (remainingConflictAttempts > 1 && isStatusError(error, 409)) {
           return attemptWrite(remainingConflictAttempts - 1, remainingKekAttempts);
         }
@@ -273,9 +244,7 @@ const upsertSecretValue = (
               `(${MAX_KEK_NOT_READY_ATTEMPTS - remainingKekAttempts + 1}/${MAX_KEK_NOT_READY_ATTEMPTS})`,
           );
           return Effect.sleep(KEK_NOT_READY_BACKOFF_MS).pipe(
-            Effect.flatMap(() =>
-              attemptWrite(remainingConflictAttempts, remainingKekAttempts - 1),
-            ),
+            Effect.flatMap(() => attemptWrite(remainingConflictAttempts, remainingKekAttempts - 1)),
           );
         }
         if (isKekNotReadyError(error)) {
@@ -304,12 +273,6 @@ const deleteSecretValue = (
     return true;
   });
 
-const formatVaultError = (error: unknown): StorageError => {
-  const cause = unwrapVaultError(error);
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return new StorageError({ message, cause });
-};
-
 // ---------------------------------------------------------------------------
 // makeWorkOSVaultSecretProvider — builds a SecretProvider backed by
 // WorkOS Vault for values and the plugin's own metadata table for
@@ -335,8 +298,7 @@ export const makeWorkOSVaultSecretProvider = (
   options: WorkOSVaultSecretProviderOptions,
 ): SecretProvider => {
   const prefix = options.objectPrefix ?? DEFAULT_OBJECT_PREFIX;
-  const contextForScope =
-    options.contextForScope ?? defaultWorkOSVaultContextForScope;
+  const contextForScope = options.contextForScope ?? defaultWorkOSVaultContextForScope;
   const { client, store } = options;
 
   return {
@@ -348,7 +310,13 @@ export const makeWorkOSVaultSecretProvider = (
         const meta = yield* store.get(id, scope);
         if (!meta) return null;
         const object = yield* loadSecretObject(client, prefix, scope, id).pipe(
-          Effect.mapError(formatVaultError),
+          Effect.mapError(
+            (error) =>
+              new StorageError({
+                message: "WorkOS Vault secret read failed",
+                cause: error,
+              }),
+          ),
         );
         if (!object || !object.value) return null;
         return object.value;
@@ -358,7 +326,13 @@ export const makeWorkOSVaultSecretProvider = (
       Effect.gen(function* () {
         const existing = yield* store.get(id, scope);
         yield* upsertSecretValue(client, prefix, scope, id, value, contextForScope).pipe(
-          Effect.mapError(formatVaultError),
+          Effect.mapError(
+            (error) =>
+              new StorageError({
+                message: "WorkOS Vault secret write failed",
+                cause: error,
+              }),
+          ),
         );
         yield* store.upsert({
           id,
@@ -374,15 +348,19 @@ export const makeWorkOSVaultSecretProvider = (
         const meta = yield* store.get(id, scope);
         if (!meta) return false;
         yield* deleteSecretValue(client, prefix, scope, id).pipe(
-          Effect.mapError(formatVaultError),
+          Effect.mapError(
+            (error) =>
+              new StorageError({
+                message: "WorkOS Vault secret delete failed",
+                cause: error,
+              }),
+          ),
         );
         yield* store.remove(id, scope);
         return true;
       }),
 
     list: () =>
-      store
-        .list()
-        .pipe(Effect.map((rows) => rows.map((r) => ({ id: r.id, name: r.name })))),
+      store.list().pipe(Effect.map((rows) => rows.map((r) => ({ id: r.id, name: r.name })))),
   };
 };

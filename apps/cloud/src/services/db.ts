@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Database service — Postgres via postgres.js (porsager)
+// Database service — Postgres through Drizzle
 // ---------------------------------------------------------------------------
 //
 // We use `postgres` (not `pg`) because Cloudflare Workers forbids sharing
@@ -7,6 +7,9 @@
 // hangs when its Client is reused across requests. postgres.js creates a
 // fresh TCP socket per Effect scope, which aligns with Workers' per-request
 // I/O model. See personal-notes/pg-cloudflare-sockets-dev.md.
+//
+// Tests point DATABASE_URL at a PGlite Postgres-compatible socket, so they use
+// the same postgres.js path as production.
 //
 // Migrations are run out-of-band (e.g. via a separate script or CI step),
 // not at request time — Cloudflare Workers cannot read the filesystem.
@@ -29,15 +32,22 @@ export const combinedSchema = { ...cloudSchema, ...executorSchema };
 export type DrizzleDb = PgDatabase<any, any, any>;
 
 export type DbServiceShape = {
-  readonly sql: Sql;
+  readonly sql?: Sql;
   readonly db: DrizzleDb;
 };
 
-const resolveConnectionString = () => {
-  // In local dev prefer an explicit DATABASE_URL (direct connection to
-  // the PGlite socket server) so we bypass Miniflare's Hyperdrive proxy.
-  // In production fall back to the Hyperdrive binding.
-  return env.DATABASE_URL || env.HYPERDRIVE?.connectionString || "";
+type DbResource = DbServiceShape & {
+  readonly close: () => Effect.Effect<void>;
+};
+
+export const resolveConnectionString = () => {
+  // Production should always use Hyperdrive when the binding exists. Keeping
+  // DATABASE_URL as a higher-priority fallback made it too easy for a deployed
+  // secret to silently bypass Hyperdrive.
+  if (env.EXECUTOR_DIRECT_DATABASE_URL === "true" && env.DATABASE_URL) {
+    return env.DATABASE_URL;
+  }
+  return env.HYPERDRIVE?.connectionString || env.DATABASE_URL || "";
 };
 
 const makeSql = (): Sql =>
@@ -45,33 +55,41 @@ const makeSql = (): Sql =>
     // max=1 is correct for Hyperdrive: one request, one connection. The
     // earlier deadlock under ctx.transaction (outer sql.begin holding the
     // only connection while nested writes pulled fresh ones) is fixed in
-    // @executor/sdk — nested writes now thread through the active tx
-    // handle via a FiberRef in buildAdapterRouter, so they reuse the same
-    // connection and never contend with the outer sql.begin.
+    // @executor-js/sdk — nested writes now thread through the active FumaDB tx
+    // handle, so they reuse the same connection and never contend with the
+    // outer sql.begin.
     max: 1,
     idle_timeout: 0,
     max_lifetime: 60,
     connect_timeout: 10,
+    fetch_types: false,
+    prepare: true,
     onnotice: () => undefined,
   });
 
-export class DbService extends Context.Tag("@executor/cloud/DbService")<
-  DbService,
-  DbServiceShape
->() {
-  static Live = Layer.scoped(
-    this,
-    Effect.acquireRelease(
-      Effect.sync((): DbServiceShape => {
-        const sql = makeSql();
-        return { sql, db: drizzle(sql, { schema: combinedSchema }) as DrizzleDb };
+const makePostgresResource = (): DbResource => {
+  const sql = makeSql();
+  return {
+    sql,
+    db: drizzle(sql, { schema: combinedSchema }) as DrizzleDb,
+    close: () =>
+      Effect.sync(() => {
+        void Effect.runFork(
+          Effect.ignore(
+            Effect.tryPromise({
+              try: () => sql.end({ timeout: 0 }),
+              catch: (cause) => cause,
+            }),
+          ),
+        );
       }),
-      ({ sql }) =>
-        // Fire-and-forget: the Terminate round-trip sometimes hangs, and
-        // we don't need to block scope close waiting for it.
-        Effect.sync(() => {
-          sql.end({ timeout: 0 }).catch(() => undefined);
-        }),
-    ),
+  };
+};
+
+export class DbService extends Context.Service<DbService, DbServiceShape>()(
+  "@executor-js/cloud/DbService",
+) {
+  static Live = Layer.effect(this)(
+    Effect.acquireRelease(Effect.sync(makePostgresResource), (resource) => resource.close()),
   );
 }

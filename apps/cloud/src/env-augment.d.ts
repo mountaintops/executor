@@ -11,18 +11,23 @@ declare global {
       AXIOM_TRACES_URL?: string;
       AXIOM_TRACES_SAMPLE_RATIO?: string;
       SENTRY_DSN?: string;
+      VITE_PUBLIC_SENTRY_DSN?: string;
+      VITE_PUBLIC_POSTHOG_KEY?: string;
+      VITE_PUBLIC_POSTHOG_HOST?: string;
 
-      // Datastore (dev only — prod uses HYPERDRIVE binding)
+      // Datastore. Prod uses HYPERDRIVE when the binding exists; direct
+      // DATABASE_URL is only selected when explicitly requested for local/test.
       DATABASE_URL?: string;
+      EXECUTOR_DIRECT_DATABASE_URL?: string;
 
       // Billing
       AUTUMN_SECRET_KEY?: string;
 
       // MCP
-      MCP_SESSION_REQUEST_SCOPED_RUNTIME?: string;
       EXECUTOR_MCP_DEBUG?: string;
       MCP_AUTHKIT_DOMAIN?: string;
       MCP_RESOURCE_ORIGIN?: string;
+      NODE_ENV?: string;
 
       // Shared with frontend
       VITE_PUBLIC_SITE_URL?: string;

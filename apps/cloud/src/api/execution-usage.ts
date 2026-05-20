@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import type * as Cause from "effect/Cause";
 
-import type { ExecutionEngine } from "@executor/execution";
+import type { ExecutionEngine } from "@executor-js/execution";
 
 export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
   organizationId: string,
@@ -18,5 +18,6 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
       .pipe(Effect.tap(() => Effect.sync(() => trackUsage(organizationId)))),
   // resume doesn't count as usage
   resume: (executionId, response) => engine.resume(executionId, response),
+  getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
   getDescription: engine.getDescription,
 });

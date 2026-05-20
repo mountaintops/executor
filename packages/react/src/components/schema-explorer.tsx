@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { ChevronRight } from "lucide-react";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 
@@ -24,6 +24,17 @@ type JsonSchema = {
   default?: unknown;
   nullable?: boolean;
   format?: string;
+};
+
+export const safeSchemaValueLabel = (value: unknown): string => {
+  if (typeof value === "bigint") return `${value.toString()}n`;
+  try {
+    const label = JSON.stringify(value);
+    if (label === undefined) return String(value);
+    return label.length > 120 ? `${label.slice(0, 117)}...` : label;
+  } catch {
+    return "[unavailable]";
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -64,11 +75,11 @@ const getTypeLabel = (schema: JsonSchema, root: JsonSchema): string => {
     return getRefName(schema.$ref) ?? "ref";
   }
 
-  if (schema.const !== undefined) return JSON.stringify(schema.const);
+  if (schema.const !== undefined) return safeSchemaValueLabel(schema.const);
 
   if (schema.enum) {
     if (schema.enum.length <= 3) {
-      return schema.enum.map((v) => JSON.stringify(v)).join(" | ");
+      return schema.enum.map((v) => safeSchemaValueLabel(v)).join(" | ");
     }
     return `enum (${schema.enum.length})`;
   }
@@ -263,7 +274,7 @@ function PropertyRow(props: {
             ))}
           {schema.default !== undefined && (
             <p className="text-xs leading-5 text-muted-foreground">
-              = {JSON.stringify(schema.default)}
+              = {safeSchemaValueLabel(schema.default)}
             </p>
           )}
         </div>
@@ -297,11 +308,7 @@ function PropertyChildren(props: { schema: JsonSchema; root: JsonSchema; depth: 
   const { schema: rawSchema, root, depth } = props;
 
   if (depth > 6) {
-    return (
-      <p className="px-4 py-2 text-sm text-muted-foreground">
-        Nested too deep to display.
-      </p>
-    );
+    return <p className="px-4 py-2 text-sm text-muted-foreground">Nested too deep to display.</p>;
   }
 
   const schema = deepResolve(rawSchema, root);
@@ -415,15 +422,36 @@ const countTopLevelFields = (schema: JsonSchema): number => {
 // SchemaExplorer — main export
 // ---------------------------------------------------------------------------
 
-export function SchemaExplorer(props: { schema: unknown; title?: string }) {
-  const schema = props.schema as JsonSchema | undefined;
-  if (!schema) return null;
+const asSchemaDefinitions = (value: unknown): Record<string, JsonSchema> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, JsonSchema>)
+    : undefined;
 
-  const hasContent = isExpandable(schema, schema);
+export function SchemaExplorer(props: {
+  schema: unknown;
+  schemaDefinitions?: unknown;
+  title?: string;
+}) {
+  const schema = props.schema as JsonSchema | undefined;
+  const root = useMemo(() => {
+    if (!schema) return undefined;
+    const sharedDefs = asSchemaDefinitions(props.schemaDefinitions);
+    if (!sharedDefs && !schema.$defs) return schema;
+    return {
+      ...schema,
+      $defs: {
+        ...sharedDefs,
+        ...schema.$defs,
+      },
+    };
+  }, [schema, props.schemaDefinitions]);
+  if (!schema || !root) return null;
+
+  const hasContent = isExpandable(schema, root);
   const title = props.title;
 
   if (!hasContent) {
-    const typeLabel = getTypeLabel(schema, schema);
+    const typeLabel = getTypeLabel(schema, root);
     return (
       <CardStack>
         {title && <CardStackHeader>{title}</CardStackHeader>}
@@ -436,7 +464,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
     );
   }
 
-  const fieldCount = countTopLevelFields(schema);
+  const fieldCount = countTopLevelFields(root);
   const countLabel =
     fieldCount > 0 ? `${fieldCount} ${fieldCount === 1 ? "field" : "fields"}` : null;
 
@@ -456,7 +484,7 @@ export function SchemaExplorer(props: { schema: unknown; title?: string }) {
         </CardStackHeader>
       )}
       <CardStackContent>
-        <PropertyChildren schema={schema} root={schema} depth={0} />
+        <PropertyChildren schema={schema} root={root} depth={0} />
       </CardStackContent>
     </CardStack>
   );

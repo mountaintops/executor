@@ -1,124 +1,55 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 
 import {
-  defineSchema,
+  type FumaTables,
+  type PluginStorageEntry,
   type StorageDeps,
   type StorageFailure,
-} from "@executor/sdk";
+} from "@executor-js/sdk/core";
 
 import {
   AnnotationPolicy,
-  HeaderValue,
-  InvocationConfig,
-  OAuth2Auth,
-  OpenApiOAuthSession,
+  ConfiguredHeaderBinding,
+  OAuth2SourceConfig,
   OperationBinding,
+  type ConfiguredHeaderValue,
 } from "./types";
+export {
+  StoredSourceSchema,
+  type StoredSourceSchemaType,
+  headerBindingSlot,
+  oauth2ClientIdSlot,
+  oauth2ClientSecretSlot,
+  oauth2ConnectionSlot,
+  queryParamBindingSlot,
+} from "./source-contracts";
 
-// ---------------------------------------------------------------------------
-// Schema — three tables:
-//   - openapi_source: one row per onboarded spec (baseUrl, headers, oauth2, ...)
-//   - openapi_operation: one row per operation binding keyed by tool id
-//   - openapi_oauth_session: transient session rows used during oauth onboarding
-// ---------------------------------------------------------------------------
-
-export const openapiSchema = defineSchema({
-  openapi_source: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      spec: { type: "string", required: true },
-      // Origin URL the spec was fetched from. Set when `addSpec` was
-      // invoked with an http(s) URL; null when the caller passed raw
-      // spec text. Drives `canRefresh` on the core source row and
-      // is the address re-fetched on `refreshSource`.
-      source_url: { type: "string", required: false },
-      base_url: { type: "string", required: false },
-      headers: { type: "json", required: false },
-      oauth2: { type: "json", required: false },
-      annotation_policy: { type: "json", required: false },
-      invocation_config: { type: "json", required: true },
-    },
-  },
-  openapi_operation: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      binding: { type: "json", required: true },
-    },
-  },
-  openapi_oauth_session: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      session: { type: "json", required: true },
-      created_at: { type: "date", required: true },
-    },
-  },
-});
-
+export const openapiSchema = {} satisfies FumaTables;
 export type OpenapiSchema = typeof openapiSchema;
-
-// ---------------------------------------------------------------------------
-// In-memory shapes
-// ---------------------------------------------------------------------------
 
 export interface SourceConfig {
   readonly spec: string;
-  /** Origin URL when the spec was fetched from http(s). Absent for
-   *  raw-text adds. Persisted so `refreshSource` can re-fetch. */
   readonly sourceUrl?: string;
   readonly baseUrl?: string;
   readonly namespace?: string;
-  readonly headers?: Record<string, HeaderValue>;
-  readonly oauth2?: OAuth2Auth;
+  readonly headers?: Record<string, ConfiguredHeaderValue>;
+  readonly queryParams?: Record<string, ConfiguredHeaderValue>;
+  readonly specFetchCredentials?: OpenApiSpecFetchCredentials;
+  readonly oauth2?: OAuth2SourceConfig;
   readonly annotationPolicy?: AnnotationPolicy;
+}
+
+export interface OpenApiSpecFetchCredentials {
+  readonly headers?: Record<string, ConfiguredHeaderValue>;
+  readonly queryParams?: Record<string, ConfiguredHeaderValue>;
 }
 
 export interface StoredSource {
   readonly namespace: string;
-  /** Executor scope id this source row lives in. Writes stamp this on
-   *  `scope_id`; reads return whichever scope's row the adapter's
-   *  fall-through filter sees first. */
   readonly scope: string;
   readonly name: string;
   readonly config: SourceConfig;
-  readonly invocationConfig: InvocationConfig;
 }
-
-// ---------------------------------------------------------------------------
-// Schema-class mirror of StoredSource for the API layer, where we need
-// an encodable/decodable shape for HTTP responses.
-// ---------------------------------------------------------------------------
-
-export class StoredSourceSchema extends Schema.Class<StoredSourceSchema>(
-  "OpenApiStoredSource",
-)({
-  namespace: Schema.String,
-  name: Schema.String,
-  config: Schema.Struct({
-    spec: Schema.String,
-    sourceUrl: Schema.optional(Schema.String),
-    baseUrl: Schema.optional(Schema.String),
-    namespace: Schema.optional(Schema.String),
-    headers: Schema.optional(
-      Schema.Record({ key: Schema.String, value: HeaderValue }),
-    ),
-    // Exposed so the UI can render a per-user "Connections" pane for
-    // sources onboarded with an OAuth2 preset — one OAuth2Auth per
-    // securitySchemeName, with the secret ids that back its tokens.
-    oauth2: Schema.optional(OAuth2Auth),
-    annotationPolicy: Schema.optional(AnnotationPolicy),
-  }),
-  // TODO(migration): make required once all rows have been migrated to
-  // carry invocationConfig. Left optional for decode compat with rows
-  // written before the source-level invocationConfig refactor.
-  invocationConfig: Schema.optional(InvocationConfig),
-}) {}
-
-export type StoredSourceSchemaType = typeof StoredSourceSchema.Type;
 
 export interface StoredOperation {
   readonly toolId: string;
@@ -126,173 +57,232 @@ export interface StoredOperation {
   readonly binding: OperationBinding;
 }
 
-// ---------------------------------------------------------------------------
-// Schema encode/decode — OperationBinding has Option fields, so we must use
-// Schema.encode/decode rather than plain JSON to round-trip correctly.
-// ---------------------------------------------------------------------------
+const SOURCE_COLLECTION = "source";
+const OPERATION_COLLECTION = "operation";
 
 const encodeBinding = Schema.encodeSync(OperationBinding);
 const decodeBinding = Schema.decodeUnknownSync(OperationBinding);
+const decodeBindingJson = Schema.decodeUnknownSync(Schema.fromJsonString(OperationBinding));
 
-const encodeInvocationConfig = Schema.encodeSync(InvocationConfig);
-const decodeInvocationConfig = Schema.decodeUnknownSync(InvocationConfig);
+const decodeOAuth2SourceConfigOption = Schema.decodeUnknownOption(OAuth2SourceConfig);
+const decodeOAuth2SourceConfigJsonOption = Schema.decodeUnknownOption(
+  Schema.fromJsonString(OAuth2SourceConfig),
+);
+const encodeOAuth2SourceConfig = Schema.encodeSync(OAuth2SourceConfig);
 
-const encodeOAuth2 = Schema.encodeSync(OAuth2Auth);
-const decodeOAuth2 = Schema.decodeUnknownSync(OAuth2Auth);
+const NullableString = Schema.NullOr(Schema.String);
+const OptionalNullableString = Schema.optional(NullableString);
+const ConfiguredHeaderBindingStorage = Schema.Struct({
+  kind: Schema.Literal("binding"),
+  slot: Schema.String,
+  prefix: OptionalNullableString,
+});
+const ConfiguredHeaderValueStorage = Schema.Union([Schema.String, ConfiguredHeaderBindingStorage]);
+const ConfiguredHeaderMapStorage = Schema.Record(Schema.String, ConfiguredHeaderValueStorage);
+const SpecFetchCredentialsStorage = Schema.Struct({
+  headers: Schema.optional(ConfiguredHeaderMapStorage),
+  queryParams: Schema.optional(ConfiguredHeaderMapStorage),
+});
+const SourceConfigStorage = Schema.Struct({
+  spec: Schema.String,
+  sourceUrl: Schema.optional(Schema.String),
+  baseUrl: Schema.optional(Schema.String),
+  namespace: Schema.optional(Schema.String),
+  headers: Schema.optional(ConfiguredHeaderMapStorage),
+  queryParams: Schema.optional(ConfiguredHeaderMapStorage),
+  specFetchCredentials: Schema.optional(SpecFetchCredentialsStorage),
+  oauth2: Schema.optional(Schema.Unknown),
+  annotationPolicy: Schema.optional(AnnotationPolicy),
+});
+const SourceStorage = Schema.Struct({
+  namespace: Schema.String,
+  scope: Schema.String,
+  name: Schema.String,
+  config: SourceConfigStorage,
+});
+const OperationStorage = Schema.Struct({
+  toolId: Schema.String,
+  sourceId: Schema.String,
+  binding: Schema.Unknown,
+});
+const decodeSourceStorage = Schema.decodeUnknownOption(SourceStorage);
+const decodeOperationStorage = Schema.decodeUnknownOption(OperationStorage);
 
-const encodeAnnotationPolicy = Schema.encodeSync(AnnotationPolicy);
-const decodeAnnotationPolicy = Schema.decodeUnknownSync(AnnotationPolicy);
+const toJsonRecord = (value: unknown): Record<string, unknown> => value as Record<string, unknown>;
 
-const encodeOAuthSession = Schema.encodeSync(OpenApiOAuthSession);
-const decodeOAuthSession = Schema.decodeUnknownSync(OpenApiOAuthSession);
-
-const asJsonObject = (value: unknown): Record<string, unknown> => {
-  if (value == null) return {};
-  if (typeof value === "string") return JSON.parse(value) as Record<string, unknown>;
-  return value as Record<string, unknown>;
+const normalizeStoredOAuth2 = (value: unknown): OAuth2SourceConfig | undefined => {
+  if (value == null) return undefined;
+  const sourceConfig =
+    typeof value === "string"
+      ? decodeOAuth2SourceConfigJsonOption(value)
+      : decodeOAuth2SourceConfigOption(value);
+  if (Option.isSome(sourceConfig)) return sourceConfig.value;
+  return undefined;
 };
 
-const decodeHeaders = (value: unknown): Record<string, HeaderValue> => {
-  if (value == null) return {};
-  if (typeof value === "string") return JSON.parse(value) as Record<string, HeaderValue>;
-  return value as Record<string, HeaderValue>;
+const normalizeConfiguredMap = (
+  values: Readonly<Record<string, typeof ConfiguredHeaderValueStorage.Type>> | undefined,
+): Record<string, ConfiguredHeaderValue> | undefined => {
+  if (!values) return undefined;
+  const normalized: Record<string, ConfiguredHeaderValue> = {};
+  for (const [name, value] of Object.entries(values)) {
+    if (typeof value === "string") {
+      normalized[name] = value;
+    } else {
+      normalized[name] =
+        value.prefix != null
+          ? ConfiguredHeaderBinding.make({
+              kind: "binding",
+              slot: value.slot,
+              prefix: value.prefix,
+            })
+          : ConfiguredHeaderBinding.make({
+              kind: "binding",
+              slot: value.slot,
+            });
+    }
+  }
+  return normalized;
 };
 
-// ---------------------------------------------------------------------------
-// Store interface
-// ---------------------------------------------------------------------------
+const encodeSourceConfig = (config: SourceConfig): Record<string, unknown> => ({
+  spec: config.spec,
+  ...(config.sourceUrl ? { sourceUrl: config.sourceUrl } : {}),
+  ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+  ...(config.namespace ? { namespace: config.namespace } : {}),
+  ...(config.headers ? { headers: config.headers } : {}),
+  ...(config.queryParams ? { queryParams: config.queryParams } : {}),
+  ...(config.specFetchCredentials ? { specFetchCredentials: config.specFetchCredentials } : {}),
+  ...(config.oauth2 ? { oauth2: toJsonRecord(encodeOAuth2SourceConfig(config.oauth2)) } : {}),
+  ...(config.annotationPolicy ? { annotationPolicy: config.annotationPolicy } : {}),
+});
 
-// Every method routes through the typed adapter (`ctx.storage.adapter`)
-// so the typed error channel is `StorageFailure`. Schema-decode failures
-// inside `Effect.gen` land as defects, not typed errors, and are caught
-// by the HTTP edge's observability middleware.
-//
-// Every read/write that targets a single row pins BOTH the natural id
-// (namespace, toolId, sessionId) AND the owning `scope_id`. The store
-// runs behind the scoped adapter (which auto-injects `scope_id IN
-// (stack)`), so a bare `{id}` filter resolves to any matching row in
-// the stack in adapter-iteration order. For shadowed rows (same id at
-// multiple scopes — e.g. an org-level openapi source with a per-user
-// override), that's a scope-isolation bug: updates and deletes can
-// land on the wrong scope's row. Callers thread the resolved scope in
-// (typically `path.scopeId` for HTTP, `toolRow.scope_id` /
-// `input.scope` for invokeTool/lifecycle) so every keyed mutation
-// targets exactly one row.
+const rowToSource = (row: PluginStorageEntry): StoredSource | null => {
+  const decoded = decodeSourceStorage(row.data);
+  if (Option.isNone(decoded)) return null;
+  const stored = decoded.value;
+  const oauth2 = normalizeStoredOAuth2(stored.config.oauth2);
+  return {
+    namespace: stored.namespace,
+    scope: stored.scope,
+    name: stored.name,
+    config: {
+      spec: stored.config.spec,
+      sourceUrl: stored.config.sourceUrl,
+      baseUrl: stored.config.baseUrl,
+      namespace: stored.config.namespace,
+      headers: normalizeConfiguredMap(stored.config.headers),
+      queryParams: normalizeConfiguredMap(stored.config.queryParams),
+      specFetchCredentials: stored.config.specFetchCredentials
+        ? {
+            headers: normalizeConfiguredMap(stored.config.specFetchCredentials.headers),
+            queryParams: normalizeConfiguredMap(stored.config.specFetchCredentials.queryParams),
+          }
+        : undefined,
+      oauth2,
+      annotationPolicy: stored.config.annotationPolicy,
+    },
+  };
+};
+
+const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
+  const decoded = decodeOperationStorage(row.data);
+  if (Option.isNone(decoded)) return null;
+  const operation = decoded.value;
+  return {
+    toolId: operation.toolId,
+    sourceId: operation.sourceId,
+    binding: decodeBinding(
+      typeof operation.binding === "string"
+        ? decodeBindingJson(operation.binding)
+        : operation.binding,
+    ),
+  };
+};
+
 export interface OpenapiStore {
   readonly upsertSource: (
     input: StoredSource,
     operations: readonly StoredOperation[],
   ) => Effect.Effect<void, StorageFailure>;
-
   readonly updateSourceMeta: (
     namespace: string,
     scope: string,
     patch: {
       readonly name?: string;
       readonly baseUrl?: string;
-      readonly headers?: Record<string, HeaderValue>;
-      readonly oauth2?: OAuth2Auth;
+      readonly headers?: Record<string, ConfiguredHeaderValue>;
+      readonly queryParams?: Record<string, ConfiguredHeaderValue>;
+      readonly specFetchCredentials?: OpenApiSpecFetchCredentials;
+      readonly oauth2?: OAuth2SourceConfig;
       readonly annotationPolicy?: AnnotationPolicy | null;
     },
   ) => Effect.Effect<void, StorageFailure>;
-
   readonly getSource: (
     namespace: string,
     scope: string,
   ) => Effect.Effect<StoredSource | null, StorageFailure>;
-
   readonly listSources: () => Effect.Effect<readonly StoredSource[], StorageFailure>;
-
   readonly getOperationByToolId: (
     toolId: string,
     scope: string,
   ) => Effect.Effect<StoredOperation | null, StorageFailure>;
-
   readonly listOperationsBySource: (
     sourceId: string,
     scope: string,
   ) => Effect.Effect<readonly StoredOperation[], StorageFailure>;
-
-  readonly removeSource: (
-    namespace: string,
-    scope: string,
-  ) => Effect.Effect<void, StorageFailure>;
-
-  readonly putOAuthSession: (
-    sessionId: string,
-    session: OpenApiOAuthSession,
-  ) => Effect.Effect<void, StorageFailure>;
-
-  readonly getOAuthSession: (
-    sessionId: string,
-  ) => Effect.Effect<OpenApiOAuthSession | null, StorageFailure>;
-
-  readonly deleteOAuthSession: (sessionId: string) => Effect.Effect<void, StorageFailure>;
+  readonly removeSource: (namespace: string, scope: string) => Effect.Effect<void, StorageFailure>;
 }
 
-// ---------------------------------------------------------------------------
-// Default store implementation
-// ---------------------------------------------------------------------------
-
 export const makeDefaultOpenapiStore = ({
-  adapter,
+  pluginStorage,
 }: StorageDeps<OpenapiSchema>): OpenapiStore => {
-  const rowToSource = (row: Record<string, unknown>): StoredSource => {
-    const oauth2Raw = row.oauth2;
-    const oauth2 =
-      oauth2Raw == null
-        ? undefined
-        : decodeOAuth2(typeof oauth2Raw === "string" ? JSON.parse(oauth2Raw) : oauth2Raw);
-    const policyRaw = row.annotation_policy;
-    const annotationPolicy =
-      policyRaw == null
-        ? undefined
-        : decodeAnnotationPolicy(
-            typeof policyRaw === "string" ? JSON.parse(policyRaw) : policyRaw,
-          );
-    const headers = decodeHeaders(row.headers);
-    const invocationConfig = decodeInvocationConfig(
-      asJsonObject(row.invocation_config),
-    );
-    return {
-      namespace: row.id as string,
-      scope: row.scope_id as string,
-      name: row.name as string,
-      config: {
-        spec: row.spec as string,
-        sourceUrl: (row.source_url as string | null | undefined) ?? undefined,
-        baseUrl: (row.base_url as string | null | undefined) ?? undefined,
-        headers,
-        oauth2,
-        annotationPolicy,
-      },
-      invocationConfig,
-    };
-  };
-
-  const rowToOperation = (row: Record<string, unknown>): StoredOperation => ({
-    toolId: row.id as string,
-    sourceId: row.source_id as string,
-    binding: decodeBinding(
-      typeof row.binding === "string" ? JSON.parse(row.binding) : row.binding,
-    ),
+  const sourceData = (source: StoredSource) => ({
+    namespace: source.namespace,
+    scope: source.scope,
+    name: source.name,
+    config: encodeSourceConfig(source.config),
   });
+
+  const operationData = (operation: StoredOperation) => ({
+    toolId: operation.toolId,
+    sourceId: operation.sourceId,
+    binding: toJsonRecord(encodeBinding(operation.binding)),
+  });
+
+  const listOperationRowsForSourceScope = (sourceId: string, scope: string) =>
+    pluginStorage
+      .list({
+        collection: OPERATION_COLLECTION,
+        keyPrefix: `${sourceId}.`,
+      })
+      .pipe(
+        Effect.map((rows) =>
+          rows.filter(
+            (row) => String(row.scopeId) === scope && rowToOperation(row)?.sourceId === sourceId,
+          ),
+        ),
+      );
+
+  const removeOperationsForSourceScope = (sourceId: string, scope: string) =>
+    Effect.gen(function* () {
+      const rows = yield* listOperationRowsForSourceScope(sourceId, scope);
+      for (const row of rows) {
+        yield* pluginStorage.remove({
+          scope,
+          collection: OPERATION_COLLECTION,
+          key: row.key,
+        });
+      }
+    });
 
   const deleteSource = (namespace: string, scope: string) =>
     Effect.gen(function* () {
-      yield* adapter.deleteMany({
-        model: "openapi_operation",
-        where: [
-          { field: "source_id", value: namespace },
-          { field: "scope_id", value: scope },
-        ],
-      });
-      yield* adapter.delete({
-        model: "openapi_source",
-        where: [
-          { field: "id", value: namespace },
-          { field: "scope_id", value: scope },
-        ],
+      yield* removeOperationsForSourceScope(namespace, scope);
+      yield* pluginStorage.remove({
+        scope,
+        collection: SOURCE_COLLECTION,
+        key: namespace,
       });
     });
 
@@ -300,199 +290,77 @@ export const makeDefaultOpenapiStore = ({
     upsertSource: (input, operations) =>
       Effect.gen(function* () {
         yield* deleteSource(input.namespace, input.scope);
-        yield* adapter.create({
-          model: "openapi_source",
-          data: {
-            id: input.namespace,
-            scope_id: input.scope,
-            name: input.name,
-            spec: input.config.spec,
-            source_url: input.config.sourceUrl ?? undefined,
-            base_url: input.config.baseUrl ?? undefined,
-            headers: (input.config.headers ?? {}) as unknown as Record<string, unknown>,
-            oauth2: input.config.oauth2
-              ? (encodeOAuth2(input.config.oauth2) as unknown as Record<string, unknown>)
-              : undefined,
-            annotation_policy: input.config.annotationPolicy
-              ? (encodeAnnotationPolicy(input.config.annotationPolicy) as unknown as Record<
-                  string,
-                  unknown
-                >)
-              : undefined,
-            invocation_config: encodeInvocationConfig(
-              input.invocationConfig,
-            ) as unknown as Record<string, unknown>,
-          },
-          forceAllowId: true,
+        yield* pluginStorage.put({
+          scope: input.scope,
+          collection: SOURCE_COLLECTION,
+          key: input.namespace,
+          data: sourceData(input),
         });
-        if (operations.length > 0) {
-          yield* adapter.createMany({
-            model: "openapi_operation",
-            data: operations.map((op) => ({
-              id: op.toolId,
-              scope_id: input.scope,
-              source_id: op.sourceId,
-              binding: encodeBinding(op.binding) as unknown as Record<string, unknown>,
-            })),
-            forceAllowId: true,
+        for (const operation of operations) {
+          yield* pluginStorage.put({
+            scope: input.scope,
+            collection: OPERATION_COLLECTION,
+            key: operation.toolId,
+            data: operationData(operation),
           });
         }
       }),
 
     updateSourceMeta: (namespace, scope, patch) =>
       Effect.gen(function* () {
-        const existingRow = yield* adapter.findOne({
-          model: "openapi_source",
-          where: [
-            { field: "id", value: namespace },
-            { field: "scope_id", value: scope },
-          ],
+        const existing = yield* pluginStorage.getAtScope({
+          scope,
+          collection: SOURCE_COLLECTION,
+          key: namespace,
         });
-        if (!existingRow) return;
-        const existing = rowToSource(existingRow);
-
-        const nextName = patch.name?.trim() || existing.name;
-        const nextBaseUrl =
-          patch.baseUrl !== undefined ? patch.baseUrl : existing.config.baseUrl;
-        const nextHeaders =
-          patch.headers !== undefined ? patch.headers : existing.config.headers ?? {};
-        const nextOAuth2 =
-          patch.oauth2 !== undefined ? patch.oauth2 : existing.config.oauth2;
-        const nextAnnotationPolicy =
-          patch.annotationPolicy !== undefined
-            ? patch.annotationPolicy ?? undefined
-            : existing.config.annotationPolicy;
-
-        const nextInvocationConfig = new InvocationConfig({
-          baseUrl: nextBaseUrl ?? existing.invocationConfig.baseUrl,
-          headers: nextHeaders,
-          oauth2: nextOAuth2 ? Option.some(nextOAuth2) : Option.none(),
-        });
-
-        // `null` explicitly clears an optional JSON column — the
-        // transformer pipeline drops `undefined` update values (treating
-        // them as "leave the existing column alone"), so a clear-override
-        // request (`patch.annotationPolicy === null`) must surface as
-        // `null` in the update payload, not `undefined`.
-        yield* adapter.update({
-          model: "openapi_source",
-          where: [
-            { field: "id", value: namespace },
-            { field: "scope_id", value: scope },
-          ],
-          update: {
-            name: nextName,
-            base_url: nextBaseUrl ?? undefined,
-            headers: nextHeaders as unknown as Record<string, unknown>,
-            oauth2: nextOAuth2
-              ? (encodeOAuth2(nextOAuth2) as unknown as Record<string, unknown>)
-              : undefined,
-            annotation_policy: nextAnnotationPolicy
-              ? (encodeAnnotationPolicy(nextAnnotationPolicy) as unknown as Record<
-                  string,
-                  unknown
-                >)
-              : patch.annotationPolicy === null
-                ? null
-                : undefined,
-            invocation_config: encodeInvocationConfig(
-              nextInvocationConfig,
-            ) as unknown as Record<string, unknown>,
+        if (!existing) return;
+        const source = rowToSource(existing);
+        if (!source) return;
+        const next: StoredSource = {
+          ...source,
+          name: patch.name?.trim() || source.name,
+          config: {
+            ...source.config,
+            ...(patch.baseUrl !== undefined ? { baseUrl: patch.baseUrl } : {}),
+            ...(patch.headers !== undefined ? { headers: patch.headers } : {}),
+            ...(patch.queryParams !== undefined ? { queryParams: patch.queryParams } : {}),
+            ...(patch.specFetchCredentials !== undefined
+              ? { specFetchCredentials: patch.specFetchCredentials }
+              : {}),
+            ...(patch.oauth2 !== undefined ? { oauth2: patch.oauth2 } : {}),
+            ...(patch.annotationPolicy !== undefined
+              ? { annotationPolicy: patch.annotationPolicy ?? undefined }
+              : {}),
           },
+        };
+        yield* pluginStorage.put({
+          scope,
+          collection: SOURCE_COLLECTION,
+          key: namespace,
+          data: sourceData(next),
         });
       }),
 
     getSource: (namespace, scope) =>
-      adapter
-        .findOne({
-          model: "openapi_source",
-          where: [
-            { field: "id", value: namespace },
-            { field: "scope_id", value: scope },
-          ],
-        })
+      pluginStorage
+        .getAtScope({ scope, collection: SOURCE_COLLECTION, key: namespace })
         .pipe(Effect.map((row) => (row ? rowToSource(row) : null))),
 
     listSources: () =>
-      adapter
-        .findMany({ model: "openapi_source" })
-        .pipe(Effect.map((rows) => rows.map(rowToSource))),
+      pluginStorage
+        .list({ collection: SOURCE_COLLECTION })
+        .pipe(Effect.map((rows) => rows.map(rowToSource).filter(Predicate.isNotNull))),
 
     getOperationByToolId: (toolId, scope) =>
-      adapter
-        .findOne({
-          model: "openapi_operation",
-          where: [
-            { field: "id", value: toolId },
-            { field: "scope_id", value: scope },
-          ],
-        })
+      pluginStorage
+        .getAtScope({ scope, collection: OPERATION_COLLECTION, key: toolId })
         .pipe(Effect.map((row) => (row ? rowToOperation(row) : null))),
 
     listOperationsBySource: (sourceId, scope) =>
-      adapter
-        .findMany({
-          model: "openapi_operation",
-          where: [
-            { field: "source_id", value: sourceId },
-            { field: "scope_id", value: scope },
-          ],
-        })
-        .pipe(Effect.map((rows) => rows.map(rowToOperation))),
+      listOperationRowsForSourceScope(sourceId, scope).pipe(
+        Effect.map((rows) => rows.map(rowToOperation).filter(Predicate.isNotNull)),
+      ),
 
     removeSource: (namespace, scope) => deleteSource(namespace, scope),
-
-    putOAuthSession: (sessionId, session) =>
-      Effect.gen(function* () {
-        // Defensive overwrite — sessionIds are UUIDs so collisions are
-        // negligible, but pin to the target scope so a hypothetical
-        // collision with a session in another scope of this stack
-        // can't wipe the wrong row.
-        yield* adapter.delete({
-          model: "openapi_oauth_session",
-          where: [
-            { field: "id", value: sessionId },
-            { field: "scope_id", value: session.tokenScope },
-          ],
-        });
-        yield* adapter.create({
-          model: "openapi_oauth_session",
-          data: {
-            id: sessionId,
-            // Session row lives at the same scope the completed tokens
-            // will land in — keeps in-flight sessions visible only to
-            // the executor that started them (user stacks can see
-            // their own sessions but not another user's).
-            scope_id: session.tokenScope,
-            session: encodeOAuthSession(session) as unknown as Record<string, unknown>,
-            created_at: new Date(),
-          },
-          forceAllowId: true,
-        });
-      }),
-
-    getOAuthSession: (sessionId) =>
-      adapter
-        .findOne({
-          model: "openapi_oauth_session",
-          where: [{ field: "id", value: sessionId }],
-        })
-        .pipe(
-          Effect.map((row) => {
-            if (!row) return null;
-            const raw = row.session;
-            return decodeOAuthSession(
-              typeof raw === "string" ? JSON.parse(raw) : raw,
-            );
-          }),
-        ),
-
-    deleteOAuthSession: (sessionId) =>
-      adapter
-        .delete({
-          model: "openapi_oauth_session",
-          where: [{ field: "id", value: sessionId }],
-        })
-        .pipe(Effect.asVoid),
   };
 };

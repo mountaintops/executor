@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 //
 // Re-exports the real McpSessionDO and drives /mcp + /.well-known/* through
-// the same Effect HttpApp the prod worker uses. Only the `McpAuth` service
+// the same Effect HttpEffect the prod worker uses. Only the `McpAuth` service
 // is swapped: the real impl calls WorkOS's JWKS endpoint, which can't be
 // reached from the test isolate.
 //
@@ -13,25 +13,49 @@
 // load — that was SIGSEGV-ing workerd during test instantiation.
 // ---------------------------------------------------------------------------
 
-import { HttpApp } from "@effect/platform";
+import { HttpEffect } from "effect/unstable/http";
 import { Effect, Layer } from "effect";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 
-import { McpAuth, classifyMcpPath, mcpApp } from "./mcp";
+import {
+  McpAuth,
+  McpAuthLive,
+  McpOrganizationAuth,
+  McpOrganizationAuthLive,
+  classifyMcpPath,
+  mcpAuthorized,
+  mcpApp,
+  mcpUnauthorized,
+} from "./mcp";
+import { ApiKeyService } from "./auth/api-keys";
+import { McpJwtVerificationError } from "./mcp-auth";
 import { organizations } from "./services/schema";
 import { parseTestBearer } from "./test-bearer";
 import { DoTelemetryLive } from "./services/telemetry";
+import { CoreSharedServices } from "./api/core-shared-services";
 
 export { McpSessionDO } from "./mcp-session";
 
-const TestMcpAuthLive = Layer.succeed(McpAuth, {
+const TestMcpAuthLive = Layer.succeed(McpAuth)({
   verifyBearer: (request) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
       const header = request.headers.get("authorization");
-      if (!header?.startsWith("Bearer ")) return null;
-      return parseTestBearer(header.slice("Bearer ".length));
+      if (!header?.startsWith("Bearer ")) return mcpUnauthorized("missing_bearer");
+      const rawToken = header.slice("Bearer ".length);
+      if (rawToken === "test-system-error") {
+        return yield* new McpJwtVerificationError({
+          cause: "simulated_jwks_fetch_failure",
+          reason: "system",
+        });
+      }
+      const token = parseTestBearer(rawToken);
+      return token ? mcpAuthorized(token) : mcpUnauthorized("invalid_token");
     }),
+});
+
+const TestMcpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
+  authorize: (_accountId, organizationId) => Effect.succeed(!organizationId.startsWith("revoked_")),
 });
 
 // ---------------------------------------------------------------------------
@@ -66,6 +90,7 @@ const handleSeedOrg = async (
     connect_timeout: 10,
     onnotice: () => undefined,
   });
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: worker seed endpoint keeps postgres cleanup in native async finalization
   try {
     await drizzle(sql, { schema: { organizations } })
       .insert(organizations)
@@ -75,18 +100,33 @@ const handleSeedOrg = async (
         set: { name: body.name },
       });
   } finally {
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: best-effort postgres close during worker seed endpoint cleanup
     await sql.end({ timeout: 0 }).catch(() => undefined);
   }
   return new Response(null, { status: 204 });
 };
 
 // Provide a WebSdk-backed tracer on the worker side so the `mcp.request` span
-// gets reported to the OTLP receiver. Prod uses the global TracerProvider
-// installed by `otel-cf-workers.instrument()`; the test worker has no such
-// instrumentation, so we reuse DoTelemetryLive (it's a plain WebSdk +
-// OTLPTraceExporter — not Durable-Object-specific) to stand in.
-const testMcpFetch = HttpApp.toWebHandler(
-  mcpApp.pipe(Effect.provide(Layer.mergeAll(TestMcpAuthLive, DoTelemetryLive))),
+// gets reported to the OTLP receiver. This is the same Worker-safe telemetry
+// layer used in prod.
+const testMcpFetch = HttpEffect.toWebHandler(
+  mcpApp.pipe(
+    Effect.provide(Layer.mergeAll(TestMcpAuthLive, TestMcpOrganizationAuthLive, DoTelemetryLive)),
+  ),
+);
+
+const realAuthMcpFetch = HttpEffect.toWebHandler(
+  mcpApp.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        McpAuthLive.pipe(
+          Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices))),
+        ),
+        McpOrganizationAuthLive,
+        DoTelemetryLive,
+      ),
+    ),
+  ),
 );
 
 export default {
@@ -94,6 +134,11 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/__test__/seed-org" && request.method === "POST") {
       return handleSeedOrg(request, envArg);
+    }
+    if (url.pathname === "/__test__/real-auth-mcp") {
+      const mcpUrl = new URL(request.url);
+      mcpUrl.pathname = "/mcp";
+      return realAuthMcpFetch(new Request(mcpUrl, request));
     }
     if (classifyMcpPath(url.pathname) !== null) {
       return testMcpFetch(request);

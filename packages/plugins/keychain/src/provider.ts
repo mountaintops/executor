@@ -1,7 +1,8 @@
 import { Effect } from "effect";
 
-import { StorageError, type SecretProvider } from "@executor/sdk";
+import { StorageError, type SecretProvider } from "@executor-js/sdk/core";
 
+import type { KeychainError } from "./errors";
 import { getPassword, setPassword, deletePassword } from "./keyring";
 
 // ---------------------------------------------------------------------------
@@ -18,22 +19,30 @@ import { getPassword, setPassword, deletePassword } from "./keyring";
 // impossible to debug why secrets weren't resolving.
 // ---------------------------------------------------------------------------
 
-const toStorageError = (cause: { readonly message: string; readonly cause?: unknown }) =>
-  new StorageError({ message: cause.message, cause: cause.cause ?? cause });
+const toStorageError = (cause: KeychainError) => {
+  const { cause: underlyingCause } = cause;
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: typed KeychainError message becomes StorageError message
+  return new StorageError({ message: cause.message, cause: underlyingCause ?? cause });
+};
 
-// Scope arg is ignored — keychain partitions by `serviceName`, which the
-// host fixes per executor at construction time. A future refactor could
-// fold `scope` into the service name, but today a keychain provider
-// instance is already one-scope.
-export const makeKeychainProvider = (serviceName: string): SecretProvider => ({
+export const scopedKeychainServiceName = (baseServiceName: string, scope: string): string =>
+  `${baseServiceName}/${scope}`;
+
+export const makeKeychainProvider = (baseServiceName: string): SecretProvider => ({
   key: "keychain",
   writable: true,
-  get: (secretId, _scope) =>
-    getPassword(serviceName, secretId).pipe(Effect.mapError(toStorageError)),
-  set: (secretId, value, _scope) =>
-    setPassword(serviceName, secretId, value).pipe(Effect.mapError(toStorageError)),
-  delete: (secretId, _scope) =>
-    deletePassword(serviceName, secretId).pipe(Effect.mapError(toStorageError)),
+  get: (secretId, scope) =>
+    getPassword(scopedKeychainServiceName(baseServiceName, scope), secretId).pipe(
+      Effect.mapError(toStorageError),
+    ),
+  set: (secretId, value, scope) =>
+    setPassword(scopedKeychainServiceName(baseServiceName, scope), secretId, value).pipe(
+      Effect.mapError(toStorageError),
+    ),
+  delete: (secretId, scope) =>
+    deletePassword(scopedKeychainServiceName(baseServiceName, scope), secretId).pipe(
+      Effect.mapError(toStorageError),
+    ),
   // Keychain doesn't support enumerating — you need to know the account name
   list: undefined,
 });

@@ -1,4 +1,5 @@
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
+import * as Cause from "effect/Cause";
 import type {
   Executor,
   ToolId,
@@ -6,9 +7,70 @@ import type {
   ToolSchema,
   InvokeOptions,
   Source,
-} from "@executor/sdk";
-import type { SandboxToolInvoker } from "@executor/codemode-core";
+} from "@executor-js/sdk/core";
+import { isToolResult, ToolResult } from "@executor-js/sdk/core";
+import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
+
+const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
+const TOOL_ERROR_TYPESCRIPT =
+  "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }";
+
+const wrapOutputTypeScript = (outputTypeScript?: string): string =>
+  `{ ok: true; data: ${outputTypeScript ?? "unknown"} } | { ok: false; error: ToolError }`;
+
+const withToolResultDefinitions = (
+  definitions?: Record<string, string>,
+): Record<string, string> => ({
+  ...(definitions ?? {}),
+  ToolError: TOOL_ERROR_TYPESCRIPT,
+});
+
+const newCorrelationId = (): string => {
+  // 8-hex-char correlation id; enough entropy to disambiguate within a
+  // single deployment without leaking host process info.
+  return Math.floor(Math.random() * 0x1_0000_0000)
+    .toString(16)
+    .padStart(8, "0");
+};
+
+const validationIssues = (value: unknown): readonly unknown[] | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const issues = (value as { readonly issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
+};
+
+const expectedToolFailure = (
+  value: unknown,
+): { readonly code: string; readonly message: string; readonly details?: unknown } | null => {
+  if (Predicate.isTagged(value, "ToolNotFoundError") && "toolId" in value) {
+    const suggestions =
+      "suggestions" in value && Array.isArray(value.suggestions) ? value.suggestions : undefined;
+    return {
+      code: "tool_not_found",
+      message: `Tool not found: ${String(value.toolId)}`,
+      details: { toolId: value.toolId, ...(suggestions ? { suggestions } : {}) },
+    };
+  }
+  if (Predicate.isTagged(value, "ToolBlockedError") && "toolId" in value) {
+    return {
+      code: "tool_blocked",
+      message: `Tool blocked by policy: ${String(value.toolId)}`,
+      details: value,
+    };
+  }
+  if (Predicate.isTagged(value, "ToolInvocationError")) {
+    const issues = validationIssues((value as { readonly cause?: unknown }).cause);
+    if (issues) {
+      return {
+        code: "invalid_tool_arguments",
+        message: "Tool arguments did not match the input schema.",
+        details: { issues },
+      };
+    }
+  }
+  return null;
+};
 
 /**
  * Extract the source namespace from a tool path. Tool paths look like
@@ -46,31 +108,69 @@ export const makeExecutorToolInvoker = (
     });
 
     const result = yield* executor.tools.invoke(path as ToolId, args, options.invokeOptions).pipe(
-      Effect.catchTag("ElicitationDeclinedError", (err) =>
-        Effect.fail(
-          new ExecutionToolError({
-            message: `Tool "${err.toolId}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
-            cause: err,
+      Effect.catchCause((cause) => {
+        const err = cause.reasons.find(Cause.isFailReason)?.error;
+        const expected = expectedToolFailure(err);
+        if (expected) {
+          return Effect.succeed(ToolResult.fail(expected));
+        }
+        if (isElicitationDeclinedError(err)) {
+          return Effect.fail(
+            new ExecutionToolError({
+              message: `Tool "${err.toolId}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
+              cause: err,
+            }),
+          );
+        }
+        // Any other failure here is an infra/plugin defect. Emit an
+        // opaque generic with a correlation id so internal context (URLs
+        // with tokens, DB connection strings, file paths in stacks)
+        // can't leak through Error.message into the sandbox. The full
+        // cause is logged with the same correlation id so operators can
+        // still trace the failure.
+        const correlationId = newCorrelationId();
+        return Effect.logError("tool dispatch failed", cause).pipe(
+          Effect.annotateLogs({
+            "executor.correlation_id": correlationId,
+            "mcp.tool.name": path,
           }),
-        ),
-      ),
+          Effect.flatMap(() =>
+            Effect.fail(
+              new ExecutionToolError({
+                message: `${OPAQUE_DEFECT_MESSAGE} [${correlationId}]`,
+                cause: err ?? cause,
+              }),
+            ),
+          ),
+        );
+      }),
     );
-    const r = result as { readonly error?: unknown; readonly data?: unknown } | unknown;
-    if (
-      r !== null &&
-      typeof r === "object" &&
-      "error" in r &&
-      (r as { error?: unknown }).error !== null &&
-      (r as { error?: unknown }).error !== undefined
-    ) {
-      return yield* Effect.fail((r as { error: unknown }).error);
+
+    // Strict: plugins emit ToolResult<T>. Anything else is treated as a
+    // raw success value and wrapped — keeps the sandbox-facing contract
+    // uniform without forcing every tiny test plugin to import
+    // `ToolResult.ok`.
+    if (isToolResult(result)) {
+      return result;
     }
-    if (r !== null && typeof r === "object" && "data" in r) {
-      return (r as { data: unknown }).data;
-    }
-    return r;
+    return { ok: true, data: result };
   }),
 });
+
+const isElicitationDeclinedError = (
+  value: unknown,
+): value is {
+  readonly _tag: "ElicitationDeclinedError";
+  readonly toolId: string;
+  readonly action: "cancel" | "decline";
+} =>
+  Predicate.isTagged(value, "ElicitationDeclinedError") &&
+  value !== null &&
+  typeof value === "object" &&
+  "toolId" in value &&
+  typeof value.toolId === "string" &&
+  "action" in value &&
+  (value.action === "cancel" || value.action === "decline");
 
 export type ToolDiscoveryResult = {
   readonly path: string;
@@ -88,6 +188,40 @@ export type ExecutorSourceListItem = {
   readonly canRemove?: boolean;
   readonly canRefresh?: boolean;
   readonly toolCount: number;
+};
+
+/**
+ * Page of results from a list-style discovery tool. Shared by
+ * `tools.search` and `tools.executor.sources.list` so the model sees one
+ * consistent shape:
+ *
+ *   - `items`      — the page (slice).
+ *   - `total`      — count after filtering, before pagination. The model
+ *                    can use this to detect truncation.
+ *   - `hasMore`    — convenience flag for `(offset + items.length) < total`.
+ *   - `nextOffset` — concrete offset for the next page when `hasMore`,
+ *                    `null` otherwise. Pre-computing it removes a class of
+ *                    off-by-one mistakes when the model paginates.
+ */
+export type PagedResult<T> = {
+  readonly items: readonly T[];
+  readonly total: number;
+  readonly hasMore: boolean;
+  readonly nextOffset: number | null;
+};
+
+const paginate = <T>(all: readonly T[], offset: number, limit: number): PagedResult<T> => {
+  const total = all.length;
+  const start = Math.min(Math.max(offset, 0), total);
+  const items = all.slice(start, start + limit);
+  const consumed = start + items.length;
+  const hasMore = consumed < total;
+  return {
+    items,
+    total,
+    hasMore,
+    nextOffset: hasMore ? consumed : null,
+  };
 };
 
 type SearchableTool = Pick<Tool, "id" | "sourceId" | "name" | "description">;
@@ -275,41 +409,74 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   executor: Executor,
   query: string,
   limit = 12,
-  options?: { readonly namespace?: string },
+  options?: { readonly namespace?: string; readonly offset?: number },
 ) {
+  const offset = options?.offset ?? 0;
   yield* Effect.annotateCurrentSpan({
     "executor.search.query_length": query.length,
     "executor.search.limit": limit,
+    "executor.search.offset": offset,
     ...(options?.namespace ? { "executor.search.namespace": options.namespace } : {}),
   });
 
+  const empty: PagedResult<ToolDiscoveryResult> = {
+    items: [],
+    total: 0,
+    hasMore: false,
+    nextOffset: null,
+  };
+
   if (normalizeSearchText(query).length === 0) {
-    return [] as ReadonlyArray<ToolDiscoveryResult>;
+    return empty;
   }
 
-  const all = yield* executor.tools.list().pipe(Effect.orDie);
-  const results = all
+  const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ExecutionToolError({
+          message: "Failed to list tools for search",
+          cause,
+        }),
+    ),
+  );
+  const ranked = all
     .filter((tool: Tool) => matchesNamespace(tool, options?.namespace))
     .map((tool: Tool) => scoreToolMatch(tool, query))
-    .filter((tool): tool is ToolDiscoveryResult => tool !== null)
-    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
-    .slice(0, limit);
+    .filter(Predicate.isNotNull)
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+
+  const page = paginate(ranked, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
     "executor.search.candidate_count": all.length,
-    "executor.search.result_count": results.length,
+    "executor.search.match_count": ranked.length,
+    "executor.search.result_count": page.items.length,
+    "executor.search.has_more": page.hasMore,
   });
-  return results;
+  return page;
 });
 
 /** What `tools.executor.sources.list()` calls inside the sandbox. */
 export const listExecutorSources = Effect.fn("executor.sources.list")(function* (
   executor: Executor,
-  options?: { readonly query?: string; readonly limit?: number },
+  options?: {
+    readonly query?: string;
+    readonly limit?: number;
+    readonly offset?: number;
+  },
 ) {
   const normalizedQuery = normalizeSearchText(options?.query ?? "");
-  const limit = options?.limit ?? 200;
-  const sources = yield* executor.sources.list().pipe(Effect.orDie);
+  const limit = options?.limit ?? 50;
+  const offset = options?.offset ?? 0;
+  const sources = yield* executor.sources.list().pipe(
+    Effect.mapError(
+      (cause) =>
+        new ExecutionToolError({
+          message: "Failed to list executor sources",
+          cause,
+        }),
+    ),
+  );
 
   const filtered =
     normalizedQuery.length === 0
@@ -320,34 +487,44 @@ export const listExecutorSources = Effect.fn("executor.sources.list")(function* 
         });
 
   // Single query for all tools, then count per source in memory.
-  const allTools = yield* executor.tools.list().pipe(Effect.orDie);
+  const allTools = yield* executor.tools.list({ includeAnnotations: false }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ExecutionToolError({
+          message: "Failed to list tools for source counts",
+          cause,
+        }),
+    ),
+  );
   const toolCountBySource = new Map<string, number>();
   for (const tool of allTools) {
     toolCountBySource.set(tool.sourceId, (toolCountBySource.get(tool.sourceId) ?? 0) + 1);
   }
 
-  const withCounts = filtered.map(
-    (source: Source) =>
-      ({
-        id: source.id,
-        name: source.name,
-        kind: source.kind,
-        runtime: source.runtime,
-        canRemove: source.canRemove,
-        canRefresh: source.canRefresh,
-        toolCount: toolCountBySource.get(source.id) ?? 0,
-      }) satisfies ExecutorSourceListItem,
-  );
+  const sortedWithCounts = filtered
+    .map(
+      (source: Source) =>
+        ({
+          id: source.id,
+          name: source.name,
+          kind: source.kind,
+          runtime: source.runtime,
+          canRemove: source.canRemove,
+          canRefresh: source.canRefresh,
+          toolCount: toolCountBySource.get(source.id) ?? 0,
+        }) satisfies ExecutorSourceListItem,
+    )
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 
-  const results = withCounts
-    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    .slice(0, limit);
+  const page = paginate(sortedWithCounts, offset, limit);
 
   yield* Effect.annotateCurrentSpan({
     "executor.sources.candidate_count": sources.length,
-    "executor.sources.result_count": results.length,
+    "executor.sources.match_count": sortedWithCounts.length,
+    "executor.sources.result_count": page.items.length,
+    "executor.sources.has_more": page.hasMore,
   });
-  return results;
+  return page;
 });
 
 /** What `tools.describe.tool()` calls inside the sandbox. */
@@ -374,7 +551,7 @@ export const describeTool = Effect.fn("executor.tools.describe")(function* (
     name: schema.name ?? path,
     description: schema.description,
     inputTypeScript: schema.inputTypeScript,
-    outputTypeScript: schema.outputTypeScript,
-    typeScriptDefinitions: schema.typeScriptDefinitions,
+    outputTypeScript: wrapOutputTypeScript(schema.outputTypeScript),
+    typeScriptDefinitions: withToolResultDefinitions(schema.typeScriptDefinitions),
   };
 });

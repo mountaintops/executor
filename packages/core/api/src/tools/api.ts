@@ -1,15 +1,15 @@
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ScopeId, ToolId, ToolNotFoundError } from "@executor/sdk";
-
-import { InternalError } from "../observability";
+import { InternalError, ScopeId, ToolId, ToolNotFoundError } from "@executor-js/sdk/shared";
 
 // ---------------------------------------------------------------------------
 // Params
 // ---------------------------------------------------------------------------
 
-const scopeIdParam = HttpApiSchema.param("scopeId", ScopeId);
-const toolIdParam = HttpApiSchema.param("toolId", ToolId);
+const PathParams = {
+  scopeId: ScopeId,
+  toolId: ToolId,
+};
 
 // ---------------------------------------------------------------------------
 // Response schemas
@@ -22,38 +22,43 @@ const ToolMetadataResponse = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
   mayElicit: Schema.optional(Schema.Boolean),
+  requiresApproval: Schema.optional(Schema.Boolean),
 });
 
 const ToolSchemaResponse = Schema.Struct({
   id: ToolId,
+  name: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
   inputTypeScript: Schema.optional(Schema.String),
   outputTypeScript: Schema.optional(Schema.String),
-  typeScriptDefinitions: Schema.optional(
-    Schema.Record({ key: Schema.String, value: Schema.String }),
-  ),
+  typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   inputSchema: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
+  schemaDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
 // ---------------------------------------------------------------------------
 // Error schemas with HTTP status annotations
 // ---------------------------------------------------------------------------
 
-const ToolNotFound = ToolNotFoundError.annotations(HttpApiSchema.annotations({ status: 404 }));
+const ToolNotFound = ToolNotFoundError.annotate({ httpApiStatus: 404 });
 
 // ---------------------------------------------------------------------------
 // Group
 // ---------------------------------------------------------------------------
 
-export class ToolsApi extends HttpApiGroup.make("tools")
+export const ToolsApi = HttpApiGroup.make("tools")
   .add(
-    HttpApiEndpoint.get("list")`/scopes/${scopeIdParam}/tools`.addSuccess(
-      Schema.Array(ToolMetadataResponse),
-    ),
+    HttpApiEndpoint.get("list", "/scopes/:scopeId/tools", {
+      params: { scopeId: PathParams.scopeId },
+      success: Schema.Array(ToolMetadataResponse),
+      error: InternalError,
+    }),
   )
   .add(
-    HttpApiEndpoint.get("schema")`/scopes/${scopeIdParam}/tools/${toolIdParam}/schema`
-      .addSuccess(ToolSchemaResponse)
-      .addError(ToolNotFound),
-  )
-  .addError(InternalError) {}
+    HttpApiEndpoint.get("schema", "/scopes/:scopeId/tools/:toolId/schema", {
+      params: PathParams,
+      success: ToolSchemaResponse,
+      error: [InternalError, ToolNotFound],
+    }),
+  );

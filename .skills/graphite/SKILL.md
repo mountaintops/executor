@@ -9,12 +9,12 @@ description: "Manage Git branches and PRs using Graphite CLI (gt) instead of raw
 
 Use `gt` commands instead of their `git` counterparts for commit and branch management. Raw git bypasses Graphite's stack metadata, leaving descendants un-restacked and the CLI's view of the stack out of sync.
 
-| Instead of | Use |
-|------------|-----|
-| `git checkout -b <name>` | `gt create <name>` |
-| `git commit -m "msg"` | `gt modify -c -m "msg"` |
-| `git commit --amend` | `gt modify --amend` |
-| `git commit -am "msg"` | `gt modify -cam "msg"` |
+| Instead of               | Use                     |
+| ------------------------ | ----------------------- |
+| `git checkout -b <name>` | `gt create <name>`      |
+| `git commit -m "msg"`    | `gt modify -c -m "msg"` |
+| `git commit --amend`     | `gt modify --amend`     |
+| `git commit -am "msg"`   | `gt modify -cam "msg"`  |
 
 Why: `gt` keeps stack metadata consistent and auto-restacks descendant branches when a parent changes.
 
@@ -54,6 +54,7 @@ To bail out: `gt abort`.
 Create a new branch stacked on current branch with staged changes.
 
 **Flags:**
+
 - `-a, --all` - Stage all unstaged changes including untracked files
 - `-m, --message` - Commit message
 - `-i, --insert` - Insert between current branch and its child
@@ -67,6 +68,7 @@ Create a new branch stacked on current branch with staged changes.
 Amend current branch's commit or create new commit. Auto-restacks descendants.
 
 **Flags:**
+
 - `-a, --all` - Stage all changes
 - `-c, --commit` - Create new commit instead of amending
 - `-e, --edit` - Open editor for commit message
@@ -82,6 +84,7 @@ Amend current branch's commit or create new commit. Auto-restacks descendants.
 Amend staged changes to relevant commits in current stack.
 
 **Flags:**
+
 - `-a, --all` - Stage all unstaged changes (not untracked)
 - `-d, --dry-run` - Print what would happen
 - `-f, --force` - Skip confirmation
@@ -92,6 +95,7 @@ Amend staged changes to relevant commits in current stack.
 Squash all commits in current branch into single commit.
 
 **Flags:**
+
 - `-m, --message` - Commit message
 - `--edit` - Modify existing message
 - `-n, --no-edit` - Keep existing message
@@ -101,6 +105,7 @@ Squash all commits in current branch into single commit.
 Fold branch's changes into parent, restack descendants.
 
 **Flags:**
+
 - `-k, --keep` - Keep current branch name instead of parent's
 
 ### gt split
@@ -108,6 +113,7 @@ Fold branch's changes into parent, restack descendants.
 Split current branch into multiple branches.
 
 **Flags:**
+
 - `-c, --commit, --by-commit` - Split by commit history
 - `-h, --hunk, --by-hunk` - Split by hunk interactively
 - `-f, --file, --by-file` - Split files matching pathspecs
@@ -119,6 +125,7 @@ Split current branch into multiple branches.
 Push branches and create/update PRs on GitHub.
 
 **Flags:**
+
 - `-s, --stack` - Include descendant branches
 - `-d, --draft` - Create PRs as drafts
 - `-p, --publish` - Publish draft PRs
@@ -148,6 +155,7 @@ Push branches and create/update PRs on GitHub.
 Merge PRs from trunk to current branch via Graphite.
 
 **Flags:**
+
 - `-c, --confirm` - Confirm before merging
 - `--dry-run` - Report what would merge
 
@@ -158,6 +166,7 @@ Merge PRs from trunk to current branch via Graphite.
 Switch to branch. Interactive selector if no branch provided.
 
 **Flags:**
+
 - `-a, --all` - Show all trunks in selection
 - `-u, --show-untracked` - Include untracked branches
 - `-s, --stack` - Only show current stack
@@ -168,6 +177,7 @@ Switch to branch. Interactive selector if no branch provided.
 Switch to child of current branch.
 
 **Flags:**
+
 - `-n, --steps` - Levels to traverse
 - `--to` - Target branch to navigate toward
 
@@ -176,6 +186,7 @@ Switch to child of current branch.
 Switch to parent of current branch.
 
 **Flags:**
+
 - `-n, --steps` - Levels to traverse
 
 ### gt top
@@ -193,6 +204,7 @@ Switch to branch closest to trunk in current stack.
 Ensure each branch has parent in Git history, rebasing if needed.
 
 **Flags:**
+
 - `--branch` - Run from specified branch
 - `--downstack` - Only restack branch and ancestors
 - `--upstack` - Only restack branch and descendants
@@ -203,6 +215,7 @@ Ensure each branch has parent in Git history, rebasing if needed.
 Rebase current branch onto target, restack descendants.
 
 **Flags:**
+
 - `-o, --onto` - Target branch
 - `--source` - Branch to move (default: current)
 - `-a, --all` - Show all trunks in selection
@@ -218,6 +231,7 @@ Reorder branches between trunk and current via editor.
 Sync all branches with remote, clean merged/closed PRs, restack.
 
 **Flags:**
+
 - `-a, --all` - Sync across all trunks
 - `-f, --force` - Skip confirmations
 - `--restack` / `--no-restack` - Restack after sync (default: true)
@@ -227,6 +241,7 @@ Sync all branches with remote, clean merged/closed PRs, restack.
 Sync branches from trunk to specified branch/PR from remote.
 
 **Flags:**
+
 - `-d, --downstack` - Don't sync upstack branches
 - `-f, --force` - Overwrite with remote
 - `--restack` / `--no-restack` - Restack after (default: true)
@@ -239,6 +254,7 @@ Sync branches from trunk to specified branch/PR from remote.
 Delete branch and Graphite metadata. Children restack to parent.
 
 **Flags:**
+
 - `-f, --force` - Delete even if not merged/closed
 - `-c, --close` - Close associated PR on GitHub
 - `--downstack` - Also delete ancestors
@@ -249,6 +265,7 @@ Delete branch and Graphite metadata. Children restack to parent.
 Rename branch. Removes PR association.
 
 **Flags:**
+
 - `-f, --force` - Allow rename with open PR
 
 ### gt track [branch]
@@ -256,6 +273,7 @@ Rename branch. Removes PR association.
 Start tracking branch with Graphite by selecting parent.
 
 **Flags:**
+
 - `-f, --force` - Use most recent tracked ancestor as parent
 - `-p, --parent` - Specify parent branch
 
@@ -264,6 +282,7 @@ Start tracking branch with Graphite by selecting parent.
 Stop tracking branch. Children also untracked.
 
 **Flags:**
+
 - `-f, --force` - Skip confirmation
 
 ### gt pop
@@ -285,6 +304,7 @@ Unfreeze branch and upstack.
 Show stacks. Forms: `gt log`, `gt log short`, `gt log long`.
 
 **Flags:**
+
 - `-a, --all` - Show all trunks
 - `-r, --reverse` - Print upside down
 - `-u, --show-untracked` - Include untracked
@@ -297,6 +317,7 @@ Show stacks. Forms: `gt log`, `gt log short`, `gt log long`.
 Display branch information.
 
 **Flags:**
+
 - `-b, --body` - Show PR body
 - `-d, --diff` - Show diff vs parent
 - `-p, --patch` - Show commit changes
@@ -307,6 +328,7 @@ Display branch information.
 Show parent, children, or trunk of current branch.
 
 `gt trunk` flags:
+
 - `--add` - Add trunk
 - `-a, --all` - Show all trunks
 
@@ -315,6 +337,7 @@ Show parent, children, or trunk of current branch.
 Open PR page for branch or PR number.
 
 **Flags:**
+
 - `--stack` - Open stack page
 
 ## Conflict Resolution
@@ -324,6 +347,7 @@ Open PR page for branch or PR number.
 Continue command halted by rebase conflict.
 
 **Flags:**
+
 - `-a, --all` - Stage all changes first
 
 ### gt abort
@@ -331,6 +355,7 @@ Continue command halted by rebase conflict.
 Abort current command halted by conflict.
 
 **Flags:**
+
 - `-f, --force` - Skip confirmation
 
 ### gt undo
@@ -338,6 +363,7 @@ Abort current command halted by conflict.
 Undo most recent Graphite mutations.
 
 **Flags:**
+
 - `-f, --force` - Skip confirmation
 
 ## Setup
@@ -347,6 +373,7 @@ Undo most recent Graphite mutations.
 Initialize Graphite by selecting trunk branch.
 
 **Flags:**
+
 - `--trunk` - Trunk branch name
 - `--reset` - Untrack all branches
 
@@ -355,6 +382,7 @@ Initialize Graphite by selecting trunk branch.
 Add auth token for GitHub.
 
 **Flags:**
+
 - `-t, --token` - Auth token from https://app.graphite.com/activate
 
 ### gt config
@@ -368,6 +396,7 @@ Update CLI to latest stable version.
 ## Git Passthroughs
 
 These pass arguments directly to git:
+
 - `gt add [args..]`
 - `gt cherry-pick [args..]`
 - `gt rebase [args..]`
@@ -379,4 +408,5 @@ These pass arguments directly to git:
 Create branch reverting a trunk commit.
 
 **Flags:**
+
 - `-e, --edit` - Edit commit message

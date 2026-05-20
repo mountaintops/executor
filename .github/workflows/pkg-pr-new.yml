@@ -3,6 +3,9 @@ name: Publish (pkg.pr.new)
 on:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   # Per-platform matrix: build the executor binary, tar it, upload to R2.
   # The wrapper npm package is built later by the `publish` job which just
@@ -24,6 +27,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -60,16 +65,19 @@ jobs:
     name: Publish
     needs: build-preview-binary
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
 
       - run: bun install --frozen-lockfile
-
-      - run: bun run build:packages
 
       - name: Build executor preview wrapper
         env:
@@ -78,4 +86,33 @@ jobs:
           EXECUTOR_PREVIEW_TARGETS: executor-linux-x64,executor-darwin-arm64
         run: bun run --filter=executor build:preview:wrapper
 
-      - run: npx pkg-pr-new publish --compact './apps/cli/dist/executor' './packages/core/sdk' './packages/plugins/*'
+      # Apply the same `publishConfig.exports` promotion and `workspace:*`
+      # resolution the real npm release does. Runs `build:packages`
+      # internally. Without this, pkg-pr-new ships unresolved
+      # `workspace:*` references and the dev-time `src/index.ts` exports.
+      - run: bun run release:publish:packages:prepare
+
+      # Explicit list (not `plugins/*`) — must match PUBLIC_PACKAGE_DIRS
+      # in scripts/publish-packages.ts. Globbing would pick up unprepared
+      # private packages that would publish with broken refs.
+      #
+      # No --compact: it requires every package already exist on npm to
+      # generate short URLs. New packages aren't published yet, and
+      # --compact aborts the whole run when it can't resolve them.
+      - run: >
+          npx pkg-pr-new publish --bun
+          './apps/cli/dist/executor'
+          './packages/core/storage-core'
+          './packages/core/sdk'
+          './packages/core/config'
+          './packages/core/execution'
+          './packages/core/cli'
+          './packages/kernel/core'
+          './packages/kernel/runtime-quickjs'
+          './packages/plugins/file-secrets'
+          './packages/plugins/google-discovery'
+          './packages/plugins/graphql'
+          './packages/plugins/keychain'
+          './packages/plugins/mcp'
+          './packages/plugins/onepassword'
+          './packages/plugins/openapi'

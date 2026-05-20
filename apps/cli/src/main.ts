@@ -1,51 +1,72 @@
-// Ensure binaries next to the executor (e.g. secure-exec-v8) are on $PATH
 import { randomUUID } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+// Make sibling binaries (if any are added later) discoverable on $PATH so
+// child processes spawned without an absolute path still find them.
 const execDir = dirname(process.execPath);
 if (process.env.PATH && !process.env.PATH.includes(execDir)) {
   process.env.PATH = `${execDir}:${process.env.PATH}`;
 }
 
+// Point the keychain plugin at the colocated @napi-rs/keyring binding.
+// bun --compile doesn't include .node files in bunfs, so the loader's
+// normal `require('@napi-rs/keyring-<plat>-<arch>')` walk fails inside the
+// binary. We can't use NAPI_RS_NATIVE_LIBRARY_PATH because @napi-rs/keyring
+// 1.2.0 has a bug where the env-var branch assigns to a local variable that
+// gets overwritten before the binding is returned. build.ts copies the
+// platform .node next to the executor; the keychain plugin reads this var
+// and loads the file directly via createRequire, bypassing the broken
+// loader.
+const keyringNodeOnDisk = join(execDir, "keyring.node");
+if (
+  typeof Bun !== "undefined" &&
+  !process.env.EXECUTOR_KEYRING_NATIVE_PATH &&
+  (await Bun.file(keyringNodeOnDisk).exists())
+) {
+  process.env.EXECUTOR_KEYRING_NATIVE_PATH = keyringNodeOnDisk;
+}
+
 // Pre-load QuickJS WASM for compiled binaries — must run before server imports
 const wasmOnDisk = join(execDir, "emscripten-module.wasm");
 if (typeof Bun !== "undefined" && (await Bun.file(wasmOnDisk).exists())) {
-  const { setQuickJSModule } = await import("@executor/runtime-quickjs");
+  const { setQuickJSModule } = await import("@executor-js/runtime-quickjs");
   const { newQuickJSWASMModule } = await import("quickjs-emscripten");
+  type QuickJSSyncVariant = import("quickjs-emscripten").QuickJSSyncVariant;
   const wasmBinary = await Bun.file(wasmOnDisk).arrayBuffer();
-  const variant = {
-    type: "sync" as const,
-    importFFI: () =>
-      import("@jitl/quickjs-wasmfile-release-sync/ffi").then(
-        (m: Record<string, unknown>) => m.QuickJSFFI,
-      ),
-    importModuleLoader: () =>
-      import("@jitl/quickjs-wasmfile-release-sync/emscripten-module").then(
-        (m: Record<string, unknown>) => {
-          const original = m.default as (...args: unknown[]) => unknown;
-          return (moduleArg: Record<string, unknown> = {}) =>
-            original({ ...moduleArg, wasmBinary });
-        },
-      ),
+  const importFFI: QuickJSSyncVariant["importFFI"] = () =>
+    import("@jitl/quickjs-wasmfile-release-sync/ffi").then((m) => m.QuickJSFFI);
+  const importModuleLoader: QuickJSSyncVariant["importModuleLoader"] = async () => {
+    const { default: original } =
+      await import("@jitl/quickjs-wasmfile-release-sync/emscripten-module");
+    return (moduleArg = {}) => original({ ...moduleArg, wasmBinary });
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- quickjs-emscripten variant type is not publicly exported
-  const mod = await newQuickJSWASMModule(variant as any);
+  const variant: QuickJSSyncVariant = {
+    type: "sync" as const,
+    importFFI,
+    importModuleLoader,
+  };
+  const mod = await newQuickJSWASMModule(variant);
   setQuickJSModule(mod);
 }
 
-import { Command, Options, Args } from "@effect/cli";
-import { BunContext, BunRuntime } from "@effect/platform-bun";
-import { FetchHttpClient, FileSystem, HttpApiClient, Path as PlatformPath } from "@effect/platform";
+import { Argument as Args, Command, Flag as Options } from "effect/unstable/cli";
+import { BunRuntime, BunServices } from "@effect/platform-bun";
+import { HttpApiClient } from "effect/unstable/httpapi";
+import { FetchHttpClient } from "effect/unstable/http";
+import { FileSystem, Path as PlatformPath } from "effect";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
 
-import { ExecutorApi } from "@executor/api";
-import { startServer, runMcpStdioServer, getExecutor } from "@executor/local";
-import { makeQuickJsExecutor } from "@executor/runtime-quickjs";
+import { ExecutorApi } from "@executor-js/api";
+import { startServer, runMcpStdioServer, getExecutor } from "@executor-js/local";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { fetchIntegrations } from "./integrations";
 import {
   buildDaemonSpawnSpec,
   chooseDaemonPort,
   canAutoStartLocalDaemonForHost,
+  isDevCliEntrypoint,
   parseDaemonBaseUrl,
   spawnDetached,
   waitForReachable,
@@ -79,6 +100,8 @@ import {
   inspectToolPath,
   normalizeCliErrorText,
   parseJsonObjectInput,
+  sanitizeCliOutputText,
+  shellQuoteArg,
 } from "./tooling";
 
 // Embedded web UI — baked into compiled binaries via `with { type: "file" }`
@@ -88,7 +111,6 @@ import embeddedWebUI from "./embedded-web-ui.gen";
 // Constants
 // ---------------------------------------------------------------------------
 
-const CLI_NAME = "executor";
 const { version: CLI_VERSION } = await import("../package.json");
 const DEFAULT_PORT = 4788;
 const DEFAULT_BASE_URL = `http://localhost:${DEFAULT_PORT}`;
@@ -101,7 +123,7 @@ const DAEMON_STOP_TIMEOUT_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 const waitForShutdownSignal = () =>
-  Effect.async<void, never>((resume) => {
+  Effect.callback<void, never>((resume) => {
     const shutdown = () => resume(Effect.void);
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
@@ -118,27 +140,53 @@ const waitForShutdownSignal = () =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
-  Effect.tryPromise(() => fetch(`${baseUrl}/api/scope`, { signal: AbortSignal.timeout(2000) })).pipe(
+interface DaemonScopeInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly dir: string;
+}
+
+const readDaemonScopeInfo = (baseUrl: string): Effect.Effect<DaemonScopeInfo | null> =>
+  Effect.tryPromise(() =>
+    fetch(`${baseUrl}/api/scope`, { signal: AbortSignal.timeout(2000) }),
+  ).pipe(
     Effect.flatMap((res) => {
-      if (!res.ok) return Effect.succeed(false);
+      if (!res.ok) return Effect.succeed(null);
       return Effect.tryPromise(() => res.json()).pipe(
         Effect.map((payload) => {
-          if (!isRecord(payload)) return false;
-          return (
+          if (!isRecord(payload)) return null;
+          if (
             typeof payload.id === "string" &&
             typeof payload.name === "string" &&
             typeof payload.dir === "string"
-          );
+          ) {
+            return {
+              id: payload.id,
+              name: payload.name,
+              dir: payload.dir,
+            };
+          }
+          return null;
         }),
-        Effect.catchAll(() => Effect.succeed(false)),
+        Effect.catchCause(() => Effect.succeed(null)),
       );
     }),
-    Effect.catchAll(() => Effect.succeed(false)),
+    Effect.catchCause(() => Effect.succeed(null)),
   );
 
+const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
+  readDaemonScopeInfo(baseUrl).pipe(Effect.map((scopeInfo) => scopeInfo !== null));
+
+const normalizeDaemonScopeDir = (dir: string): string => {
+  const resolved = resolve(dir);
+  return existsSync(resolved) ? realpathSync.native(resolved) : resolved;
+};
+
+const currentDaemonScopeDir = (): string =>
+  normalizeDaemonScopeDir(process.env.EXECUTOR_SCOPE_DIR ?? process.cwd());
+
 const script = process.argv[1];
-const isDevMode = script?.endsWith(".ts") || script?.endsWith(".js");
+const isDevMode = isDevCliEntrypoint(script);
 const cliPrefix = isDevMode ? `bun run ${script}` : "executor";
 
 const toError = (cause: unknown): Error =>
@@ -154,9 +202,22 @@ const parseDaemonUrl = (baseUrl: string) =>
 const daemonBaseUrl = (hostname: string, port: number): string =>
   `http://${canonicalDaemonHost(hostname)}:${port}`;
 
+const installDefaultExecutorWebBaseUrl = (baseUrl: string): (() => void) => {
+  if (process.env.EXECUTOR_WEB_BASE_URL !== undefined) {
+    return () => {};
+  }
+
+  process.env.EXECUTOR_WEB_BASE_URL = baseUrl;
+  return () => {
+    delete process.env.EXECUTOR_WEB_BASE_URL;
+  };
+};
+
 const cleanupPointer = (input: { hostname: string; scopeId: string; port: number }) =>
   Effect.gen(function* () {
-    yield* removeDaemonPointer({ hostname: input.hostname, scopeId: input.scopeId }).pipe(Effect.ignore);
+    yield* removeDaemonPointer({ hostname: input.hostname, scopeId: input.scopeId }).pipe(
+      Effect.ignore,
+    );
     yield* removeDaemonRecord({ hostname: input.hostname, port: input.port }).pipe(Effect.ignore);
   });
 
@@ -189,47 +250,35 @@ const resolveDaemonTarget = (baseUrl: string) =>
     };
   });
 
-const ensureDaemon = (
-  baseUrl: string,
-): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+// Serialize daemon startup behind a filesystem lock so concurrent CLI invocations don't
+// each spawn their own daemon. The post-lock pointer recheck catches the case where
+// another invocation finished bootstrapping while we were waiting for the lock.
+const spawnAndWaitForDaemon = (input: {
+  host: string;
+  scopeId: string;
+  preferredPort: number;
+  allowedHosts: ReadonlyArray<string>;
+}): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
-    const resolvedTarget = yield* resolveDaemonTarget(baseUrl);
-    if (yield* isServerReachable(resolvedTarget.baseUrl)) {
-      return resolvedTarget.baseUrl;
-    }
-
-    const parsed = yield* parseDaemonUrl(baseUrl);
-    const scopeId = currentDaemonScopeId();
-    const host = canonicalDaemonHost(parsed.hostname);
-
-    if (!canAutoStartLocalDaemonForHost(host)) {
-      return yield* Effect.fail(
-        new Error(
-          [
-            `Executor daemon is not reachable at ${baseUrl}.`,
-            "Auto-start is only supported for local hosts.",
-            `Start it manually: ${cliPrefix} daemon run --port ${parsed.port} --hostname ${host}`,
-          ].join("\n"),
-        ),
-      );
-    }
-
-    const lock = yield* acquireDaemonStartLock({ hostname: host, scopeId });
+    const lock = yield* acquireDaemonStartLock({ hostname: input.host, scopeId: input.scopeId });
 
     try {
-      const existing = yield* resolveDaemonTarget(baseUrl);
-      if (yield* isServerReachable(existing.baseUrl)) {
-        return existing.baseUrl;
+      const existing = yield* readDaemonPointer({ hostname: input.host, scopeId: input.scopeId });
+      if (existing && isPidAlive(existing.pid)) {
+        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+        if (yield* isServerReachable(existingUrl)) {
+          return existingUrl;
+        }
       }
 
       const selectedPort = yield* chooseDaemonPort({
-        preferredPort: parsed.port,
-        hostname: host,
+        preferredPort: input.preferredPort,
+        hostname: input.host,
       });
 
-      if (selectedPort !== parsed.port) {
+      if (selectedPort !== input.preferredPort) {
         console.error(
-          `Port ${parsed.port} is in use. Starting daemon on available port ${selectedPort} instead.`,
+          `Port ${input.preferredPort} is in use. Starting daemon on available port ${selectedPort} instead.`,
         );
       }
 
@@ -237,17 +286,20 @@ const ensureDaemon = (
         try: () =>
           buildDaemonSpawnSpec({
             port: selectedPort,
-            hostname: host,
+            hostname: input.host,
             isDevMode,
             scriptPath: script,
             executablePath: process.execPath,
+            allowedHosts: input.allowedHosts,
           }),
         catch: (cause) =>
-          cause instanceof Error ? cause : new Error(`Failed to build daemon command: ${String(cause)}`),
+          cause instanceof Error
+            ? cause
+            : new Error(`Failed to build daemon command: ${String(cause)}`),
       });
 
-      const startBaseUrl = daemonBaseUrl(host, selectedPort);
-      console.error(`Starting daemon on ${host}:${selectedPort}...`);
+      const startBaseUrl = daemonBaseUrl(input.host, selectedPort);
+      console.error(`Starting daemon on ${input.host}:${selectedPort}...`);
       yield* spawnDetached({
         command: spec.command,
         args: spec.args,
@@ -265,7 +317,7 @@ const ensureDaemon = (
           new Error(
             [
               `Daemon did not become reachable at ${startBaseUrl} within ${DAEMON_BOOT_TIMEOUT_MS}ms.`,
-              `Run in foreground to inspect logs: ${cliPrefix} daemon run --port ${selectedPort} --hostname ${host}`,
+              `Run in foreground to inspect logs: ${cliPrefix} daemon run --foreground --port ${selectedPort} --hostname ${input.host}`,
             ].join("\n"),
           ),
         );
@@ -275,6 +327,43 @@ const ensureDaemon = (
     } finally {
       yield* releaseDaemonStartLock(lock).pipe(Effect.ignore);
     }
+  });
+
+// Auto-start a local daemon on demand so commands like `executor call` work without the
+// user having to run `daemon run` first. Refuses non-local hosts because spawning a
+// daemon process on the user's behalf only makes sense when "the user's machine" is
+// also where the request will land.
+const ensureDaemon = (
+  baseUrl: string,
+): Effect.Effect<string, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const resolvedTarget = yield* resolveDaemonTarget(baseUrl);
+    const reachableScope = yield* readDaemonScopeInfo(resolvedTarget.baseUrl);
+    if (reachableScope && normalizeDaemonScopeDir(reachableScope.dir) === currentDaemonScopeDir()) {
+      return resolvedTarget.baseUrl;
+    }
+
+    const parsed = yield* parseDaemonUrl(baseUrl);
+    const host = canonicalDaemonHost(parsed.hostname);
+
+    if (!canAutoStartLocalDaemonForHost(host)) {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `Executor daemon is not reachable at ${baseUrl}.`,
+            "Auto-start is only supported for local hosts.",
+            `Start it manually: ${cliPrefix} daemon run --port ${parsed.port} --hostname ${host}`,
+          ].join("\n"),
+        ),
+      );
+    }
+
+    return yield* spawnAndWaitForDaemon({
+      host,
+      scopeId: resolvedTarget.scopeId,
+      preferredPort: parsed.port,
+      allowedHosts: [],
+    });
   }).pipe(Effect.mapError(toError));
 
 const stopDaemon = (
@@ -316,7 +405,9 @@ const stopDaemon = (
           ),
         );
       }
-      console.log(`No daemon running at ${target.baseUrl} (removed stale record for pid ${record.pid}).`);
+      console.log(
+        `No daemon running at ${target.baseUrl} (removed stale record for pid ${record.pid}).`,
+      );
       return;
     }
 
@@ -355,6 +446,7 @@ type ExecuteCodeOutcome =
       readonly status: "paused";
       readonly text: string;
       readonly executionId: string | undefined;
+      readonly approvalUrl: string | undefined;
       readonly interaction:
         | {
             readonly kind: "url" | "form";
@@ -364,6 +456,11 @@ type ExecuteCodeOutcome =
           }
         | undefined;
     };
+
+const buildResumeApprovalUrl = (baseUrl: string, executionId: string): string => {
+  const url = new URL(`/resume/${encodeURIComponent(executionId)}`, baseUrl);
+  return url.toString();
+};
 
 const executeCode = (input: {
   baseUrl: string;
@@ -379,10 +476,12 @@ const executeCode = (input: {
     });
 
     if (response.status === "paused") {
+      const executionId = extractExecutionId(response.structured);
       return {
         status: "paused" as const,
         text: response.text,
-        executionId: extractExecutionId(response.structured),
+        executionId,
+        approvalUrl: executionId ? buildResumeApprovalUrl(daemonUrl, executionId) : undefined,
         interaction: extractPausedInteraction(response.structured),
       };
     }
@@ -402,6 +501,10 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
     if (input.outcome.status === "paused") {
       console.log(input.outcome.text);
       if (input.outcome.executionId) {
+        if (input.outcome.approvalUrl) {
+          console.log("\nApprove in browser:");
+          console.log(`  ${input.outcome.approvalUrl}`);
+        }
         const commandPrefix = `${cliPrefix} resume --execution-id ${input.outcome.executionId} --base-url ${input.baseUrl}`;
         if (input.outcome.interaction?.kind === "form") {
           const requestedSchema = input.outcome.interaction.requestedSchema;
@@ -409,14 +512,13 @@ const printExecutionOutcome = (input: { baseUrl: string; outcome: ExecuteCodeOut
             console.log(`\nRequested schema:\n${JSON.stringify(requestedSchema, null, 2)}`);
           }
           const template = buildResumeContentTemplate(requestedSchema);
-          console.log("\nResume commands:");
-          console.log(
-            `  ${commandPrefix} --action accept --content '${JSON.stringify(template)}'`,
-          );
+          const contentArg = shellQuoteArg(JSON.stringify(template));
+          console.log("\nCLI fallback:");
+          console.log(`  ${commandPrefix} --action accept --content ${contentArg}`);
           console.log(`  ${commandPrefix} --action decline`);
           console.log(`  ${commandPrefix} --action cancel`);
         } else {
-          console.log("\nResume command:");
+          console.log("\nCLI fallback:");
           console.log(`  ${commandPrefix} --action accept`);
         }
       }
@@ -448,115 +550,251 @@ const runForegroundSession = (input: {
   port: number;
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
+  authToken: string | undefined;
+  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
-    const server = yield* Effect.promise(() =>
-      startServer({
-        port: input.port,
-        hostname: input.hostname,
-        allowedHosts: input.allowedHosts,
-        embeddedWebUI,
-      }),
-    );
-
     const displayHost =
       input.hostname === "0.0.0.0" || input.hostname === "::" ? "localhost" : input.hostname;
-    const baseUrl = `http://${displayHost}:${server.port}`;
-    console.log(`Executor is ready.`);
-    console.log(`Web:     ${baseUrl}`);
-    console.log(`MCP:     ${baseUrl}/mcp`);
-    console.log(`OpenAPI: ${baseUrl}/api/docs`);
-    if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
-      console.log(
-        `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
-      );
-      if (input.allowedHosts.length > 0) {
-        console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
-      }
-    }
-    console.log(`\nPress Ctrl+C to stop.`);
+    const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(
+      `http://${displayHost}:${input.port}`,
+    );
 
-    yield* waitForShutdownSignal();
-    yield* Effect.promise(() => server.stop());
+    try {
+      const server = yield* Effect.promise(() =>
+        startServer({
+          port: input.port,
+          hostname: input.hostname,
+          allowedHosts: input.allowedHosts,
+          authToken: input.authToken,
+          authPassword: input.authPassword,
+          embeddedWebUI,
+        }),
+      );
+
+      const baseUrl = `http://${displayHost}:${server.port}`;
+      console.log(`Executor is ready.`);
+      console.log(`Web:     ${baseUrl}`);
+      console.log(`MCP:     ${baseUrl}/mcp`);
+      console.log(`OpenAPI: ${baseUrl}/api/docs`);
+      if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
+        console.log(
+          `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
+        );
+        if (input.allowedHosts.length > 0) {
+          console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
+        }
+        if (input.authPassword) {
+          console.log("   Basic authentication is enabled.");
+        } else if (input.authToken) {
+          console.log("   Token authentication is enabled.");
+        }
+      }
+      console.log(`\nPress Ctrl+C to stop.`);
+
+      yield* waitForShutdownSignal();
+      yield* Effect.promise(() => server.stop());
+    } finally {
+      restoreWebBaseUrl();
+    }
   });
 
 const runDaemonSession = (input: {
   port: number;
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
+  authToken: string | undefined;
+  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
     const daemonHost = canonicalDaemonHost(input.hostname);
-    const scopeId = currentDaemonScopeId();
-    const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
-
-    if (existing) {
-      const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
-      if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
-        return yield* Effect.fail(
-          new Error(
-            [
-              `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
-              `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
-              `Stop it first: ${cliPrefix} daemon stop`,
-            ].join("\n"),
-          ),
-        );
-      }
-      yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
-    }
-
-    const server = yield* Effect.promise(() =>
-      startServer({
-        port: input.port,
-        hostname: input.hostname,
-        allowedHosts: input.allowedHosts,
-        embeddedWebUI,
-      }),
+    const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(
+      daemonBaseUrl(daemonHost, input.port),
     );
-
-    const daemonPort = server.port;
-    const token = randomUUID();
-
-    yield* writeDaemonRecord({
-      hostname: daemonHost,
-      port: daemonPort,
-      pid: process.pid,
-      scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
-    });
-    yield* writeDaemonPointer({
-      hostname: daemonHost,
-      port: daemonPort,
-      pid: process.pid,
-      scopeId,
-      scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
-      token,
-    });
-
-    console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
+    const scopeId = currentDaemonScopeId();
 
     try {
-      yield* waitForShutdownSignal();
+      const existing = yield* readDaemonPointer({ hostname: daemonHost, scopeId });
+
+      if (existing) {
+        const existingUrl = daemonBaseUrl(existing.hostname, existing.port);
+        if (isPidAlive(existing.pid) && (yield* isServerReachable(existingUrl))) {
+          return yield* Effect.fail(
+            new Error(
+              [
+                `A daemon is already running for scope ${scopeId} on ${daemonHost}.`,
+                `Existing daemon: ${existingUrl} (pid ${existing.pid}).`,
+                `Stop it first: ${cliPrefix} daemon stop`,
+              ].join("\n"),
+            ),
+          );
+        }
+        yield* cleanupPointer({ hostname: existing.hostname, scopeId, port: existing.port });
+      }
+
+      const server = yield* Effect.promise(() =>
+        startServer({
+          port: input.port,
+          hostname: input.hostname,
+          allowedHosts: input.allowedHosts,
+          authToken: input.authToken,
+          authPassword: input.authPassword,
+          embeddedWebUI,
+        }),
+      );
+
+      const daemonPort = server.port;
+      const token = randomUUID();
+
+      try {
+        yield* writeDaemonRecord({
+          hostname: daemonHost,
+          port: daemonPort,
+          pid: process.pid,
+          scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
+        });
+        yield* writeDaemonPointer({
+          hostname: daemonHost,
+          port: daemonPort,
+          pid: process.pid,
+          scopeId,
+          scopeDir: process.env.EXECUTOR_SCOPE_DIR ?? null,
+          token,
+        });
+
+        console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
+        if (input.authPassword) {
+          console.log("Basic authentication is enabled.");
+        } else if (input.authToken) {
+          console.log("Token authentication is enabled.");
+        }
+
+        yield* waitForShutdownSignal();
+      } finally {
+        yield* Effect.promise(() => server.stop());
+        yield* removeDaemonRecord({ hostname: daemonHost, port: daemonPort });
+        yield* removeDaemonPointer({ hostname: daemonHost, scopeId }).pipe(Effect.ignore);
+      }
     } finally {
-      yield* Effect.promise(() => server.stop());
-      yield* removeDaemonRecord({ hostname: daemonHost, port: daemonPort });
-      yield* removeDaemonPointer({ hostname: daemonHost, scopeId }).pipe(Effect.ignore);
+      restoreWebBaseUrl();
     }
   });
+
+// `executor daemon run` defaults to detached so the user gets their shell back, but the
+// command is idempotent: re-running while a daemon is already up should report success
+// (matching the auto-start behaviour) rather than fail or spawn a duplicate.
+const runBackgroundDaemonStart = (input: {
+  port: number;
+  hostname: string;
+  allowedHosts: ReadonlyArray<string>;
+}): Effect.Effect<void, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+  Effect.gen(function* () {
+    const host = canonicalDaemonHost(input.hostname);
+    const requestedUrl = daemonBaseUrl(host, input.port);
+    const target = yield* resolveDaemonTarget(requestedUrl);
+
+    if (yield* isServerReachable(target.baseUrl)) {
+      console.log(`Daemon already running at ${target.baseUrl}.`);
+      return;
+    }
+
+    if (!canAutoStartLocalDaemonForHost(host)) {
+      return yield* Effect.fail(
+        new Error(
+          [
+            `Cannot background a daemon for non-local host ${host}.`,
+            `Use --foreground or bind to localhost / 127.0.0.1.`,
+          ].join("\n"),
+        ),
+      );
+    }
+
+    const startBaseUrl = yield* spawnAndWaitForDaemon({
+      host,
+      scopeId: target.scopeId,
+      preferredPort: input.port,
+      allowedHosts: input.allowedHosts,
+    });
+
+    console.log(`Daemon ready on ${startBaseUrl}`);
+  }).pipe(Effect.mapError(toError));
 
 // ---------------------------------------------------------------------------
 // Stdio MCP session
 // ---------------------------------------------------------------------------
 
-const runStdioMcpSession = () =>
+const withStdoutReroutedToStderr = async <A>(body: () => Promise<A>): Promise<A> => {
+  const originalWrite = process.stdout.write;
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalDebug = console.debug;
+  const stderrWrite = process.stderr.write.bind(process.stderr);
+
+  process.stdout.write = ((...args: Parameters<typeof process.stdout.write>) =>
+    stderrWrite(...args)) as typeof process.stdout.write;
+  console.log = console.error.bind(console);
+  console.info = console.error.bind(console);
+  console.debug = console.error.bind(console);
+
+  try {
+    return await body();
+  } finally {
+    process.stdout.write = originalWrite;
+    console.log = originalLog;
+    console.info = originalInfo;
+    console.debug = originalDebug;
+  }
+};
+
+const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "model" }) =>
   Effect.gen(function* () {
-    const executor = yield* Effect.promise(() => getExecutor());
-    yield* Effect.promise(() =>
-      runMcpStdioServer({ executor, codeExecutor: makeQuickJsExecutor() }),
+    const web = yield* Effect.promise(() =>
+      withStdoutReroutedToStderr(async () => {
+        const host = "127.0.0.1";
+        const port = await Effect.runPromise(
+          chooseDaemonPort({ preferredPort: DEFAULT_PORT, hostname: host }),
+        );
+        const baseUrl = `http://localhost:${port}`;
+        const restoreWebBaseUrl = installDefaultExecutorWebBaseUrl(baseUrl);
+
+        try {
+          const executor = await getExecutor();
+          const server = await startServer({
+            port,
+            hostname: host,
+            embeddedWebUI,
+          });
+          const serverBaseUrl = `http://localhost:${server.port}`;
+          return { executor, server, baseUrl: serverBaseUrl, restoreWebBaseUrl };
+        } catch (cause) {
+          restoreWebBaseUrl();
+          throw cause;
+        }
+      }),
     );
+
+    try {
+      yield* Effect.promise(() =>
+        runMcpStdioServer({
+          executor: web.executor,
+          codeExecutor: makeQuickJsExecutor(),
+          elicitationMode:
+            input.elicitationMode === "browser"
+              ? {
+                  mode: "browser" as const,
+                  approvalUrl: (executionId) =>
+                    `${web.baseUrl}/resume/${encodeURIComponent(executionId)}`,
+                }
+              : { mode: input.elicitationMode },
+        }),
+      );
+    } finally {
+      web.restoreWebBaseUrl();
+      yield* Effect.promise(() => web.server.stop());
+    }
   });
 
-const scope = Options.text("scope").pipe(
+const scope = Options.string("scope").pipe(
   Options.optional,
   Options.withDescription("Path to workspace directory containing executor.jsonc"),
 );
@@ -566,10 +804,9 @@ const applyScope = (s: Option.Option<string>) => {
   if (dir) process.env.EXECUTOR_SCOPE_DIR = resolve(dir);
 };
 
-const parseOptionalJsonObject = (raw: string | undefined): Effect.Effect<
-  Record<string, unknown> | undefined,
-  Error
-> =>
+const parseOptionalJsonObject = (
+  raw: string | undefined,
+): Effect.Effect<Record<string, unknown> | undefined, Error> =>
   raw === undefined
     ? Effect.succeed(undefined)
     : parseJsonObjectInput(raw).pipe(
@@ -762,7 +999,7 @@ const printCallBrowseHelp = (input: {
     if (input.exactTool) {
       console.log(`\nCallable path: ${input.exactTool.id}`);
       if (input.exactTool.description) {
-        console.log(input.exactTool.description);
+        console.log(sanitizeCliOutputText(input.exactTool.description));
       }
     }
 
@@ -776,13 +1013,18 @@ const printCallBrowseHelp = (input: {
     }
     if (input.children.length < input.totalChildren || input.limit) {
       const suffix = input.limit ? ` (limit ${input.limit})` : "";
-      console.log(`Showing ${input.children.length} of ${input.totalChildren} subcommands${suffix}.`);
+      console.log(
+        `Showing ${input.children.length} of ${input.totalChildren} subcommands${suffix}.`,
+      );
     }
 
     const rows = input.children.map((child) => {
       const kind =
         child.invokable && child.hasChildren ? "tool+group" : child.invokable ? "tool" : "group";
-      return { name: child.segment, meta: `${kind}, ${child.toolCount} path${child.toolCount === 1 ? "" : "s"}` };
+      return {
+        name: child.segment,
+        meta: `${kind}, ${child.toolCount} path${child.toolCount === 1 ? "" : "s"}`,
+      };
     });
 
     const width = rows.reduce((max, row) => Math.max(max, row.name.length), 0);
@@ -813,13 +1055,13 @@ const printCallLeafHelp = (input: {
     console.log(`Usage:\n  ${callPath}\n  ${callPath} '{"k":"v"}'`);
     console.log(`\nTool: ${input.tool.id}`);
     if (input.tool.description) {
-      console.log(input.tool.description);
+      console.log(sanitizeCliOutputText(input.tool.description));
     }
     if (input.schema?.inputTypeScript) {
-      console.log(`\nInput:\n${input.schema.inputTypeScript}`);
+      console.log(`\nInput:\n${sanitizeCliOutputText(input.schema.inputTypeScript)}`);
     }
     if (input.schema?.outputTypeScript) {
-      console.log(`\nOutput:\n${input.schema.outputTypeScript}`);
+      console.log(`\nOutput:\n${sanitizeCliOutputText(input.schema.outputTypeScript)}`);
     }
   });
 
@@ -849,14 +1091,16 @@ const applyCallHelpChildFilters = (input: {
   };
 };
 
-const runCallHelp = (args: ParsedCallHelpArgs): Effect.Effect<void, Error, FileSystem.FileSystem | PlatformPath.Path> =>
+const runCallHelp = (
+  args: ParsedCallHelpArgs,
+): Effect.Effect<void, Error, FileSystem.FileSystem | PlatformPath.Path> =>
   Effect.gen(function* () {
     if (args.scopeDir) process.env.EXECUTOR_SCOPE_DIR = resolve(args.scopeDir);
 
     const daemonUrl = yield* ensureDaemon(args.baseUrl);
     const client = yield* makeApiClient(daemonUrl);
     const scopeInfo = yield* client.scope.info();
-    const tools = yield* client.tools.list({ path: { scopeId: scopeInfo.id } });
+    const tools = yield* client.tools.list({ params: { scopeId: scopeInfo.id } });
     const toolPaths = tools.map((tool) => tool.id);
 
     const inspection = yield* Effect.try({
@@ -929,7 +1173,7 @@ const runCallHelp = (args: ParsedCallHelpArgs): Effect.Effect<void, Error, FileS
     if (exactTool && inspection.children.length === 0) {
       const schema = yield* client.tools
         .schema({
-          path: {
+          params: {
             scopeId: scopeInfo.id,
             toolId: exactTool.id,
           },
@@ -939,7 +1183,7 @@ const runCallHelp = (args: ParsedCallHelpArgs): Effect.Effect<void, Error, FileS
             inputTypeScript: result.inputTypeScript,
             outputTypeScript: result.outputTypeScript,
           })),
-          Effect.catchAll(() => Effect.succeed(undefined)),
+          Effect.catchCause(() => Effect.succeed(undefined)),
         );
 
       yield* printCallLeafHelp({
@@ -977,6 +1221,12 @@ const resolveToolInvocation = (input: {
   rawPathParts: ReadonlyArray<string>;
 }): Effect.Effect<{ path: string; args: Record<string, unknown> }, Error> =>
   Effect.gen(function* () {
+    if (!Array.isArray(input.rawPathParts)) {
+      return yield* Effect.fail(
+        new Error("Invalid tool invocation: path parts were not parsed as an array"),
+      );
+    }
+
     const maybeJsonArg = input.rawPathParts.at(-1)?.trim();
     const hasInlineJsonArg = maybeJsonArg !== undefined && maybeJsonArg.startsWith("{");
     const pathParts = hasInlineJsonArg ? input.rawPathParts.slice(0, -1) : input.rawPathParts;
@@ -984,7 +1234,9 @@ const resolveToolInvocation = (input: {
 
     if (pathParts.some((part) => part.trim().startsWith("-"))) {
       return yield* Effect.fail(
-        new Error("Tool invocation no longer accepts flags. Use: executor call <path...> '{...json...}'"),
+        new Error(
+          "Tool invocation no longer accepts flags. Use: executor call <path...> '{...json...}'",
+        ),
       );
     }
 
@@ -1004,8 +1256,8 @@ const resolveToolInvocation = (input: {
 const callCommand = Command.make(
   "call",
   {
-    pathParts: Args.text({ name: "tool-path-segment" }).pipe(Args.repeated),
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    pathParts: Args.string("tool-path-segment").pipe(Args.variadic({})),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ pathParts, baseUrl, scope }) =>
@@ -1025,25 +1277,25 @@ const callCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Invoke a tool path (e.g. `executor call github issues create '{\"title\":\"Hi\"}'`). Use `--help` to browse by namespace/path (`--match`, `--limit`).",
+    'Invoke a tool path (e.g. `executor call github issues create \'{"title":"Hi"}\'`). Use `--help` to browse by namespace/path (`--match`, `--limit`).',
   ),
 );
 
 const resumeCommand = Command.make(
   "resume",
   {
-    executionId: Options.text("execution-id").pipe(
+    executionId: Options.string("execution-id").pipe(
       Options.withDescription("Execution ID returned by a paused call"),
     ),
     action: Options.choice("action", ["accept", "decline", "cancel"] as const).pipe(
       Options.withDefault("accept"),
       Options.withDescription("Interaction response action"),
     ),
-    content: Options.text("content").pipe(
+    content: Options.string("content").pipe(
       Options.optional,
       Options.withDescription("JSON object to send when action=accept"),
     ),
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ executionId, action, content, baseUrl, scope }) =>
@@ -1055,9 +1307,20 @@ const resumeCommand = Command.make(
 
       const client = yield* makeApiClient(daemonUrl);
       const result = yield* client.executions.resume({
-        path: { executionId },
+        params: { executionId },
         payload: { action, content: contentObj },
       });
+
+      if (result.status === "paused") {
+        console.log(result.text);
+        const nextExecutionId = extractExecutionId(result.structured);
+        if (nextExecutionId) {
+          console.log("");
+          console.log("Approval required:");
+          console.log(buildResumeApprovalUrl(daemonUrl, nextExecutionId));
+        }
+        process.exit(0);
+      }
 
       if (result.isError) {
         if (shouldPrintVerboseErrors(process.argv)) {
@@ -1081,10 +1344,10 @@ const resumeCommand = Command.make(
 const toolsSearchCommand = Command.make(
   "search",
   {
-    query: Args.text({ name: "query" }),
-    namespace: Options.text("namespace").pipe(Options.optional),
+    query: Args.string("query"),
+    namespace: Options.string("namespace").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(12)),
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ query, namespace, limit, baseUrl, scope }) =>
@@ -1104,9 +1367,9 @@ const toolsSearchCommand = Command.make(
 const toolsSourcesCommand = Command.make(
   "sources",
   {
-    query: Options.text("query").pipe(Options.optional),
+    query: Options.string("query").pipe(Options.optional),
     limit: Options.integer("limit").pipe(Options.withDefault(50)),
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ query, limit, baseUrl, scope }) =>
@@ -1125,8 +1388,8 @@ const toolsSourcesCommand = Command.make(
 const toolsDescribeCommand = Command.make(
   "describe",
   {
-    path: Args.text({ name: "path" }),
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    path: Args.string("path"),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ path, baseUrl, scope }) =>
@@ -1139,9 +1402,7 @@ const toolsDescribeCommand = Command.make(
 ).pipe(Command.withDescription("Describe a tool's TypeScript and JSON schema"));
 
 const toolsCommand = Command.make("tools").pipe(
-  Command.withSubcommands(
-    [toolsSearchCommand, toolsSourcesCommand, toolsDescribeCommand] as const,
-  ),
+  Command.withSubcommands([toolsSearchCommand, toolsSourcesCommand, toolsDescribeCommand] as const),
   Command.withDescription("Discover available tools and sources"),
 );
 
@@ -1149,22 +1410,34 @@ const webCommand = Command.make(
   "web",
   {
     port: Options.integer("port").pipe(Options.withDefault(DEFAULT_PORT)),
-    hostname: Options.text("hostname")
+    hostname: Options.string("hostname")
       .pipe(Options.withDefault("127.0.0.1"))
       .pipe(Options.withDescription("Bind address. Use 0.0.0.0 to listen on all interfaces.")),
-    allowedHost: Options.text("allowed-host")
-      .pipe(Options.repeated)
+    allowedHost: Options.string("allowed-host")
+      .pipe(Options.atLeast(0))
       .pipe(
         Options.withDescription(
           "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
         ),
       ),
+    authToken: Options.string("auth-token")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Bearer token required for requests.")),
+    authPassword: Options.string("auth-password")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Basic auth password required for requests.")),
     scope,
   },
-  ({ port, scope, hostname, allowedHost }) =>
+  ({ port, scope, hostname, allowedHost, authToken, authPassword }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runForegroundSession({ port, hostname, allowedHosts: allowedHost });
+      yield* runForegroundSession({
+        port,
+        hostname,
+        allowedHosts: allowedHost,
+        authToken: Option.getOrUndefined(authToken),
+        authPassword: Option.getOrUndefined(authPassword),
+      });
     }),
 ).pipe(Command.withDescription("Start a foreground web session"));
 
@@ -1172,29 +1445,52 @@ const daemonRunCommand = Command.make(
   "run",
   {
     port: Options.integer("port").pipe(Options.withDefault(DEFAULT_PORT)),
-    hostname: Options.text("hostname")
+    hostname: Options.string("hostname")
       .pipe(Options.withDefault("127.0.0.1"))
       .pipe(Options.withDescription("Bind address. Keep this local unless you trust the network.")),
-    allowedHost: Options.text("allowed-host")
-      .pipe(Options.repeated)
+    allowedHost: Options.string("allowed-host")
+      .pipe(Options.atLeast(0))
       .pipe(
         Options.withDescription(
           "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
         ),
       ),
+    authToken: Options.string("auth-token")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Bearer token required for requests.")),
+    authPassword: Options.string("auth-password")
+      .pipe(Options.optional)
+      .pipe(Options.withDescription("Basic auth password required for requests.")),
+    foreground: Options.boolean("foreground")
+      .pipe(Options.withDefault(false))
+      .pipe(
+        Options.withDescription(
+          "Run the daemon in this process instead of detaching. Useful for inspecting logs.",
+        ),
+      ),
     scope,
   },
-  ({ port, scope, hostname, allowedHost }) =>
+  ({ port, scope, hostname, allowedHost, authToken, authPassword, foreground }) =>
     Effect.gen(function* () {
       applyScope(scope);
-      yield* runDaemonSession({ port, hostname, allowedHosts: allowedHost });
+      if (foreground) {
+        yield* runDaemonSession({
+          port,
+          hostname,
+          allowedHosts: allowedHost,
+          authToken: Option.getOrUndefined(authToken),
+          authPassword: Option.getOrUndefined(authPassword),
+        });
+      } else {
+        yield* runBackgroundDaemonStart({ port, hostname, allowedHosts: allowedHost });
+      }
     }),
-).pipe(Command.withDescription("Run the local executor daemon"));
+).pipe(Command.withDescription("Run the local executor daemon (background by default)"));
 
 const daemonStatusCommand = Command.make(
   "status",
   {
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
   },
   ({ baseUrl }) =>
     Effect.gen(function* () {
@@ -1218,7 +1514,9 @@ const daemonStatusCommand = Command.make(
       if (!isPidAlive(record.pid)) {
         if (!reachable) {
           yield* removeDaemonRecord({ hostname: host, port: target.port });
-          yield* removeDaemonPointer({ hostname: host, scopeId: target.scopeId }).pipe(Effect.ignore);
+          yield* removeDaemonPointer({ hostname: host, scopeId: target.scopeId }).pipe(
+            Effect.ignore,
+          );
           console.log(
             `Daemon not running at ${target.baseUrl} (removed stale record for pid ${record.pid}).`,
           );
@@ -1244,7 +1542,7 @@ const daemonStatusCommand = Command.make(
 const daemonStopCommand = Command.make(
   "stop",
   {
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
   },
   ({ baseUrl }) => stopDaemon(baseUrl),
 ).pipe(Command.withDescription("Stop the local daemon"));
@@ -1252,7 +1550,7 @@ const daemonStopCommand = Command.make(
 const daemonRestartCommand = Command.make(
   "restart",
   {
-    baseUrl: Options.text("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
+    baseUrl: Options.string("base-url").pipe(Options.withDefault(DEFAULT_BASE_URL)),
     scope,
   },
   ({ baseUrl, scope }) =>
@@ -1265,17 +1563,32 @@ const daemonRestartCommand = Command.make(
 ).pipe(Command.withDescription("Restart the local daemon"));
 
 const daemonCommand = Command.make("daemon").pipe(
-  Command.withSubcommands(
-    [daemonRunCommand, daemonStatusCommand, daemonStopCommand, daemonRestartCommand] as const,
-  ),
+  Command.withSubcommands([
+    daemonRunCommand,
+    daemonStatusCommand,
+    daemonStopCommand,
+    daemonRestartCommand,
+  ] as const),
   Command.withDescription("Manage the local daemon"),
 );
 
-const mcpCommand = Command.make("mcp", { scope }, ({ scope }) =>
-  Effect.gen(function* () {
-    applyScope(scope);
-    yield* runStdioMcpSession();
-  }),
+const mcpCommand = Command.make(
+  "mcp",
+  {
+    scope,
+    elicitationMode: Options.choice("elicitation-mode", ["browser", "model"] as const)
+      .pipe(Options.withDefault("model"))
+      .pipe(
+        Options.withDescription(
+          "Choose the stdio approval flow: browser approval or a CLI resume tool exposed to the model.",
+        ),
+      ),
+  },
+  ({ scope, elicitationMode }) =>
+    Effect.gen(function* () {
+      applyScope(scope);
+      yield* runStdioMcpSession({ elicitationMode });
+    }),
 ).pipe(Command.withDescription("Start an MCP server over stdio"));
 
 // ---------------------------------------------------------------------------
@@ -1283,9 +1596,14 @@ const mcpCommand = Command.make("mcp", { scope }, ({ scope }) =>
 // ---------------------------------------------------------------------------
 
 const root = Command.make("executor").pipe(
-  Command.withSubcommands(
-    [callCommand, resumeCommand, toolsCommand, webCommand, daemonCommand, mcpCommand] as const,
-  ),
+  Command.withSubcommands([
+    callCommand,
+    resumeCommand,
+    toolsCommand,
+    webCommand,
+    daemonCommand,
+    mcpCommand,
+  ] as const),
   Command.withDescription("Executor local CLI"),
 );
 
@@ -1294,9 +1612,7 @@ const root = Command.make("executor").pipe(
 // ---------------------------------------------------------------------------
 
 const runCli = Command.run(root, {
-  name: CLI_NAME,
   version: CLI_VERSION,
-  executable: CLI_NAME,
 });
 
 if (process.argv.includes("-v")) {
@@ -1307,18 +1623,23 @@ if (process.argv.includes("-v")) {
 const isCallHelpInvocation =
   process.argv[2] === "call" && process.argv.slice(3).some((arg) => isHelpFlag(arg));
 
-const program = (isCallHelpInvocation
-  ? Effect.gen(function* () {
-      const args = yield* Effect.try({
-        try: () => parseCallHelpArgs(process.argv.slice(3)),
-        catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
-      });
-      yield* runCallHelp(args);
-    })
-  : runCli(process.argv)
+// Kick off the integrations.sh registry fetch on a sidecar runtime — see
+// `./integrations`. Skipped on `-v` (short-circuits earlier).
+fetchIntegrations();
+
+const program = (
+  isCallHelpInvocation
+    ? Effect.gen(function* () {
+        const args = yield* Effect.try({
+          try: () => parseCallHelpArgs(process.argv.slice(3)),
+          catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+        });
+        yield* runCallHelp(args);
+      })
+    : runCli
 ).pipe(
-  Effect.provide(BunContext.layer),
-  Effect.catchAllCause((cause) =>
+  Effect.provide(BunServices.layer),
+  Effect.catchCause((cause) =>
     Effect.sync(() => {
       if (shouldPrintVerboseErrors(process.argv)) {
         console.error(Cause.pretty(cause));

@@ -17,6 +17,11 @@ export interface DaemonSpawnSpec {
   readonly args: ReadonlyArray<string>;
 }
 
+type ProbeServer = ReturnType<typeof createServer> & {
+  removeAllListeners: () => void;
+  once: (event: "error" | "listening", listener: (...args: unknown[]) => void) => void;
+};
+
 // ---------------------------------------------------------------------------
 // Base URL parsing
 // ---------------------------------------------------------------------------
@@ -43,10 +48,17 @@ export const parseDaemonBaseUrl = (baseUrl: string, defaultPort: number): Parsed
 // Local-host checks
 // ---------------------------------------------------------------------------
 
-const LOCAL_DAEMON_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const LOCAL_DAEMON_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const BUN_EMBEDDED_ENTRYPOINT_PREFIX = "/$bunfs/";
 
 export const canAutoStartLocalDaemonForHost = (hostname: string): boolean =>
   LOCAL_DAEMON_HOSTNAMES.has(hostname.toLowerCase());
+
+export const isDevCliEntrypoint = (scriptPath: string | undefined): boolean => {
+  if (!scriptPath) return false;
+  if (scriptPath.startsWith(BUN_EMBEDDED_ENTRYPOINT_PREFIX)) return false;
+  return scriptPath.endsWith(".ts") || scriptPath.endsWith(".js");
+};
 
 // ---------------------------------------------------------------------------
 // Process spec
@@ -58,8 +70,18 @@ export const buildDaemonSpawnSpec = (input: {
   readonly isDevMode: boolean;
   readonly scriptPath: string | undefined;
   readonly executablePath: string;
+  readonly allowedHosts?: ReadonlyArray<string>;
 }): DaemonSpawnSpec => {
-  const daemonArgs = ["daemon", "run", "--port", String(input.port), "--hostname", input.hostname];
+  const daemonArgs = [
+    "daemon",
+    "run",
+    "--port",
+    String(input.port),
+    "--hostname",
+    input.hostname,
+    "--foreground",
+    ...(input.allowedHosts ?? []).flatMap((h) => ["--allowed-host", h]),
+  ];
 
   if (input.isDevMode) {
     if (!input.scriptPath) {
@@ -152,11 +174,14 @@ const toProbeHost = (hostname: string): string => {
   return hostname;
 };
 
-const isPortAvailable = (input: { hostname: string; port: number }): Effect.Effect<boolean, Error> =>
+const isPortAvailable = (input: {
+  hostname: string;
+  port: number;
+}): Effect.Effect<boolean, Error> =>
   Effect.tryPromise({
     try: () =>
       new Promise<boolean>((resolve) => {
-        const server = createServer() as any;
+        const server = createServer() as ProbeServer;
         const cleanup = () => {
           if (typeof server.removeAllListeners === "function") {
             server.removeAllListeners();
@@ -185,7 +210,7 @@ const pickEphemeralPort = (hostname: string): Effect.Effect<number, Error> =>
   Effect.tryPromise({
     try: () =>
       new Promise<number>((resolve, reject) => {
-        const server = createServer() as any;
+        const server = createServer() as ProbeServer;
 
         server.once("error", (error: unknown) => {
           reject(error);
@@ -200,7 +225,9 @@ const pickEphemeralPort = (hostname: string): Effect.Effect<number, Error> =>
         server.listen({ port: 0, host: toProbeHost(hostname) });
       }),
     catch: (cause) =>
-      cause instanceof Error ? cause : new Error(`Failed selecting ephemeral port: ${String(cause)}`),
+      cause instanceof Error
+        ? cause
+        : new Error(`Failed selecting ephemeral port: ${String(cause)}`),
   });
 
 export const chooseDaemonPort = (input: {

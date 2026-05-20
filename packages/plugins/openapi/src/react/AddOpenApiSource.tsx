@@ -1,96 +1,147 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useAtomSet } from "@effect-atom/atom-react";
-import { Option } from "effect";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAtomSet } from "@effect/atom-react";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Match from "effect/Match";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
-import { openOAuthPopup, type OAuthPopupResult } from "@executor/plugin-oauth2/react";
-
-import { useScope } from "@executor/react/api/scope-context";
-import { sourceWriteKeys } from "@executor/react/api/reactivity-keys";
-import { usePendingSources } from "@executor/react/api/optimistic";
-import { HeadersList } from "@executor/react/plugins/headers-list";
 import {
-  ApprovalPolicyToggles,
-  HTTP_METHOD_TOKENS,
-} from "@executor/react/plugins/approval-policy-field";
+  ConnectionId,
+  ScopeId,
+  SecretId,
+  SetSourceCredentialBindingInput,
+} from "@executor-js/sdk/shared";
+import { setSourceCredentialBinding, startOAuth } from "@executor-js/react/api/atoms";
+import { useScope, useScopeStack } from "@executor-js/react/api/scope-context";
+import { connectionWriteKeys, sourceWriteKeys } from "@executor-js/react/api/reactivity-keys";
+
+// `addSpec` with an oauth2 payload persists a source row AND (for
+// clientCredentials) a freshly-minted Connection + owned secrets,
+// because the inline token exchange happens during `startOAuth`.
+// Invalidate both so the source-detail page opens into its connected
+// state without a refresh.
+const addSpecWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
+const bindingWriteKeys = [...sourceWriteKeys, ...connectionWriteKeys] as const;
+import { HeadersList } from "@executor-js/react/plugins/headers-list";
+import {
+  HttpCredentialsEditor,
+  emptyHttpCredentials,
+  serializeHttpCredentials,
+  type HttpCredentialsState,
+} from "@executor-js/react/plugins/http-credentials";
+import {
+  oauthCallbackUrl,
+  useOAuthPopupFlow,
+  type OAuthCompletionPayload,
+} from "@executor-js/react/plugins/oauth-sign-in";
 import {
   CreatableSecretPicker,
   matchPresetKey,
   type HeaderState,
-} from "@executor/react/plugins/secret-header-auth";
+} from "@executor-js/react/plugins/secret-header-auth";
+import { CredentialScopeDropdown } from "@executor-js/react/plugins/credential-target-scope";
+import { slugifyNamespace, useSourceIdentity } from "@executor-js/react/plugins/source-identity";
+import { useSecretPickerSecrets } from "@executor-js/react/plugins/use-secret-picker-secrets";
+import { Button } from "@executor-js/react/components/button";
+import { CopyButton } from "@executor-js/react/components/copy-button";
 import {
-  slugifyNamespace,
-  SourceIdentityFields,
-  useSourceIdentity,
-} from "@executor/react/plugins/source-identity";
-import { useSecretPickerSecrets } from "@executor/react/plugins/use-secret-picker-secrets";
-import { Button } from "@executor/react/components/button";
-import { CopyButton } from "@executor/react/components/copy-button";
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@executor-js/react/components/collapsible";
 import {
   CardStack,
   CardStackContent,
-  CardStackEntry,
-  CardStackEntryContent,
-  CardStackEntryDescription,
   CardStackEntryField,
-  CardStackEntryTitle,
-} from "@executor/react/components/card-stack";
-import { FieldLabel } from "@executor/react/components/field";
-import { FloatActions } from "@executor/react/components/float-actions";
-import { Input } from "@executor/react/components/input";
-import { Label } from "@executor/react/components/label";
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@executor/react/components/native-select";
-import { Textarea } from "@executor/react/components/textarea";
-import { Checkbox } from "@executor/react/components/checkbox";
-import { SourceFavicon } from "@executor/react/components/source-favicon";
-import { RadioGroup, RadioGroupItem } from "@executor/react/components/radio-group";
-import { Skeleton } from "@executor/react/components/skeleton";
-import { IOSSpinner, Spinner } from "@executor/react/components/spinner";
-import {
-  addOpenApiSpec,
-  previewOpenApiSpec,
-  startOpenApiOAuth,
-} from "./atoms";
+} from "@executor-js/react/components/card-stack";
+import { FieldLabel } from "@executor-js/react/components/field";
+import { FloatActions } from "@executor-js/react/components/float-actions";
+import { HelpTooltip } from "@executor-js/react/components/help-tooltip";
+import { Label } from "@executor-js/react/components/label";
+import { Textarea } from "@executor-js/react/components/textarea";
+import { Checkbox } from "@executor-js/react/components/checkbox";
+import { RadioGroup, RadioGroupItem } from "@executor-js/react/components/radio-group";
+import { IOSSpinner, Spinner } from "@executor-js/react/components/spinner";
+import { addOpenApiSpecOptimistic, previewOpenApiSpec } from "./atoms";
+import { OpenApiSourceDetailsFields } from "./OpenApiSourceDetailsFields";
 import type { SpecPreview, HeaderPreset, OAuth2Preset } from "../sdk/preview";
 import {
-  OAuth2Auth,
-  type HeaderValue,
-  type ServerInfo,
-  type ServerVariable,
-} from "../sdk/types";
+  headerBindingSlot,
+  oauth2ClientIdSlot,
+  oauth2ClientSecretSlot,
+  oauth2ConnectionSlot,
+  queryParamBindingSlot,
+  specFetchHeaderBindingSlot,
+  specFetchQueryParamBindingSlot,
+} from "../sdk/source-contracts";
+import { OAuth2SourceConfig, type ServerInfo } from "../sdk/types";
+import { expandServerUrlOptions } from "../sdk/openapi-utils";
 
-export const OPENAPI_OAUTH_CHANNEL = "executor:openapi-oauth-result";
 export const OPENAPI_OAUTH_POPUP_NAME = "openapi-oauth";
-export const OPENAPI_OAUTH_CALLBACK_PATH = "/api/openapi/oauth/callback";
+export const OPENAPI_OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
-// Stable secret ids for the access/refresh tokens a given OAuth2 security
-// scheme on a given source mints. The same ids must be passed into
-// `startOAuth` AND stored on the source's `OAuth2Auth`, so at invoke time
-// the per-user scope (which actually holds the token value) resolves via
-// shadowing over the source-level reference. Keyed by source namespace +
-// scheme name so a single spec can host multiple schemes without
-// colliding, and so reconnecting OAuth overwrites the previous token
-// rather than leaking orphaned secret rows.
-const oauthTokenSecretIds = (
+const ErrorMessage = Schema.Struct({ message: Schema.String });
+const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+
+const errorMessageFromExit = (exit: Exit.Exit<unknown, unknown>, fallback: string): string =>
+  Option.match(Option.flatMap(Exit.findErrorOption(exit), decodeErrorMessage), {
+    onNone: () => fallback,
+    onSome: ({ message }) => message,
+  });
+
+export const openApiOAuthConnectionId = (
   namespaceSlug: string,
-  securitySchemeName: string,
-): { readonly accessTokenSecretId: string; readonly refreshTokenSecretId: string } => {
-  const slugScheme = securitySchemeName.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const prefix = `openapi_${namespaceSlug}_${slugScheme}`;
-  return {
-    accessTokenSecretId: `${prefix}_access_token`,
-    refreshTokenSecretId: `${prefix}_refresh_token`,
-  };
-};
+  flow: OAuth2Preset["flow"],
+): string =>
+  flow === "clientCredentials"
+    ? `openapi-oauth2-app-${namespaceSlug || "default"}`
+    : `openapi-oauth2-user-${namespaceSlug || "default"}`;
 
-const substituteUrlVariables = (url: string, values: Record<string, string>): string => {
-  let out = url;
-  for (const [name, value] of Object.entries(values)) {
-    out = out.replaceAll(`{${name}}`, value);
+/**
+ * OpenAPI 3.x requires OAuth2 tokenUrl/authorizationUrl to be absolute,
+ * but some specs ship relative paths like `/api/rest/v1/oauth/token`.
+ * Resolve them against the source's chosen baseUrl so the backend can
+ * fetch them directly and the absolute URL is what gets persisted on
+ * OAuth2SourceConfig.
+ */
+export function resolveOAuthUrl(url: string, baseUrl: string): string {
+  if (!url) return url;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor normalizes provider metadata URLs
+  try {
+    new URL(url);
+    return url;
+  } catch {
+    if (!baseUrl) return url;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor resolves relative provider metadata URLs
+    try {
+      return new URL(url, baseUrl).toString();
+    } catch {
+      return url;
+    }
   }
-  return out;
+}
+
+export function inferOAuthIssuerUrl(authorizationUrl: string): string | null {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor normalizes provider metadata URLs
+  try {
+    return new URL(authorizationUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+const specInputForAdd = (input: string) => {
+  const value = input.trim();
+  const parsed = Effect.runSyncExit(
+    Effect.try({
+      try: () => new URL(value),
+      catch: () => null,
+    }),
+  );
+  return Exit.isSuccess(parsed)
+    ? { kind: "url" as const, url: value }
+    : { kind: "blob" as const, value };
 };
 
 type StrategySelection =
@@ -99,27 +150,29 @@ type StrategySelection =
   | { readonly kind: "header"; readonly presetIndex: number }
   | { readonly kind: "oauth2"; readonly presetIndex: number };
 
-const serializeStrategy = (s: StrategySelection): string => {
-  switch (s.kind) {
-    case "none":
-      return "none";
-    case "custom":
-      return "custom";
-    case "header":
-      return `header:${s.presetIndex}`;
-    case "oauth2":
-      return `oauth2:${s.presetIndex}`;
-  }
-};
+const serializeStrategy = (s: StrategySelection): string =>
+  Match.value(s).pipe(
+    Match.when({ kind: "none" }, () => "none"),
+    Match.when({ kind: "custom" }, () => "custom"),
+    Match.when({ kind: "header" }, (sel) => `header:${sel.presetIndex}`),
+    Match.when({ kind: "oauth2" }, (sel) => `oauth2:${sel.presetIndex}`),
+    Match.exhaustive,
+  );
 
 const parseStrategy = (value: string): StrategySelection => {
   if (value === "none") return { kind: "none" };
   if (value === "custom") return { kind: "custom" };
   if (value.startsWith("header:")) {
-    return { kind: "header", presetIndex: Number(value.slice("header:".length)) };
+    return {
+      kind: "header",
+      presetIndex: Number(value.slice("header:".length)),
+    };
   }
   if (value.startsWith("oauth2:")) {
-    return { kind: "oauth2", presetIndex: Number(value.slice("oauth2:".length)) };
+    return {
+      kind: "oauth2",
+      presetIndex: Number(value.slice("oauth2:".length)),
+    };
   }
   return { kind: "none" };
 };
@@ -150,6 +203,11 @@ function entriesFromSpecPreset(preset: HeaderPreset): HeaderState[] {
   });
 }
 
+const secretStorageDescription = (label: string): string =>
+  label === "Personal"
+    ? "Only you can use this secret."
+    : "Everyone in the organization can use this secret.";
+
 // ---------------------------------------------------------------------------
 // Main component — single progressive form
 // ---------------------------------------------------------------------------
@@ -167,11 +225,7 @@ export default function AddOpenApiSource(props: {
 
   // After analysis
   const [preview, setPreview] = useState<SpecPreview | null>(null);
-  // -1 means the user is entering a fully custom base URL (no server selected).
-  const [selectedServerIndex, setSelectedServerIndex] = useState<number>(-1);
-  const [customBaseUrl, setCustomBaseUrl] = useState("");
-  // Variable selections for the currently selected server, keyed by variable name.
-  const [variableSelections, setVariableSelections] = useState<Record<string, string>>({});
+  const [baseUrl, setBaseUrl] = useState("");
   const identity = useSourceIdentity({
     fallbackName: preview ? Option.getOrElse(preview.title, () => "") : "",
     fallbackNamespace: props.initialNamespace,
@@ -180,33 +234,86 @@ export default function AddOpenApiSource(props: {
   // Auth
   const [strategy, setStrategy] = useState<StrategySelection>({ kind: "none" });
   const [customHeaders, setCustomHeaders] = useState<HeaderState[]>([]);
+  const [specFetchCredentials, setSpecFetchCredentials] = useState<HttpCredentialsState>(() =>
+    emptyHttpCredentials(),
+  );
+  const [specFetchCredentialsOpen, setSpecFetchCredentialsOpen] = useState(false);
+  const [runtimeCredentials, setRuntimeCredentials] = useState<HttpCredentialsState>(() =>
+    emptyHttpCredentials(),
+  );
 
   // OAuth2 state (only populated while an oauth2 preset is selected)
   const [oauth2ClientIdSecretId, setOauth2ClientIdSecretId] = useState<string | null>(null);
-  const [oauth2ClientSecretSecretId, setOauth2ClientSecretSecretId] = useState<string | null>(
-    null,
-  );
+  const [oauth2ClientSecretSecretId, setOauth2ClientSecretSecretId] = useState<string | null>(null);
+  const [oauth2ClientIdScope, setOauth2ClientIdScope] = useState<ScopeId | null>(null);
+  const [oauth2ClientSecretScope, setOauth2ClientSecretScope] = useState<ScopeId | null>(null);
   const [oauth2SelectedScopes, setOauth2SelectedScopes] = useState<Set<string>>(new Set());
-  const [oauth2Auth, setOauth2Auth] = useState<OAuth2Auth | null>(null);
+  const [oauth2AuthState, setOauth2AuthState] = useState<{
+    readonly fingerprint: string;
+    readonly auth: { readonly connectionId: string };
+  } | null>(null);
   const [startingOAuth, setStartingOAuth] = useState(false);
   const [oauth2Error, setOauth2Error] = useState<string | null>(null);
-  const oauthCleanup = useRef<(() => void) | null>(null);
-
-  // Annotation policy override — `undefined` means "use plugin defaults".
-  const [annotationPolicy, setAnnotationPolicy] = useState<readonly string[] | undefined>(
-    undefined,
-  );
 
   // Submit
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
   const scopeId = useScope();
-  const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promise" });
-  const doAdd = useAtomSet(addOpenApiSpec, { mode: "promise" });
-  const doStartOAuth = useAtomSet(startOpenApiOAuth, { mode: "promise" });
-  const { beginAdd } = usePendingSources();
+  const scopeStack = useScopeStack();
+  const credentialScopeOptions = useMemo(
+    () =>
+      scopeStack.map((entry, index) => ({
+        scopeId: entry.id,
+        label: index === 0 ? "Personal" : entry.name || "Organization",
+        description: secretStorageDescription(
+          index === 0 ? "Personal" : entry.name || "Organization",
+        ),
+      })),
+    [scopeStack],
+  );
+  const defaultOAuthTokenTargetScope = credentialScopeOptions[0]?.scopeId ?? scopeId;
+  const [oauthTokenTargetScope, setOAuthTokenTargetScope] = useState<ScopeId>(
+    defaultOAuthTokenTargetScope,
+  );
+  useEffect(() => {
+    if (!credentialScopeOptions.some((option) => option.scopeId === oauthTokenTargetScope)) {
+      setOAuthTokenTargetScope(defaultOAuthTokenTargetScope);
+    }
+  }, [credentialScopeOptions, defaultOAuthTokenTargetScope, oauthTokenTargetScope]);
+  useEffect(() => {
+    if (
+      oauth2ClientIdScope &&
+      !credentialScopeOptions.some((option) => option.scopeId === oauth2ClientIdScope)
+    ) {
+      setOauth2ClientIdScope(null);
+      setOauth2ClientIdSecretId(null);
+      setOauth2AuthState(null);
+    }
+    if (
+      oauth2ClientSecretScope &&
+      !credentialScopeOptions.some((option) => option.scopeId === oauth2ClientSecretScope)
+    ) {
+      setOauth2ClientSecretScope(null);
+      setOauth2ClientSecretSecretId(null);
+      setOauth2AuthState(null);
+    }
+  }, [credentialScopeOptions, oauth2ClientIdScope, oauth2ClientSecretScope]);
+  const doPreview = useAtomSet(previewOpenApiSpec, { mode: "promiseExit" });
+  const doAdd = useAtomSet(addOpenApiSpecOptimistic(scopeId), {
+    mode: "promiseExit",
+  });
+  const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
+  const doSetBinding = useAtomSet(setSourceCredentialBinding, {
+    mode: "promiseExit",
+  });
   const secretList = useSecretPickerSecrets();
+  const oauth = useOAuthPopupFlow<OAuthCompletionPayload>({
+    popupName: OPENAPI_OAUTH_POPUP_NAME,
+    popupBlockedMessage: "OAuth popup was blocked by the browser",
+    popupClosedMessage: "OAuth cancelled - popup was closed before completing the flow.",
+    startErrorMessage: "Failed to start OAuth",
+  });
 
   // Keep the latest handleAnalyze in a ref so the debounced effect doesn't
   // need it as a dependency (it closes over fresh state).
@@ -226,65 +333,182 @@ export default function AddOpenApiSource(props: {
 
   // ---- Derived state ----
 
-  const servers: readonly ServerInfo[] = preview?.servers ?? [];
-  const selectedServer: ServerInfo | null =
-    selectedServerIndex >= 0 ? (servers[selectedServerIndex] ?? null) : null;
-
-  const serverVariables: Record<string, ServerVariable> = selectedServer
-    ? Option.getOrElse(
-        selectedServer.variables,
-        () => ({}) as Record<string, ServerVariable>,
-      )
-    : {};
-  const serverVariableEntries: Array<[string, ServerVariable]> =
-    Object.entries(serverVariables);
-
-  const resolvedBaseUrl =
-    selectedServer !== null
-      ? substituteUrlVariables(selectedServer.url, variableSelections)
-      : customBaseUrl.trim();
-
-  // Helper used by analyze + server selection: build a default selection map
-  // from a server's variable defaults.
-  const defaultSelectionsFor = (server: ServerInfo): Record<string, string> => {
-    const vars: Record<string, ServerVariable> = Option.getOrElse(
-      server.variables,
-      () => ({}) as Record<string, ServerVariable>,
-    );
-    const out: Record<string, string> = {};
-    for (const [name, v] of Object.entries(vars)) out[name] = v.default;
-    return out;
+  const expandServerOptions = (server: ServerInfo) => {
+    return expandServerUrlOptions(server).map((value) => ({
+      value,
+      label: value,
+    }));
   };
 
-  const allHeaders: Record<string, HeaderValue> = {};
+  const servers: readonly ServerInfo[] = preview?.servers ?? [];
+  const baseUrlOptions = Array.from(
+    new Map(servers.flatMap(expandServerOptions).map((option) => [option.value, option])).values(),
+  );
+
+  const resolvedBaseUrl = baseUrl.trim();
+  const sourceScope = ScopeId.make(scopeId);
+
+  type PendingSecretBinding = {
+    readonly slot: string;
+    readonly secretId: string;
+    readonly scope: ScopeId;
+    readonly secretScope: ScopeId;
+  };
+
+  const configuredHeaders: Record<string, { kind: "secret"; prefix?: string }> = {};
+  const headerBindings: PendingSecretBinding[] = [];
+  const configuredQueryParams: Record<string, string | { kind: "secret"; prefix?: string }> = {};
+  const queryParamBindings: PendingSecretBinding[] = [];
   for (const ch of customHeaders) {
-    if (ch.name.trim() && ch.secretId) {
-      allHeaders[ch.name.trim()] = {
+    if (!ch.name.trim()) continue;
+    const slot = headerBindingSlot(ch.name.trim());
+    configuredHeaders[ch.name.trim()] = { kind: "secret", prefix: ch.prefix };
+    if (ch.secretId) {
+      const targetScope = ch.targetScope ?? sourceScope;
+      headerBindings.push({
+        slot,
         secretId: ch.secretId,
-        ...(ch.prefix ? { prefix: ch.prefix } : {}),
-      };
+        scope: targetScope,
+        secretScope: ch.secretScope ?? targetScope,
+      });
     }
   }
-  const hasHeaders = Object.keys(allHeaders).length > 0;
-
-  const customHeadersValid = customHeaders.every((ch) => ch.name.trim() && ch.secretId);
+  for (const param of runtimeCredentials.queryParams) {
+    const name = param.name.trim();
+    if (!name) continue;
+    if (param.secretId) {
+      const slot = queryParamBindingSlot(name);
+      const targetScope = param.targetScope ?? sourceScope;
+      configuredQueryParams[name] = { kind: "secret", prefix: param.prefix };
+      queryParamBindings.push({
+        slot,
+        secretId: param.secretId,
+        scope: targetScope,
+        secretScope: param.secretScope ?? targetScope,
+      });
+      continue;
+    }
+    if (param.literalValue?.trim()) {
+      configuredQueryParams[name] = param.literalValue.trim();
+    }
+  }
+  const configuredSpecFetchHeaders: Record<string, { kind: "secret"; prefix?: string }> = {};
+  const configuredSpecFetchQueryParams: Record<
+    string,
+    string | { kind: "secret"; prefix?: string }
+  > = {};
+  const specFetchBindings: PendingSecretBinding[] = [];
+  for (const header of specFetchCredentials.headers) {
+    const name = header.name.trim();
+    if (!name || !header.secretId) continue;
+    const targetScope = header.targetScope ?? sourceScope;
+    configuredSpecFetchHeaders[name] = { kind: "secret", prefix: header.prefix };
+    specFetchBindings.push({
+      slot: specFetchHeaderBindingSlot(name),
+      secretId: header.secretId,
+      scope: targetScope,
+      secretScope: header.secretScope ?? targetScope,
+    });
+  }
+  for (const param of specFetchCredentials.queryParams) {
+    const name = param.name.trim();
+    if (!name) continue;
+    if (param.secretId) {
+      const targetScope = param.targetScope ?? sourceScope;
+      configuredSpecFetchQueryParams[name] = { kind: "secret", prefix: param.prefix };
+      specFetchBindings.push({
+        slot: specFetchQueryParamBindingSlot(name),
+        secretId: param.secretId,
+        scope: targetScope,
+        secretScope: param.secretScope ?? targetScope,
+      });
+      continue;
+    }
+    if (param.literalValue?.trim()) {
+      configuredSpecFetchQueryParams[name] = param.literalValue.trim();
+    }
+  }
+  const configuredSpecFetchCredentials =
+    Object.keys(configuredSpecFetchHeaders).length > 0 ||
+    Object.keys(configuredSpecFetchQueryParams).length > 0
+      ? {
+          ...(Object.keys(configuredSpecFetchHeaders).length > 0
+            ? { headers: configuredSpecFetchHeaders }
+            : {}),
+          ...(Object.keys(configuredSpecFetchQueryParams).length > 0
+            ? { queryParams: configuredSpecFetchQueryParams }
+            : {}),
+        }
+      : null;
 
   const oauth2Presets: readonly OAuth2Preset[] = preview?.oauth2Presets ?? [];
-  const oauth2RedirectUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}${OPENAPI_OAUTH_CALLBACK_PATH}`
-      : OPENAPI_OAUTH_CALLBACK_PATH;
+  const oauth2RedirectUrl = oauthCallbackUrl(OPENAPI_OAUTH_CALLBACK_PATH);
+  // Stable source id derivation. Matches the value `handleAdd` sends as
+  // `namespace`, and is also the default credential key when the user
+  // does not provide a more explicit shared connection id.
+  const resolvedSourceId =
+    slugifyNamespace(identity.namespace) ||
+    (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const selectedOAuth2Preset: OAuth2Preset | null =
     strategy.kind === "oauth2" ? (oauth2Presets[strategy.presetIndex] ?? null) : null;
+  const selectedOAuth2Fingerprint = selectedOAuth2Preset
+    ? [
+        resolvedSourceId,
+        resolvedBaseUrl,
+        selectedOAuth2Preset.securitySchemeName,
+        selectedOAuth2Preset.flow,
+        selectedOAuth2Preset.tokenUrl,
+        Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
+      ].join("\n")
+    : "";
+  const oauth2Auth =
+    oauth2AuthState?.fingerprint === selectedOAuth2Fingerprint ? oauth2AuthState.auth : null;
 
-  const oauth2Ready =
-    strategy.kind !== "oauth2" || oauth2Auth !== null;
+  const configuredOAuth2 =
+    strategy.kind === "oauth2" && selectedOAuth2Preset
+      ? OAuth2SourceConfig.make({
+          kind: "oauth2",
+          securitySchemeName: selectedOAuth2Preset.securitySchemeName,
+          flow: selectedOAuth2Preset.flow,
+          tokenUrl: resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl),
+          authorizationUrl:
+            selectedOAuth2Preset.flow === "authorizationCode"
+              ? resolveOAuthUrl(
+                  Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
+                  resolvedBaseUrl,
+                ) || null
+              : null,
+          clientIdSlot: oauth2ClientIdSlot(selectedOAuth2Preset.securitySchemeName),
+          // Authorization-code specs can still be confidential clients
+          // (Spotify is one example). Persist the slot even when the value is
+          // deferred so the edit screen can collect the secret later.
+          clientSecretSlot: oauth2ClientSecretSlot(selectedOAuth2Preset.securitySchemeName),
+          connectionSlot: oauth2ConnectionSlot(selectedOAuth2Preset.securitySchemeName),
+          scopes: [...oauth2SelectedScopes],
+        })
+      : null;
+  const hasHeaders = Object.keys(configuredHeaders).length > 0;
+  const oauth2Busy = startingOAuth || oauth.busy;
+  const canConnectOAuth2 = Boolean(oauth2ClientIdSecretId) && resolvedBaseUrl.length > 0;
+  const hasIncompleteHeaderCredentials =
+    strategy.kind !== "none" &&
+    strategy.kind !== "oauth2" &&
+    customHeaders.some((header) => header.name.trim() && !header.secretId);
+  const hasIncompleteQueryCredentials = runtimeCredentials.queryParams.some(
+    (param) => param.name.trim() && !param.secretId && !param.literalValue?.trim(),
+  );
+  const hasIncompleteSpecFetchCredentials =
+    specFetchCredentials.headers.some((header) => header.name.trim() && !header.secretId) ||
+    specFetchCredentials.queryParams.some(
+      (param) => param.name.trim() && !param.secretId && !param.literalValue?.trim(),
+    );
+  const willAddWithoutInitialCredentials =
+    Boolean(selectedOAuth2Preset && !oauth2Auth) ||
+    hasIncompleteSpecFetchCredentials ||
+    hasIncompleteHeaderCredentials ||
+    hasIncompleteQueryCredentials;
 
-  const canAdd =
-    preview !== null &&
-    resolvedBaseUrl.length > 0 &&
-    (customHeaders.length === 0 || customHeadersValid) &&
-    oauth2Ready;
+  const canAdd = preview !== null && resolvedBaseUrl.length > 0;
 
   // ---- Handlers ----
 
@@ -292,37 +516,42 @@ export default function AddOpenApiSource(props: {
     setAnalyzing(true);
     setAnalyzeError(null);
     setAddError(null);
-    try {
-      const result = await doPreview({
-        path: { scopeId },
-        payload: { spec: specUrl },
-      });
-      setPreview(result);
-
-      const firstServer = result.servers[0];
-      if (firstServer) {
-        setSelectedServerIndex(0);
-        setVariableSelections(defaultSelectionsFor(firstServer));
-        setCustomBaseUrl("");
-      } else {
-        setSelectedServerIndex(-1);
-        setVariableSelections({});
-        setCustomBaseUrl("");
-      }
-
-      const firstPreset = result.headerPresets[0];
-      if (firstPreset) {
-        setStrategy({ kind: "header", presetIndex: 0 });
-        setCustomHeaders(entriesFromSpecPreset(firstPreset));
-      } else {
-        setStrategy({ kind: "none" });
-        setCustomHeaders([]);
-      }
-    } catch (e) {
-      setAnalyzeError(e instanceof Error ? e.message : "Failed to parse spec");
-    } finally {
+    const credentials = serializeHttpCredentials(specFetchCredentials);
+    const exit = await doPreview({
+      params: { scopeId },
+      payload: {
+        spec: specUrl,
+        specFetchCredentials: credentials,
+      },
+    });
+    if (Exit.isFailure(exit)) {
+      setAnalyzeError(errorMessageFromExit(exit, "Failed to parse spec"));
       setAnalyzing(false);
+      return;
     }
+    const result = exit.value;
+    setPreview(result);
+
+    const firstServer = result.servers[0];
+    setBaseUrl(firstServer ? (expandServerOptions(firstServer)[0]?.value ?? "") : "");
+
+    const firstPreset = result.headerPresets[0];
+    if (firstPreset) {
+      setStrategy({ kind: "header", presetIndex: 0 });
+      setCustomHeaders(entriesFromSpecPreset(firstPreset));
+    } else if (result.oauth2Presets[0]) {
+      setStrategy({ kind: "oauth2", presetIndex: 0 });
+      setCustomHeaders([]);
+      setOauth2SelectedScopes(new Set(Object.keys(result.oauth2Presets[0].scopes)));
+    } else {
+      // No header presets — default to "custom" so the headers editor is
+      // visible immediately. Specs with no `security` block (e.g. Microsoft
+      // Graph) would otherwise leave the user staring at just the
+      // Authentication heading with no way to add headers.
+      setStrategy({ kind: "custom" });
+      setCustomHeaders([]);
+    }
+    setAnalyzing(false);
   };
 
   handleAnalyzeRef.current = handleAnalyze;
@@ -331,34 +560,32 @@ export default function AddOpenApiSource(props: {
     setStrategy(next);
     // Clear any stale OAuth grant whenever the strategy changes away from oauth2.
     if (next.kind !== "oauth2") {
-      setOauth2Auth(null);
+      setOauth2AuthState(null);
       setOauth2Error(null);
     }
-    switch (next.kind) {
-      case "none":
+    Match.value(next).pipe(
+      Match.when({ kind: "none" }, () => {
         setCustomHeaders([]);
-        return;
-      case "custom": {
+      }),
+      Match.when({ kind: "custom" }, () => {
         const userHeaders = customHeaders.filter((h) => !h.fromPreset);
         setCustomHeaders(userHeaders.length > 0 ? userHeaders : []);
-        return;
-      }
-      case "header": {
-        const preset = preview?.headerPresets[next.presetIndex];
+      }),
+      Match.when({ kind: "header" }, (n) => {
+        const preset = preview?.headerPresets[n.presetIndex];
         if (!preset) return;
         const userHeaders = customHeaders.filter((h) => !h.fromPreset);
         setCustomHeaders([...entriesFromSpecPreset(preset), ...userHeaders]);
-        return;
-      }
-      case "oauth2": {
+      }),
+      Match.when({ kind: "oauth2" }, (n) => {
         setCustomHeaders([]);
-        const preset = preview?.oauth2Presets[next.presetIndex];
+        const preset = preview?.oauth2Presets[n.presetIndex];
         if (preset) {
           setOauth2SelectedScopes(new Set(Object.keys(preset.scopes)));
         }
-        return;
-      }
-    }
+      }),
+      Match.exhaustive,
+    );
   };
 
   const handleHeadersChange = (next: HeaderState[]) => {
@@ -376,233 +603,416 @@ export default function AddOpenApiSource(props: {
       return copy;
     });
     // Changing scopes invalidates any previously-granted token.
-    setOauth2Auth(null);
+    setOauth2AuthState(null);
   };
 
   const handleConnectOAuth2 = useCallback(async () => {
     if (!selectedOAuth2Preset || !oauth2ClientIdSecretId || !preview) return;
-    oauthCleanup.current?.();
-    oauthCleanup.current = null;
-    setStartingOAuth(true);
+    oauth.cancel();
     setOauth2Error(null);
-    try {
-      const displayName =
-        identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
+    const displayName = identity.name.trim() || selectedOAuth2Preset.securitySchemeName;
 
-      const namespaceSlug =
-        slugifyNamespace(identity.namespace) ||
-        slugifyNamespace(Option.getOrElse(preview.title, () => "")) ||
-        "openapi";
-      const tokenIds = oauthTokenSecretIds(
-        namespaceSlug,
-        selectedOAuth2Preset.securitySchemeName,
-      );
+    const tokenUrl = resolveOAuthUrl(selectedOAuth2Preset.tokenUrl, resolvedBaseUrl);
+    const clientIdSecretScope = oauth2ClientIdScope ?? sourceScope;
+    const clientSecretSecretScope = oauth2ClientSecretScope ?? sourceScope;
 
-      const response = await doStartOAuth({
-        path: { scopeId },
+    if (selectedOAuth2Preset.flow === "clientCredentials") {
+      // RFC 6749 §4.4: no user-interactive consent step. The client_secret
+      // is mandatory; the backend exchanges tokens inline and returns a
+      // completed Connection we bind to the source's connection slot.
+      if (!oauth2ClientSecretSecretId) {
+        setOauth2Error("client_credentials requires a client secret");
+        return;
+      }
+      setStartingOAuth(true);
+      const connectionId = openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow);
+      const exit = await doStartOAuth({
+        params: { scopeId: oauthTokenTargetScope },
         payload: {
-          displayName,
-          securitySchemeName: selectedOAuth2Preset.securitySchemeName,
-          flow: "authorizationCode",
-          authorizationUrl: Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
-          tokenUrl: selectedOAuth2Preset.tokenUrl,
-          redirectUrl: oauth2RedirectUrl,
-          clientIdSecretId: oauth2ClientIdSecretId,
-          clientSecretSecretId: oauth2ClientSecretSecretId,
-          scopes: [...oauth2SelectedScopes],
-          accessTokenSecretId: tokenIds.accessTokenSecretId,
-          refreshTokenSecretId: tokenIds.refreshTokenSecretId,
+          endpoint: tokenUrl,
+          redirectUrl: tokenUrl,
+          connectionId,
+          tokenScope: oauthTokenTargetScope,
+          strategy: {
+            kind: "client-credentials",
+            tokenEndpoint: tokenUrl,
+            clientIdSecretId: oauth2ClientIdSecretId,
+            clientIdSecretScopeId: String(clientIdSecretScope),
+            clientSecretSecretId: oauth2ClientSecretSecretId,
+            clientSecretSecretScopeId: String(clientSecretSecretScope),
+            scopes: [...oauth2SelectedScopes],
+          },
+          pluginId: "openapi",
+          identityLabel: `${displayName} OAuth`,
         },
       });
-
-      oauthCleanup.current = openOAuthPopup<OAuth2Auth>({
-        url: response.authorizationUrl,
-        popupName: OPENAPI_OAUTH_POPUP_NAME,
-        channelName: OPENAPI_OAUTH_CHANNEL,
-        onResult: (result: OAuthPopupResult<OAuth2Auth>) => {
-          oauthCleanup.current = null;
-          setStartingOAuth(false);
-          if (result.ok) {
-            // The popup payload is an OAuthPopupResult wrapping the
-            // backend's OAuth2Auth descriptor; strip the envelope and
-            // reconstruct the OAuth2Auth class instance for type safety.
-            setOauth2Auth(
-              new OAuth2Auth({
-                kind: "oauth2",
-                securitySchemeName: result.securitySchemeName,
-                flow: result.flow,
-                tokenUrl: result.tokenUrl,
-                clientIdSecretId: result.clientIdSecretId,
-                clientSecretSecretId: result.clientSecretSecretId,
-                accessTokenSecretId: result.accessTokenSecretId,
-                refreshTokenSecretId: result.refreshTokenSecretId,
-                tokenType: result.tokenType,
-                expiresAt: result.expiresAt,
-                scope: result.scope,
-                scopes: [...result.scopes],
-              }),
-            );
-            setOauth2Error(null);
-          } else {
-            setOauth2Error(result.error);
-          }
-        },
-        onClosed: () => {
-          // User closed the popup without completing the flow.
-          oauthCleanup.current = null;
-          setStartingOAuth(false);
-          setOauth2Error("OAuth cancelled — popup was closed before completing the flow.");
-        },
-        onOpenFailed: () => {
-          oauthCleanup.current = null;
-          setStartingOAuth(false);
-          setOauth2Error("OAuth popup was blocked by the browser");
-        },
-      });
-    } catch (e) {
       setStartingOAuth(false);
-      setOauth2Error(e instanceof Error ? e.message : "Failed to start OAuth");
+      if (Exit.isFailure(exit)) {
+        setOauth2Error(errorMessageFromExit(exit, "Failed to start OAuth"));
+        return;
+      }
+      const response = exit.value;
+      if (!response.completedConnection) {
+        setOauth2Error("client_credentials flow did not mint a connection");
+        return;
+      }
+      setOauth2AuthState({
+        fingerprint: selectedOAuth2Fingerprint,
+        auth: { connectionId: response.completedConnection.connectionId },
+      });
+      setOauth2Error(null);
+      return;
     }
+
+    const authorizationUrl = resolveOAuthUrl(
+      Option.getOrElse(selectedOAuth2Preset.authorizationUrl, () => ""),
+      resolvedBaseUrl,
+    );
+    const issuerUrl = inferOAuthIssuerUrl(authorizationUrl);
+
+    await oauth.openAuthorization({
+      tokenScope: oauthTokenTargetScope,
+      run: async () => {
+        const exit = await doStartOAuth({
+          params: { scopeId: oauthTokenTargetScope },
+          payload: {
+            endpoint: authorizationUrl,
+            connectionId: openApiOAuthConnectionId(resolvedSourceId, selectedOAuth2Preset.flow),
+            tokenScope: oauthTokenTargetScope,
+            redirectUrl: oauth2RedirectUrl,
+            strategy: {
+              kind: "authorization-code",
+              authorizationEndpoint: authorizationUrl,
+              tokenEndpoint: tokenUrl,
+              issuerUrl,
+              clientIdSecretId: oauth2ClientIdSecretId,
+              clientIdSecretScopeId: String(clientIdSecretScope),
+              clientSecretSecretId: oauth2ClientSecretSecretId ?? null,
+              clientSecretSecretScopeId: oauth2ClientSecretSecretId
+                ? String(clientSecretSecretScope)
+                : null,
+              scopes: [...oauth2SelectedScopes],
+            },
+            pluginId: "openapi",
+            identityLabel: `${displayName} OAuth`,
+          },
+        });
+        if (Exit.isFailure(exit)) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+          throw new Error(errorMessageFromExit(exit, "Failed to start OAuth"));
+        }
+        const response = exit.value;
+        if (response.authorizationUrl === null) {
+          // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: OAuth popup API represents start failure by rejecting run()
+          throw new Error("Unexpected response flow from server");
+        }
+        return {
+          sessionId: response.sessionId,
+          authorizationUrl: response.authorizationUrl,
+        };
+      },
+      onSuccess: (result) => {
+        setOauth2AuthState({
+          fingerprint: selectedOAuth2Fingerprint,
+          auth: { connectionId: result.connectionId },
+        });
+        setOauth2Error(null);
+      },
+      onError: (message) => {
+        setStartingOAuth(false);
+        setOauth2Error(message);
+      },
+    });
   }, [
     selectedOAuth2Preset,
     oauth2ClientIdSecretId,
     oauth2ClientSecretSecretId,
     oauth2SelectedScopes,
     oauth2RedirectUrl,
+    resolvedBaseUrl,
     preview,
     doStartOAuth,
-    scopeId,
     identity.name,
-    identity.namespace,
+    resolvedSourceId,
+    selectedOAuth2Fingerprint,
+    oauth,
+    oauthTokenTargetScope,
+    oauth2ClientIdScope,
+    oauth2ClientSecretScope,
+    sourceScope,
   ]);
 
   const handleCancelOAuth2 = useCallback(() => {
-    oauthCleanup.current?.();
-    oauthCleanup.current = null;
+    oauth.cancel();
     setStartingOAuth(false);
     setOauth2Error(null);
-  }, []);
-
-  useEffect(() => () => oauthCleanup.current?.(), []);
+  }, [oauth]);
 
   const handleAdd = async () => {
     setAdding(true);
     setAddError(null);
-    const namespace =
-      slugifyNamespace(identity.namespace) ||
-      (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
+    const namespace = resolvedSourceId;
     const displayName =
       identity.name.trim() ||
       (preview ? Option.getOrElse(preview.title, () => namespace) : namespace);
-    const placeholder = beginAdd({
-      id: namespace,
-      name: displayName,
-      kind: "openapi",
-      url: resolvedBaseUrl || undefined,
+    const exit = await doAdd({
+      params: { scopeId },
+      payload: {
+        spec: specInputForAdd(specUrl),
+        name: displayName,
+        namespace,
+        baseUrl: resolvedBaseUrl,
+        ...(configuredSpecFetchCredentials
+          ? { specFetchCredentials: configuredSpecFetchCredentials }
+          : {}),
+        ...(hasHeaders ? { headers: configuredHeaders } : {}),
+        ...(Object.keys(configuredQueryParams).length > 0
+          ? { queryParams: configuredQueryParams }
+          : {}),
+        ...(configuredOAuth2 ? { oauth2: configuredOAuth2 } : {}),
+      },
+      reactivityKeys: addSpecWriteKeys,
     });
-    try {
-      await doAdd({
-        path: { scopeId },
-        payload: {
-          spec: specUrl,
-          name: identity.name.trim() || undefined,
-          namespace: slugifyNamespace(identity.namespace) || undefined,
-          baseUrl: resolvedBaseUrl || undefined,
-          ...(hasHeaders ? { headers: allHeaders } : {}),
-          ...(oauth2Auth ? { oauth2: oauth2Auth } : {}),
-          ...(annotationPolicy !== undefined
-            ? { annotationPolicy: { requireApprovalFor: annotationPolicy } }
-            : {}),
-        },
-        reactivityKeys: sourceWriteKeys,
-      });
-      props.onComplete();
-    } catch (e) {
-      setAddError(e instanceof Error ? e.message : "Failed to add source");
+    if (Exit.isFailure(exit)) {
+      setAddError(errorMessageFromExit(exit, "Failed to add source"));
       setAdding(false);
-    } finally {
-      placeholder.done();
+      return;
     }
+
+    const sourceId = exit.value.namespace;
+    const oauthTokenBindingScope = ScopeId.make(oauthTokenTargetScope);
+    const clientIdBindingScope = oauth2ClientIdScope ?? sourceScope;
+    const clientSecretBindingScope = oauth2ClientSecretScope ?? sourceScope;
+
+    for (const binding of headerBindings) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: binding.scope,
+          slotKey: binding.slot,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(binding.secretId),
+            secretScopeId: binding.secretScope,
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    for (const binding of queryParamBindings) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: binding.scope,
+          slotKey: binding.slot,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(binding.secretId),
+            secretScopeId: binding.secretScope,
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    for (const binding of specFetchBindings) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: binding.scope,
+          slotKey: binding.slot,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(binding.secretId),
+            secretScopeId: binding.secretScope,
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    if (configuredOAuth2 && oauth2ClientIdSecretId) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: clientIdBindingScope,
+          slotKey: configuredOAuth2.clientIdSlot,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(oauth2ClientIdSecretId),
+            secretScopeId: clientIdBindingScope,
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    if (configuredOAuth2?.clientSecretSlot && oauth2ClientSecretSecretId) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: clientSecretBindingScope,
+          slotKey: configuredOAuth2.clientSecretSlot,
+          value: {
+            kind: "secret",
+            secretId: SecretId.make(oauth2ClientSecretSecretId),
+            secretScopeId: clientSecretBindingScope,
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    if (configuredOAuth2 && oauth2Auth) {
+      const bindingExit = await doSetBinding({
+        params: { scopeId },
+        payload: SetSourceCredentialBindingInput.make({
+          source: { id: sourceId, scope: sourceScope },
+          scope: oauthTokenBindingScope,
+          slotKey: configuredOAuth2.connectionSlot,
+          value: {
+            kind: "connection",
+            connectionId: ConnectionId.make(oauth2Auth.connectionId),
+          },
+        }),
+        reactivityKeys: bindingWriteKeys,
+      });
+      if (Exit.isFailure(bindingExit)) {
+        setAddError(errorMessageFromExit(bindingExit, "Failed to add source"));
+        setAdding(false);
+        return;
+      }
+    }
+
+    props.onComplete();
   };
 
   // ---- Render ----
 
   return (
     <div className="flex flex-1 flex-col gap-6">
-      <h1 className="text-xl font-semibold text-foreground">Add OpenAPI Source</h1>
+      <div>
+        <h1 className="text-xl font-semibold text-foreground">Add OpenAPI Source</h1>
+      </div>
 
-      {/* ── Spec input ── */}
-      <CardStack>
-        <CardStackContent className="border-t-0">
-          <CardStackEntryField
-            label="OpenAPI Spec"
-            hint={!preview ? "Paste a URL or raw JSON/YAML content." : undefined}
-          >
-            <div className="relative">
-              <Textarea
-                value={specUrl}
-                onChange={(e) => {
-                  setSpecUrl((e.target as HTMLTextAreaElement).value);
-                  if (preview) {
-                    setPreview(null);
-                    setSelectedServerIndex(-1);
-                    setCustomBaseUrl("");
-                    setVariableSelections({});
-                    setCustomHeaders([]);
-                    setStrategy({ kind: "none" });
-                    setOauth2Auth(null);
-                    setOauth2Error(null);
-                  }
-                }}
-                placeholder="https://api.example.com/openapi.json"
-                rows={3}
-                maxRows={10}
-                className="font-mono text-sm"
-              />
-              {analyzing && (
-                <div className="pointer-events-none absolute right-2 top-2">
-                  <IOSSpinner className="size-4" />
+      {!preview && (
+        <>
+          {/* ── Spec input ── */}
+          <CardStack>
+            <CardStackContent className="border-t-0">
+              <CardStackEntryField
+                label="OpenAPI Spec"
+                hint="Paste a URL or raw JSON/YAML content."
+              >
+                <div className="relative">
+                  <Textarea
+                    value={specUrl}
+                    onChange={(e) => {
+                      setSpecUrl((e.target as HTMLTextAreaElement).value);
+                    }}
+                    placeholder="https://api.example.com/openapi.json"
+                    rows={3}
+                    maxRows={10}
+                    className="font-mono text-sm"
+                  />
+                  {analyzing && (
+                    <div className="pointer-events-none absolute right-2 top-2">
+                      <IOSSpinner className="size-4" />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </CardStackEntryField>
-        </CardStackContent>
-      </CardStack>
+              </CardStackEntryField>
+            </CardStackContent>
+          </CardStack>
 
-      {/* ── Title card (shown below spec input after analysis) ── */}
+          <Collapsible
+            open={specFetchCredentialsOpen}
+            onOpenChange={setSpecFetchCredentialsOpen}
+            className="space-y-3"
+          >
+            <CollapsibleTrigger asChild>
+              <Button variant="outline" size="sm" className="self-start">
+                {specFetchCredentialsOpen ? "Hide spec credentials" : "Add spec credentials"}
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <HttpCredentialsEditor
+                credentials={specFetchCredentials}
+                onChange={setSpecFetchCredentials}
+                existingSecrets={secretList}
+                sourceName={identity.name}
+                targetScope={sourceScope}
+                credentialScopeOptions={credentialScopeOptions}
+                bindingScopeOptions={credentialScopeOptions}
+                labels={{
+                  headers: "Spec fetch headers",
+                  queryParams: "Spec fetch query parameters",
+                }}
+              />
+            </CollapsibleContent>
+          </Collapsible>
+        </>
+      )}
+
+      {/* ── Source information card (shown after analysis) ── */}
       {preview ? (
-        <CardStack>
-          <CardStackContent className="border-t-0">
-            <CardStackEntry>
-              {resolvedBaseUrl && <SourceFavicon url={resolvedBaseUrl} size={16} />}
-              <CardStackEntryContent>
-                <CardStackEntryTitle>
-                  {Option.getOrElse(preview.title, () => "API")}
-                </CardStackEntryTitle>
-                <CardStackEntryDescription>
-                  {Option.getOrElse(preview.version, () => "")}
-                  {Option.isSome(preview.version) && " · "}
-                  {preview.operationCount} operation
-                  {preview.operationCount !== 1 ? "s" : ""}
-                  {preview.tags.length > 0 &&
-                    ` · ${preview.tags.length} tag${preview.tags.length !== 1 ? "s" : ""}`}
-                </CardStackEntryDescription>
-              </CardStackEntryContent>
-            </CardStackEntry>
-          </CardStackContent>
-        </CardStack>
-      ) : analyzing ? (
-        <CardStack>
-          <CardStackContent className="border-t-0">
-            <CardStackEntry>
-              <Skeleton className="size-4 shrink-0 rounded" />
-              <CardStackEntryContent>
-                <Skeleton className="h-4 w-40" />
-                <Skeleton className="mt-1 h-3 w-56" />
-              </CardStackEntryContent>
-            </CardStackEntry>
-          </CardStackContent>
-        </CardStack>
+        <OpenApiSourceDetailsFields
+          title={Option.getOrElse(preview.title, () => "API")}
+          description={`${Option.getOrElse(preview.version, () => "")}${
+            Option.isSome(preview.version) ? " · " : ""
+          }${preview.operationCount} operation${preview.operationCount !== 1 ? "s" : ""}${
+            preview.tags.length > 0
+              ? ` · ${preview.tags.length} tag${preview.tags.length !== 1 ? "s" : ""}`
+              : ""
+          }`}
+          identity={identity}
+          baseUrl={resolvedBaseUrl}
+          onBaseUrlChange={setBaseUrl}
+          baseUrlOptions={baseUrlOptions}
+          specUrl={specUrl}
+          onSpecUrlChange={(value) => {
+            setSpecUrl(value);
+            setPreview(null);
+            setBaseUrl("");
+            setCustomHeaders([]);
+            setStrategy({ kind: "none" });
+            setOauth2AuthState(null);
+            setOauth2Error(null);
+          }}
+          faviconUrl={resolvedBaseUrl}
+          baseUrlMissingMessage="A base URL is required to make requests."
+        />
       ) : null}
 
       {analyzeError && (
@@ -614,357 +1024,306 @@ export default function AddOpenApiSource(props: {
       {/* ── Everything below appears after analysis ── */}
       {preview && (
         <>
-          <SourceIdentityFields identity={identity} />
-
-          {/* Base URL */}
-          <CardStack>
-            <CardStackContent className="border-t-0">
-              <CardStackEntryField label="Base URL">
-                {servers.length >= 1 && (
-                  <RadioGroup
-                    value={String(selectedServerIndex)}
-                    onValueChange={(value) => {
-                      const idx = Number(value);
-                      setSelectedServerIndex(idx);
-                      if (idx >= 0) {
-                        const s = servers[idx];
-                        if (s) setVariableSelections(defaultSelectionsFor(s));
-                      } else {
-                        setVariableSelections({});
-                      }
-                    }}
-                    className="gap-1.5"
-                  >
-                    {servers.map((s, i) => (
-                      <Label
-                        key={i}
-                        className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                          selectedServerIndex === i
-                            ? "border-primary/50 bg-primary/[0.03]"
-                            : "border-border hover:bg-accent/50"
-                        }`}
-                      >
-                        <RadioGroupItem value={String(i)} className="mt-0.5" />
-                        <div className="min-w-0 flex-1">
-                          <div className="font-mono text-xs text-foreground truncate">
-                            {s.url}
-                          </div>
-                          {Option.isSome(s.description) && (
-                            <div className="mt-0.5 text-[10px] text-muted-foreground">
-                              {s.description.value}
-                            </div>
-                          )}
-                        </div>
-                      </Label>
-                    ))}
-                    <Label
-                      className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                        selectedServerIndex === -1
-                          ? "border-primary/50 bg-primary/[0.03]"
-                          : "border-border hover:bg-accent/50"
-                      }`}
-                    >
-                      <RadioGroupItem value="-1" />
-                      <span className="text-xs font-medium text-foreground">Custom</span>
-                    </Label>
-                  </RadioGroup>
-                )}
-
-                {/* Per-variable pickers for the selected server */}
-                {selectedServer && serverVariableEntries.length > 0 && (
-                  <div className="mt-2 space-y-2 rounded-lg border border-border/60 bg-muted/20 p-2.5">
-                    {serverVariableEntries.map(([name, variable]) => {
-                      const enumValues: readonly string[] = Option.getOrElse(
-                        variable.enum,
-                        () => [] as readonly string[],
-                      );
-                      const current = variableSelections[name] ?? variable.default;
-                      return (
-                        <div key={name} className="space-y-1">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <Label className="font-mono text-[11px] text-foreground">
-                              {`{${name}}`}
-                            </Label>
-                            {Option.isSome(variable.description) && (
-                              <span className="text-[10px] text-muted-foreground truncate">
-                                {variable.description.value}
-                              </span>
-                            )}
-                          </div>
-                          {enumValues.length > 0 ? (
-                            <NativeSelect
-                              value={current}
-                              onChange={(e) =>
-                                setVariableSelections((prev) => ({
-                                  ...prev,
-                                  [name]: (e.target as HTMLSelectElement).value,
-                                }))
-                              }
-                            >
-                              {enumValues.map((v) => (
-                                <NativeSelectOption key={v} value={v}>
-                                  {v}
-                                </NativeSelectOption>
-                              ))}
-                            </NativeSelect>
-                          ) : (
-                            <Input
-                              value={current}
-                              onChange={(e) =>
-                                setVariableSelections((prev) => ({
-                                  ...prev,
-                                  [name]: (e.target as HTMLInputElement).value,
-                                }))
-                              }
-                              className="font-mono text-xs"
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {selectedServerIndex === -1 ? (
-                  <Input
-                    value={customBaseUrl}
-                    onChange={(e) => setCustomBaseUrl((e.target as HTMLInputElement).value)}
-                    placeholder="https://api.example.com"
-                    className="font-mono text-sm"
-                  />
-                ) : (
-                  <div className="rounded-md bg-muted/30 px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
-                    {resolvedBaseUrl || "\u00A0"}
-                  </div>
-                )}
-
-                {!resolvedBaseUrl && (
-                  <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                    A base URL is required to make requests.
-                  </p>
-                )}
-              </CardStackEntryField>
-            </CardStackContent>
-          </CardStack>
-
           <section className="space-y-2.5">
-            <FieldLabel>Authentication</FieldLabel>
-            {(preview.headerPresets.length > 0 || oauth2Presets.length > 0) && (
-              <RadioGroup
-                value={serializeStrategy(strategy)}
-                onValueChange={(value) => selectStrategy(parseStrategy(value))}
-                className="gap-1.5"
-              >
-                {preview.headerPresets.map((preset, i) => {
-                  const selected =
-                    strategy.kind === "header" && strategy.presetIndex === i;
-                  return (
-                    <Label
-                      key={`header-${i}`}
-                      className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                        selected
-                          ? "border-primary/50 bg-primary/[0.03]"
-                          : "border-border hover:bg-accent/50"
-                      }`}
-                    >
-                      <RadioGroupItem value={`header:${i}`} className="mt-0.5" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-medium text-foreground">{preset.label}</div>
-                        {preset.secretHeaders.length > 0 && (
-                          <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                            {preset.secretHeaders.join(" · ")}
-                          </div>
-                        )}
-                      </div>
-                    </Label>
-                  );
-                })}
-                {oauth2Presets.map((preset, i) => {
-                  const selected =
-                    strategy.kind === "oauth2" && strategy.presetIndex === i;
-                  const scopeCount = Object.keys(preset.scopes).length;
-                  return (
-                    <Label
-                      key={`oauth2-${i}`}
-                      className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                        selected
-                          ? "border-primary/50 bg-primary/[0.03]"
-                          : "border-border hover:bg-accent/50"
-                      }`}
-                    >
-                      <RadioGroupItem value={`oauth2:${i}`} className="mt-0.5" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-xs font-medium text-foreground">{preset.label}</div>
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          {scopeCount} scope{scopeCount === 1 ? "" : "s"}
+            <FieldLabel>Authentication method</FieldLabel>
+            {/* RadioGroup always renders so the static Custom + None radios
+                stay visible for specs with no security schemes (e.g. MS Graph).
+                The preset .map() blocks below render nothing when their arrays
+                are empty. */}
+            <RadioGroup
+              value={serializeStrategy(strategy)}
+              onValueChange={(value) => selectStrategy(parseStrategy(value))}
+              className="gap-1.5"
+            >
+              {preview.headerPresets.map((preset, i) => {
+                const selected = strategy.kind === "header" && strategy.presetIndex === i;
+                return (
+                  <Label
+                    key={`header-${i}`}
+                    className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                      selected
+                        ? "border-primary/50 bg-primary/[0.03]"
+                        : "border-border hover:bg-accent/50"
+                    }`}
+                  >
+                    <RadioGroupItem value={`header:${i}`} className="mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground">{preset.label}</div>
+                      {preset.secretHeaders.length > 0 && (
+                        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                          {preset.secretHeaders.join(" · ")}
                         </div>
+                      )}
+                    </div>
+                  </Label>
+                );
+              })}
+              {oauth2Presets.map((preset, i) => {
+                const selected = strategy.kind === "oauth2" && strategy.presetIndex === i;
+                const scopeCount = Object.keys(preset.scopes).length;
+                return (
+                  <Label
+                    key={`oauth2-${i}`}
+                    className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                      selected
+                        ? "border-primary/50 bg-primary/[0.03]"
+                        : "border-border hover:bg-accent/50"
+                    }`}
+                  >
+                    <RadioGroupItem value={`oauth2:${i}`} className="mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-foreground">{preset.label}</div>
+                      <div className="mt-0.5 text-[10px] text-muted-foreground">
+                        {scopeCount} scope{scopeCount === 1 ? "" : "s"}
                       </div>
-                    </Label>
-                  );
-                })}
-                <Label
-                  className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                    strategy.kind === "custom"
-                      ? "border-primary/50 bg-primary/[0.03]"
-                      : "border-border hover:bg-accent/50"
-                  }`}
-                >
-                  <RadioGroupItem value="custom" />
-                  <span className="text-xs font-medium text-foreground">Custom</span>
-                </Label>
-                <Label
-                  className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
-                    strategy.kind === "none"
-                      ? "border-primary/50 bg-primary/[0.03]"
-                      : "border-border hover:bg-accent/50"
-                  }`}
-                >
-                  <RadioGroupItem value="none" />
-                  <span className="text-xs font-medium text-foreground">None</span>
-                </Label>
-              </RadioGroup>
-            )}
+                    </div>
+                  </Label>
+                );
+              })}
+              <Label
+                className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                  strategy.kind === "custom"
+                    ? "border-primary/50 bg-primary/[0.03]"
+                    : "border-border hover:bg-accent/50"
+                }`}
+              >
+                <RadioGroupItem value="custom" />
+                <span className="text-xs font-medium text-foreground">Custom</span>
+              </Label>
+              <Label
+                className={`flex items-center gap-2.5 rounded-lg border px-3 py-2 cursor-pointer transition-colors ${
+                  strategy.kind === "none"
+                    ? "border-primary/50 bg-primary/[0.03]"
+                    : "border-border hover:bg-accent/50"
+                }`}
+              >
+                <RadioGroupItem value="none" />
+                <span className="text-xs font-medium text-foreground">None</span>
+              </Label>
+            </RadioGroup>
 
             {/* Header-based auth input */}
             {strategy.kind !== "none" && strategy.kind !== "oauth2" && (
-              <HeadersList
-                headers={customHeaders}
-                onHeadersChange={handleHeadersChange}
-                existingSecrets={secretList}
-                sourceName={identity.name}
-              />
+              <div className="space-y-3">
+                <HeadersList
+                  headers={customHeaders}
+                  onHeadersChange={handleHeadersChange}
+                  existingSecrets={secretList}
+                  sourceName={identity.name}
+                  targetScope={sourceScope}
+                  credentialScopeOptions={credentialScopeOptions}
+                  bindingScopeOptions={credentialScopeOptions}
+                  emptyLabel="No credentials yet. Add the header value this method should use."
+                />
+              </div>
             )}
+
+            <HttpCredentialsEditor
+              credentials={runtimeCredentials}
+              onChange={setRuntimeCredentials}
+              existingSecrets={secretList}
+              sourceName={identity.name}
+              targetScope={sourceScope}
+              credentialScopeOptions={credentialScopeOptions}
+              bindingScopeOptions={credentialScopeOptions}
+              sections={{ headers: false, queryParams: true }}
+              labels={{ queryParams: "Runtime query parameters" }}
+            />
 
             {/* OAuth2 configuration */}
             {selectedOAuth2Preset && (
               <div className="space-y-3 rounded-lg border border-border/60 bg-muted/10 p-3">
-                <div className="space-y-1.5">
-                  <FieldLabel className="text-[11px]">
-                    Redirect URL{" "}
-                    <span className="text-muted-foreground">
-                      · add this to your OAuth app's allowed redirects
-                    </span>
-                  </FieldLabel>
-                  <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5 font-mono text-[11px]">
-                    <span className="truncate flex-1 text-foreground">{oauth2RedirectUrl}</span>
-                    <CopyButton value={oauth2RedirectUrl} />
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <FieldLabel className="text-[11px]">
+                      Redirect URL{" "}
+                      <span className="text-muted-foreground">
+                        · add this to your OAuth app's allowed redirects
+                      </span>
+                    </FieldLabel>
+                    <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5 font-mono text-[11px]">
+                      <span className="truncate flex-1 text-foreground">{oauth2RedirectUrl}</span>
+                      <CopyButton value={oauth2RedirectUrl} />
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-1.5">
-                  <FieldLabel className="text-[11px]">Client ID secret</FieldLabel>
-                  <CreatableSecretPicker
-                    value={oauth2ClientIdSecretId}
-                    onSelect={(id: string) => {
-                      setOauth2ClientIdSecretId(id);
-                      setOauth2Auth(null);
-                    }}
-                    secrets={secretList}
-                    sourceName={identity.name}
-                    secretLabel="Client ID"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <FieldLabel className="text-[11px]">
-                    Client secret{" "}
-                    <span className="text-muted-foreground">
-                      · optional for public clients with PKCE
-                    </span>
-                  </FieldLabel>
-                  <CreatableSecretPicker
-                    value={oauth2ClientSecretSecretId}
-                    onSelect={(id: string) => {
-                      setOauth2ClientSecretSecretId(id);
-                      setOauth2Auth(null);
-                    }}
-                    secrets={secretList}
-                    sourceName={identity.name}
-                    secretLabel="Client Secret"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <FieldLabel className="text-[11px]">Scopes</FieldLabel>
-                  <div className="space-y-1 rounded-md border border-border/50 bg-background/50 p-2">
-                    {Object.keys(selectedOAuth2Preset.scopes).length === 0 ? (
-                      <div className="text-[11px] italic text-muted-foreground">
-                        No scopes declared by the spec.
+                  <div className="space-y-1.5">
+                    <FieldLabel className="text-[11px]">Client ID secret</FieldLabel>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <FieldLabel className="text-[11px]">Secret</FieldLabel>
+                          <HelpTooltip label="Client ID secret">
+                            Select or create the OAuth client ID secret.
+                          </HelpTooltip>
+                        </div>
+                        <CreatableSecretPicker
+                          value={oauth2ClientIdSecretId}
+                          onSelect={(id: string, secretScopeId?: ScopeId) => {
+                            setOauth2ClientIdSecretId(id);
+                            setOauth2ClientIdScope(secretScopeId ?? sourceScope);
+                            setOauth2AuthState(null);
+                          }}
+                          secrets={secretList}
+                          sourceName={identity.name}
+                          secretLabel="Client ID"
+                          targetScope={oauth2ClientIdScope ?? sourceScope}
+                          credentialScopeOptions={credentialScopeOptions}
+                          onCreatedScope={setOauth2ClientIdScope}
+                        />
                       </div>
-                    ) : (
-                      Object.entries(selectedOAuth2Preset.scopes).map(([scope, description]) => (
-                        <Label
-                          key={scope}
-                          className="flex items-start gap-2 cursor-pointer py-1"
-                        >
-                          <Checkbox
-                            checked={oauth2SelectedScopes.has(scope)}
-                            onCheckedChange={() => toggleOAuth2Scope(scope)}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="font-mono text-[11px] text-foreground">{scope}</div>
-                            {description && (
-                              <div className="text-[10px] text-muted-foreground">
-                                {description}
-                              </div>
-                            )}
+                      <CredentialScopeDropdown
+                        value={oauth2ClientIdScope ?? sourceScope}
+                        options={credentialScopeOptions}
+                        onChange={(targetScope) => {
+                          setOauth2ClientIdScope(targetScope);
+                          setOauth2ClientIdSecretId(null);
+                          setOauth2AuthState(null);
+                        }}
+                        label="Used by"
+                        help="Choose where this OAuth client ID credential lives."
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <FieldLabel className="text-[11px]">
+                      Client secret{" "}
+                      <span className="text-muted-foreground">
+                        · optional for public clients with PKCE
+                      </span>
+                    </FieldLabel>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <FieldLabel className="text-[11px]">Secret</FieldLabel>
+                          <HelpTooltip label="Client secret">
+                            Select or create the OAuth client secret.
+                          </HelpTooltip>
+                        </div>
+                        <CreatableSecretPicker
+                          value={oauth2ClientSecretSecretId}
+                          onSelect={(id: string, secretScopeId?: ScopeId) => {
+                            setOauth2ClientSecretSecretId(id);
+                            setOauth2ClientSecretScope(secretScopeId ?? sourceScope);
+                            setOauth2AuthState(null);
+                          }}
+                          secrets={secretList}
+                          sourceName={identity.name}
+                          secretLabel="Client Secret"
+                          targetScope={oauth2ClientSecretScope ?? sourceScope}
+                          credentialScopeOptions={credentialScopeOptions}
+                          onCreatedScope={setOauth2ClientSecretScope}
+                        />
+                      </div>
+                      <CredentialScopeDropdown
+                        value={oauth2ClientSecretScope ?? sourceScope}
+                        options={credentialScopeOptions}
+                        onChange={(targetScope) => {
+                          setOauth2ClientSecretScope(targetScope);
+                          setOauth2ClientSecretSecretId(null);
+                          setOauth2AuthState(null);
+                        }}
+                        label="Used by"
+                        help="Choose where this OAuth client secret credential lives."
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <FieldLabel className="text-[11px]">Scopes</FieldLabel>
+                    <div className="space-y-1 rounded-md border border-border/50 bg-background/50 p-2">
+                      {Object.keys(selectedOAuth2Preset.scopes).length === 0 ? (
+                        <div className="text-[11px] italic text-muted-foreground">
+                          No scopes declared by the spec.
+                        </div>
+                      ) : (
+                        Object.entries(selectedOAuth2Preset.scopes).map(([scope, description]) => (
+                          <Label key={scope} className="flex items-start gap-2 cursor-pointer py-1">
+                            <Checkbox
+                              checked={oauth2SelectedScopes.has(scope)}
+                              onCheckedChange={() => toggleOAuth2Scope(scope)}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-mono text-[11px] text-foreground">{scope}</div>
+                              {description && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  {description}
+                                </div>
+                              )}
+                            </div>
+                          </Label>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {oauth2Auth ? (
+                    <div className="flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/5 px-3 py-2">
+                      <div className="text-[11px] text-green-700 dark:text-green-400">
+                        Connected · {oauth2SelectedScopes.size} scope
+                        {oauth2SelectedScopes.size === 1 ? "" : "s"} granted
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => setOauth2AuthState(null)}>
+                        Disconnect
+                      </Button>
+                    </div>
+                  ) : oauth2Busy ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-background/50 px-3 py-2 text-[11px] text-muted-foreground">
+                        <Spinner className="size-3.5" />
+                        Waiting for OAuth… complete the flow in the popup, or cancel to retry.
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
+                        Cancel
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={handleConnectOAuth2}>
+                        Retry
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <FieldLabel className="text-[11px]">OAuth sign-in</FieldLabel>
+                            <HelpTooltip label="OAuth sign-in">
+                              Start the provider OAuth flow.
+                            </HelpTooltip>
                           </div>
-                        </Label>
-                      ))
-                    )}
-                  </div>
+                          <Button
+                            variant="secondary"
+                            onClick={handleConnectOAuth2}
+                            disabled={!canConnectOAuth2}
+                            className={
+                              canConnectOAuth2
+                                ? "w-full border border-green-500/30 bg-green-600 text-white hover:bg-green-700 focus-visible:ring-green-500/30 dark:bg-green-500 dark:text-white dark:hover:bg-green-600"
+                                : "w-full"
+                            }
+                          >
+                            Connect via OAuth
+                          </Button>
+                        </div>
+                        <CredentialScopeDropdown
+                          value={oauthTokenTargetScope}
+                          options={credentialScopeOptions}
+                          onChange={(targetScope) => {
+                            setOAuthTokenTargetScope(targetScope);
+                            setOauth2AuthState(null);
+                          }}
+                          label="Token saved to"
+                          help="Choose who can use the signed-in OAuth token."
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {oauth2Error && (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
+                      <p className="text-[11px] text-destructive">{oauth2Error}</p>
+                    </div>
+                  )}
                 </div>
-
-                {oauth2Auth ? (
-                  <div className="flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/5 px-3 py-2">
-                    <div className="text-[11px] text-green-700 dark:text-green-400">
-                      Connected · {oauth2Auth.scopes.length} scope
-                      {oauth2Auth.scopes.length === 1 ? "" : "s"} granted
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setOauth2Auth(null)}
-                    >
-                      Disconnect
-                    </Button>
-                  </div>
-                ) : startingOAuth ? (
-                  <div className="flex items-center gap-2">
-                    <div className="flex flex-1 items-center gap-2 rounded-md border border-border/60 bg-background/50 px-3 py-2 text-[11px] text-muted-foreground">
-                      <Spinner className="size-3.5" />
-                      Waiting for OAuth… complete the flow in the popup, or cancel to retry.
-                    </div>
-                    <Button variant="ghost" size="sm" onClick={handleCancelOAuth2}>
-                      Cancel
-                    </Button>
-                    <Button variant="secondary" size="sm" onClick={handleConnectOAuth2}>
-                      Retry
-                    </Button>
-                  </div>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    onClick={handleConnectOAuth2}
-                    disabled={!oauth2ClientIdSecretId || resolvedBaseUrl.length === 0}
-                    className="w-full"
-                  >
-                    Connect via OAuth
-                  </Button>
-                )}
-
-                {oauth2Error && (
-                  <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2">
-                    <p className="text-[11px] text-destructive">{oauth2Error}</p>
-                  </div>
-                )}
               </div>
             )}
           </section>
-
-          <ApprovalPolicyToggles
-            tokens={HTTP_METHOD_TOKENS}
-            value={annotationPolicy}
-            onChange={setAnnotationPolicy}
-            description="Choose which HTTP methods require approval before a tool call runs. By default, write methods (POST, PUT, PATCH, DELETE) require approval."
-          />
 
           {/* Add error */}
           {addError && (
@@ -982,7 +1341,11 @@ export default function AddOpenApiSource(props: {
         {preview && (
           <Button onClick={handleAdd} disabled={!canAdd || adding}>
             {adding && <Spinner className="size-3.5" />}
-            {adding ? "Adding…" : "Add source"}
+            {adding
+              ? "Adding…"
+              : willAddWithoutInitialCredentials
+                ? "Add without credentials"
+                : "Add source"}
           </Button>
         )}
       </FloatActions>

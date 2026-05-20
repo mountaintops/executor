@@ -195,6 +195,14 @@ const syncGitHubRelease = async (input: {
     return;
   }
 
+  // Single rolling release-notes file. Historical release bodies live on
+  // GitHub Releases — we don't archive per-version copies in the repo.
+  const notesPath = resolve(cliRoot, "release-notes", "next.md");
+  const notesFile = existsSync(notesPath) ? notesPath : null;
+
+  // Draft until publish-desktop.yml finishes uploading installers and flips
+  // it; otherwise /releases/latest/download/<desktop-asset> 404s during the
+  // ~15-20 min desktop build window.
   const args = [
     "release",
     "create",
@@ -204,14 +212,13 @@ const syncGitHubRelease = async (input: {
     repository,
     "--title",
     input.tag,
-    "--generate-notes",
+    ...(notesFile ? ["--notes-file", notesFile] : ["--generate-notes"]),
     "--verify-tag",
+    "--draft",
   ];
 
   if (input.channel === "beta") {
     args.push("--prerelease");
-  } else {
-    args.push("--latest");
   }
 
   await runCommand({

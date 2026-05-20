@@ -1,10 +1,6 @@
 export { googleDiscoveryPlugin } from "./plugin";
 export type {
   GoogleDiscoveryAddSourceInput,
-  GoogleDiscoveryOAuthAuthResult,
-  GoogleDiscoveryOAuthCompleteInput,
-  GoogleDiscoveryOAuthStartInput,
-  GoogleDiscoveryOAuthStartResponse,
   GoogleDiscoveryPluginExtension,
   GoogleDiscoveryProbeResult,
   GoogleDiscoveryUpdateSourceInput,
@@ -22,12 +18,6 @@ export type {
 } from "./binding-store";
 export { invokeGoogleDiscoveryTool, annotationsForOperation } from "./invoke";
 export {
-  buildGoogleAuthorizationUrl,
-  createPkceCodeVerifier,
-  exchangeAuthorizationCode,
-} from "./oauth";
-export {
-  GoogleDiscoveryAnnotationPolicy,
   GoogleDiscoveryAuth,
   GoogleDiscoveryHttpMethod,
   GoogleDiscoveryInvocationResult,
@@ -38,7 +28,6 @@ export {
   GoogleDiscoveryParameterLocation,
   GoogleDiscoveryStoredSourceData,
 } from "./types";
-export type { GoogleDiscoveryOAuthSession } from "./types";
 export {
   GoogleDiscoveryInvocationError,
   GoogleDiscoveryOAuthError,

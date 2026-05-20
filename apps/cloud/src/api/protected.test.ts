@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import type { ExecutionEngine } from "@executor/execution";
+import type { ExecutionEngine } from "@executor-js/execution";
 import { withExecutionUsageTracking } from "./execution-usage";
 
 const makeBaseEngine = (): ExecutionEngine =>
@@ -16,6 +16,7 @@ const makeBaseEngine = (): ExecutionEngine =>
         status: "completed",
         result: { result: "ok", logs: [] },
       }),
+    getPausedExecution: () => Effect.succeed(null),
     getDescription: Effect.succeed("desc"),
   }) as ExecutionEngine;
 
@@ -27,7 +28,7 @@ describe("withExecutionUsageTracking", () => {
         tracked.push(orgId);
       });
 
-      yield* engine.execute("1+1", { onElicitation: (() => Effect.die("unused")) as never });
+      yield* engine.execute("1+1", { onElicitation: () => Effect.die("unused") });
       yield* engine.executeWithPause("2+2");
 
       expect(tracked).toEqual(["org_1", "org_1"]);

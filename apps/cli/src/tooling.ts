@@ -11,6 +11,15 @@ const stripRepeatedErrorPrefix = (input: string): string => {
   return output;
 };
 
+export const sanitizeCliOutputText = (input: string): string =>
+  input
+    // oxlint-disable-next-line eslint/no-control-regex -- boundary: CLI output sanitizer intentionally strips OSC control sequences
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/gu, "")
+    // oxlint-disable-next-line eslint/no-control-regex -- boundary: CLI output sanitizer intentionally strips ANSI control sequences
+    .replace(/\u001b[@-_][0-?]*[ -/]*[@-~]/gu, "")
+    // oxlint-disable-next-line eslint/no-control-regex -- boundary: CLI output sanitizer intentionally strips remaining control characters
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "");
+
 const TOOL_PATH_TOKEN = /^[A-Za-z0-9._-]+$/;
 
 const toToolPathSegments = (parts: ReadonlyArray<string>): ReadonlyArray<string> =>
@@ -42,7 +51,10 @@ export const inspectToolPath = (input: {
 }): ToolPathInspection => {
   const prefixSegments =
     input.rawPrefixParts.length === 0 ? [] : buildToolPath(input.rawPrefixParts).split(".");
-  const children = new Map<string, { invokable: boolean; hasChildren: boolean; toolCount: number }>();
+  const children = new Map<
+    string,
+    { invokable: boolean; hasChildren: boolean; toolCount: number }
+  >();
   let exactPath: string | undefined = undefined;
   let matchingToolCount = 0;
 
@@ -97,9 +109,7 @@ export const buildToolPath = (parts: ReadonlyArray<string>): string => {
     throw new Error("Tool path must include at least one segment");
   }
   if (segments.some((segment) => !TOOL_PATH_TOKEN.test(segment))) {
-    throw new Error(
-      "Tool path segments must contain only letters, numbers, '.', '_' or '-'",
-    );
+    throw new Error("Tool path segments must contain only letters, numbers, '.', '_' or '-'");
   }
   return segments.join(".");
 };
@@ -186,9 +196,7 @@ export interface PausedInteraction {
   readonly requestedSchema?: Record<string, unknown>;
 }
 
-export const extractPausedInteraction = (
-  structured: unknown,
-): PausedInteraction | undefined => {
+export const extractPausedInteraction = (structured: unknown): PausedInteraction | undefined => {
   if (!isRecord(structured) || !isRecord(structured.interaction)) {
     return undefined;
   }
@@ -262,6 +270,11 @@ const schemaExample = (schema: unknown, depth = 0): unknown => {
 export const buildResumeContentTemplate = (
   requestedSchema: Record<string, unknown> | undefined,
 ): Record<string, unknown> => schemaExample(requestedSchema ?? {}) as Record<string, unknown>;
+
+export const shellQuoteArg = (value: string): string => {
+  if (/^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)) return value;
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+};
 
 const tokenizeSegment = (input: string): ReadonlyArray<string> =>
   input

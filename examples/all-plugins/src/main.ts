@@ -9,7 +9,7 @@
 // the new SDK shape — minus the HTTP API layer, runtime lifecycle, and
 // scope persistence that real apps add on top.
 //
-// Runs against an in-memory adapter + in-memory blob store so you can
+// Runs against the SDK's ephemeral in-memory FumaDB backend so you can
 // `bun run src/main.ts` and watch the whole surface exercise itself.
 // Plugins that need external infra (keychain prompts, 1Password unlock,
 // MCP transport, WorkOS Vault, Google OAuth) are wired so their secret
@@ -17,37 +17,28 @@
 // backends are gated behind env vars and skipped by default.
 // ---------------------------------------------------------------------------
 
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 
-import {
-  SecretId,
-  Scope,
-  ScopeId,
-  SetSecretInput,
-  collectSchemas,
-  createExecutor,
-  makeInMemoryBlobStore,
-} from "@executor/sdk";
-import { makeMemoryAdapter } from "@executor/storage-core/testing/memory";
+import { SecretId, Scope, ScopeId, SetSecretInput, createExecutor } from "@executor-js/sdk";
 
-import { fileSecretsPlugin } from "@executor/plugin-file-secrets";
-import { googleDiscoveryPlugin } from "@executor/plugin-google-discovery";
-import { graphqlPlugin } from "@executor/plugin-graphql";
-import { keychainPlugin } from "@executor/plugin-keychain";
-import { mcpPlugin } from "@executor/plugin-mcp";
-import { onepasswordPlugin } from "@executor/plugin-onepassword";
-import { openApiPlugin } from "@executor/plugin-openapi";
-import { workosVaultPlugin } from "@executor/plugin-workos-vault";
+import { fileSecretsPlugin } from "@executor-js/plugin-file-secrets";
+import { googleDiscoveryPlugin } from "@executor-js/plugin-google-discovery";
+import { graphqlPlugin } from "@executor-js/plugin-graphql";
+import { keychainPlugin } from "@executor-js/plugin-keychain";
+import { mcpPlugin } from "@executor-js/plugin-mcp";
+import { onepasswordPlugin } from "@executor-js/plugin-onepassword";
+import { openApiPlugin } from "@executor-js/plugin-openapi";
+import { workosVaultPlugin } from "@executor-js/plugin-workos-vault";
 
 // ---------------------------------------------------------------------------
 // 1. Build the ExecutorConfig.
 //
-// Three pieces only: scope, storage seam (adapter + blobs), plugins.
+// Three pieces only: scope, FumaDB, plugins.
 // Compare to the old SDK, where you'd pass pre-built ToolRegistry,
 // SourceRegistry, SecretStore, and PolicyEngine service instances.
 // ---------------------------------------------------------------------------
 
-const scope = new Scope({
+const scope = Scope.make({
   id: ScopeId.make("example-scope"),
   name: "/tmp/example-workspace",
   createdAt: new Date(),
@@ -81,13 +72,6 @@ const plugins = [
   //   },
   // }),
 ] as const;
-
-const config = {
-  scopes: [scope],
-  adapter: makeMemoryAdapter({ schema: collectSchemas(plugins) }),
-  blobs: makeInMemoryBlobStore(),
-  plugins,
-};
 
 // Silence the unused-import warning for workos-vault (kept in scope as
 // documentation; uncomment the plugin entry above to use it).
@@ -140,17 +124,13 @@ const exampleOpenApiSpec = JSON.stringify({
       get: {
         operationId: "items.get",
         tags: ["items"],
-        parameters: [
-          { name: "id", in: "path", required: true, schema: { type: "string" } },
-        ],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         responses: { "200": { description: "ok" } },
       },
       delete: {
         operationId: "items.delete",
         tags: ["items"],
-        parameters: [
-          { name: "id", in: "path", required: true, schema: { type: "string" } },
-        ],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         responses: { "204": { description: "deleted" } },
       },
     },
@@ -178,7 +158,11 @@ const program = Effect.gen(function* () {
   console.log("Building executor with every ported plugin");
   console.log("=".repeat(72));
 
-  const executor = yield* createExecutor(config);
+  const executor = yield* createExecutor({
+    scopes: [scope],
+    plugins,
+    onElicitation: "accept-all" as const,
+  });
 
   // Every plugin's extension is accessible as `executor[pluginId]`.
   // TypeScript knows about each one — hovering over `executor` in your
@@ -206,7 +190,7 @@ const program = Effect.gen(function* () {
   console.log("Registered providers:", providers);
 
   yield* executor.secrets.set(
-    new SetSecretInput({
+    SetSecretInput.make({
       id: SecretId.make("example-api-token"),
       scope: "example-scope" as SetSecretInput["scope"],
       name: "Example API Token",
@@ -260,8 +244,9 @@ const program = Effect.gen(function* () {
   console.log("-".repeat(72));
 
   const addSpecResult = yield* executor.openapi.addSpec({
-    spec: exampleOpenApiSpec,
+    spec: { kind: "blob", value: exampleOpenApiSpec },
     namespace: "example-api",
+    name: "Example API",
     baseUrl: "https://example.com/api",
     scope: "example-scope",
   });
@@ -371,6 +356,7 @@ const program = Effect.gen(function* () {
 
   const gqlResult = yield* executor.graphql.addSource({
     endpoint: "https://example.com/graphql",
+    name: "Example GraphQL",
     introspectionJson,
     namespace: "example-graphql",
     scope: "example-scope",
@@ -399,10 +385,7 @@ const program = Effect.gen(function* () {
   console.log("  executor.keychain.isSupported:", executor.keychain.isSupported);
   console.log("  executor.keychain.displayName:", executor.keychain.displayName);
 
-  console.log(
-    "  executor.fileSecrets.filePath:   ",
-    executor.fileSecrets.filePath,
-  );
+  console.log("  executor.fileSecrets.filePath:   ", executor.fileSecrets.filePath);
 
   // executor.mcp.addSource({ connector: { kind: "remote", endpoint: "..." } });
   // executor.googleDiscovery.addSource({ discoveryUrl: "..." });
@@ -447,7 +430,13 @@ const program = Effect.gen(function* () {
 // 4. Run.
 // ---------------------------------------------------------------------------
 
-Effect.runPromise(program).catch((err) => {
-  console.error("Example failed:", err);
-  process.exit(1);
-});
+Effect.runPromise(
+  program.pipe(
+    Effect.catchCause((cause) =>
+      Effect.sync(() => {
+        console.error("Example failed:", Cause.squash(cause));
+        process.exit(1);
+      }),
+    ),
+  ),
+);

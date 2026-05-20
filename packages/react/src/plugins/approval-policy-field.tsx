@@ -1,11 +1,7 @@
 import * as React from "react";
 import { ShieldCheckIcon, RotateCcwIcon } from "lucide-react";
 
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntryField,
-} from "../components/card-stack";
+import { CardStack, CardStackContent } from "../components/card-stack";
 import { Button } from "../components/button";
 import { FieldLabel } from "../components/field";
 import { Switch } from "../components/switch";
@@ -77,9 +73,7 @@ function PolicyShell({
       <CardStack>
         <CardStackContent className="border-t-0">
           <div className="flex flex-col gap-3 px-4 py-3">
-            {description && (
-              <p className="text-sm text-muted-foreground">{description}</p>
-            )}
+            {description && <p className="text-sm text-muted-foreground">{description}</p>}
             {children}
             {!isOverridden && (
               <p className="text-[11px] text-muted-foreground/80">
@@ -117,8 +111,7 @@ export interface ApprovalPolicyTogglesProps {
 }
 
 const toneClasses: Record<"safe" | "write" | "neutral", string> = {
-  safe:
-    "data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-700 data-[active=true]:border-emerald-500/40 data-[active=true]:ring-emerald-500/20 dark:data-[active=true]:text-emerald-300",
+  safe: "data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-700 data-[active=true]:border-emerald-500/40 data-[active=true]:ring-emerald-500/20 dark:data-[active=true]:text-emerald-300",
   write:
     "data-[active=true]:bg-amber-500/15 data-[active=true]:text-amber-800 data-[active=true]:border-amber-500/50 data-[active=true]:ring-amber-500/20 dark:data-[active=true]:text-amber-200",
   neutral:
@@ -157,9 +150,7 @@ export function ApprovalPolicyToggles({
     // Preserve the canonical (original-cased) token values in the emitted
     // array so the backend receives the same literal strings the caller
     // declared.
-    const canonical = tokens
-      .filter((t) => next.has(t.value.toLowerCase()))
-      .map((t) => t.value);
+    const canonical = tokens.filter((t) => next.has(t.value.toLowerCase())).map((t) => t.value);
     onChange(canonical);
   };
 
@@ -170,20 +161,16 @@ export function ApprovalPolicyToggles({
       isOverridden={isOverridden}
       onReset={() => onChange(undefined)}
     >
-      <div
-        className={cn(
-          layout === "grid"
-            ? "flex flex-wrap gap-1.5"
-            : "flex flex-col gap-1",
-        )}
-      >
+      <div className={cn(layout === "grid" ? "flex flex-wrap gap-1.5" : "flex flex-col gap-1")}>
         {tokens.map((token) => {
           const active = effective.has(token.value.toLowerCase());
           const tone = token.tone ?? "neutral";
           return (
-            <button
+            <Button
               key={token.value}
               type="button"
+              variant="outline"
+              size="sm"
               data-active={active}
               aria-pressed={active}
               onClick={() => toggle(token.value)}
@@ -227,7 +214,7 @@ export function ApprovalPolicyToggles({
                   default
                 </span>
               )}
-            </button>
+            </Button>
           );
         })}
       </div>

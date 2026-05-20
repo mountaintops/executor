@@ -6,17 +6,17 @@
   "main": "src/test-worker.ts",
   "vars": {
     "DATABASE_URL": "postgresql://postgres:postgres@127.0.0.1:5434/postgres",
-    "MCP_SESSION_REQUEST_SCOPED_RUNTIME": "true",
+    "EXECUTOR_DIRECT_DATABASE_URL": "true",
     "WORKOS_API_KEY": "test_api_key",
     "WORKOS_CLIENT_ID": "test_client_id",
     "WORKOS_COOKIE_PASSWORD": "test_cookie_password_at_least_32_chars!",
     "MCP_AUTHKIT_DOMAIN": "https://test-authkit.example.com",
     "MCP_RESOURCE_ORIGIN": "https://test-resource.example.com",
-    "NODE_ENV": "test"
+    "NODE_ENV": "test",
   },
   "durable_objects": {
-    "bindings": [{"name": "MCP_SESSION", "class_name": "McpSessionDO"}]
+    "bindings": [{ "name": "MCP_SESSION", "class_name": "McpSessionDO" }],
   },
-  "worker_loaders": [{"binding": "LOADER"}],
-  "migrations": [{"tag": "v1", "new_classes": ["McpSessionDO"]}]
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "migrations": [{ "tag": "v1", "new_classes": ["McpSessionDO"] }],
 }

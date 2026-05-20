@@ -1,6 +1,6 @@
 {
-  "name": "@executor/sdk",
-  "version": "0.0.1",
+  "name": "@executor-js/sdk",
+  "version": "1.4.31",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/sdk",
   "bugs": {
     "url": "https://github.com/RhysSullivan/executor/issues"
@@ -18,7 +18,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./core": "./src/index.ts",
-    "./promise": "./src/promise.ts"
+    "./shared": "./src/shared.ts",
+    "./http-source": "./src/http-source.ts",
+    "./promise": "./src/promise.ts",
+    "./client": "./src/client.ts",
+    "./testing": "./src/testing.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -34,6 +38,30 @@
           "types": "./dist/index.d.ts",
           "default": "./dist/core.js"
         }
+      },
+      "./shared": {
+        "import": {
+          "types": "./dist/shared.d.ts",
+          "default": "./dist/shared.js"
+        }
+      },
+      "./http-source": {
+        "import": {
+          "types": "./dist/http-source.d.ts",
+          "default": "./dist/http-source.js"
+        }
+      },
+      "./client": {
+        "import": {
+          "types": "./dist/client.d.ts",
+          "default": "./dist/client.js"
+        }
+      },
+      "./testing": {
+        "import": {
+          "types": "./dist/testing.d.ts",
+          "default": "./dist/testing.js"
+        }
       }
     }
   },
@@ -44,15 +72,40 @@
     "typecheck:slow": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform": "catalog:",
-    "@executor/storage-core": "workspace:*",
-    "effect": "catalog:"
+    "@standard-schema/spec": "^1.1.0",
+    "effect": "catalog:",
+    "fractional-indexing": "^3.2.0",
+    "fumadb": "workspace:*",
+    "oauth4webapi": "^3.8.5"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "better-sqlite3": "^12.9.0",
+    "drizzle-orm": "catalog:",
+    "react": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@effect/atom-react": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "react": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@effect/platform-node": {
+      "optional": true
+    },
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }

@@ -7,8 +7,8 @@
 import { env } from "cloudflare:workers";
 import { Effect } from "effect";
 
-import { createExecutionEngine } from "@executor/execution";
-import { makeDynamicWorkerExecutor } from "@executor/runtime-dynamic-worker";
+import { createExecutionEngine } from "@executor-js/execution";
+import { makeDynamicWorkerExecutor } from "@executor-js/runtime-dynamic-worker";
 
 import { withExecutionUsageTracking } from "../api/execution-usage";
 import { AutumnService } from "./autumn";
@@ -20,11 +20,9 @@ export const makeExecutionStack = (
   organizationName: string,
 ) =>
   Effect.gen(function* () {
-    const executor = yield* createScopedExecutor(
-      userId,
-      organizationId,
-      organizationName,
-    ).pipe(Effect.withSpan("McpSessionDO.createScopedExecutor"));
+    const executor = yield* createScopedExecutor(userId, organizationId, organizationName).pipe(
+      Effect.withSpan("McpSessionDO.createScopedExecutor"),
+    );
     const codeExecutor = makeDynamicWorkerExecutor({ loader: env.LOADER });
     const autumn = yield* AutumnService;
     const engine = withExecutionUsageTracking(

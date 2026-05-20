@@ -12,7 +12,8 @@ import { Context, Data, Effect, Layer } from "effect";
 // ---------------------------------------------------------------------------
 
 export class AutumnError extends Data.TaggedError("AutumnError")<{
-  cause: unknown;
+  message: string;
+  cause?: unknown;
 }> {}
 
 // ---------------------------------------------------------------------------
@@ -38,8 +39,8 @@ const make = Effect.sync(() => {
   const secretKey = env.AUTUMN_SECRET_KEY;
 
   if (!secretKey) {
-    const notConfigured = Effect.die(
-      new Error("Autumn not configured — AUTUMN_SECRET_KEY is empty"),
+    const notConfigured = Effect.fail(
+      new AutumnError({ message: "Autumn not configured: AUTUMN_SECRET_KEY is empty" }),
     );
     return {
       use: () => notConfigured,
@@ -52,32 +53,34 @@ const make = Effect.sync(() => {
   const use = <A>(fn: (client: Autumn) => Promise<A>) =>
     Effect.tryPromise({
       try: () => fn(client),
-      catch: (cause) => new AutumnError({ cause }),
+      catch: (cause) => new AutumnError({ message: "Autumn SDK request failed", cause }),
     }).pipe(Effect.withSpan(`autumn.${fn.name ?? "use"}`));
 
   const trackExecution = (organizationId: string) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ "autumn.customer.id": organizationId });
-      const outcome = yield* Effect.either(
-        use((c) =>
-          c.track({ customerId: organizationId, featureId: "executions", value: 1 }),
+      yield* use((c) =>
+        c.track({ customerId: organizationId, featureId: "executions", value: 1 }),
+      ).pipe(
+        Effect.catchTag("AutumnError", (error) =>
+          Effect.gen(function* () {
+            // Silent billing data loss is worth paging on — autumn.trackExecution
+            // is fire-and-forget so the caller doesn't handle it themselves.
+            yield* Effect.sync(() => {
+              console.error("[billing] track failed:", error);
+              Sentry.captureException(error);
+            });
+            yield* Effect.annotateCurrentSpan({ "autumn.track.failed": true });
+          }),
         ),
       );
-      if (outcome._tag === "Left") {
-        // Silent billing data loss is worth paging on — autumn.trackExecution
-        // is fire-and-forget so the caller doesn't handle it themselves.
-        console.error("[billing] track failed:", outcome.left);
-        Sentry.captureException(outcome.left);
-        yield* Effect.annotateCurrentSpan({ "autumn.track.failed": true });
-      }
     }).pipe(Effect.withSpan("autumn.trackExecution"));
 
   return { use, trackExecution } satisfies IAutumnService;
 });
 
-export class AutumnService extends Context.Tag("@executor/cloud/AutumnService")<
-  AutumnService,
-  IAutumnService
->() {
-  static Default = Layer.effect(this, make).pipe(Layer.annotateSpans({ module: "AutumnService" }));
+export class AutumnService extends Context.Service<AutumnService, IAutumnService>()(
+  "@executor-js/cloud/AutumnService",
+) {
+  static Default = Layer.effect(this)(make);
 }

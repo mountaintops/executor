@@ -1,6 +1,6 @@
 {
-  "name": "@executor/cli",
-  "version": "0.0.1",
+  "name": "@executor-js/cli",
+  "version": "0.2.3",
   "description": "CLI for the executor SDK — schema generation, migrations",
   "homepage": "https://github.com/RhysSullivan/executor/tree/main/packages/core/cli",
   "bugs": {
@@ -12,13 +12,13 @@
     "url": "git+https://github.com/RhysSullivan/executor.git",
     "directory": "packages/core/cli"
   },
-  "type": "module",
   "bin": {
-    "executor": "./dist/index.js"
+    "executor-sdk": "./dist/index.js"
   },
   "files": [
     "dist"
   ],
+  "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
@@ -40,13 +40,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@executor-js/sdk": "workspace:*",
     "commander": "^12.1.0",
     "effect": "catalog:",
+    "fumadb": "workspace:*",
     "jiti": "^2.6.1"
   },
   "devDependencies": {
-    "@executor/sdk": "workspace:*",
-    "@executor/storage-core": "workspace:*",
+    "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
     "tsup": "catalog:",
     "typescript": "catalog:",

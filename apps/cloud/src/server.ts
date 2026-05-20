@@ -1,47 +1,21 @@
+import { SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  ATTR_HTTP_REQUEST_METHOD,
+  ATTR_HTTP_RESPONSE_STATUS_CODE,
+  ATTR_URL_FULL,
+  ATTR_URL_PATH,
+  ATTR_URL_SCHEME,
+} from "@opentelemetry/semantic-conventions";
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
-import { instrument, type TraceConfig } from "@microlabs/otel-cf-workers";
 
 import { McpSessionDO as McpSessionDOBase } from "./mcp-session";
+import { flushTracerProvider, installTracerProvider } from "./services/telemetry";
 
 // ---------------------------------------------------------------------------
-// OTEL config for the main fetch handler — `otel-cf-workers` owns the global
-// TracerProvider and flushes via `ctx.waitUntil` at the end of each request.
-// The DO runs in a separate isolate and uses its own self-contained WebSdk
-// (see `services/telemetry.ts#DoTelemetryLive`); `instrumentDO` from
-// otel-cf-workers is NOT used because it breaks `this` binding on
-// `WorkerTransport`'s stream primitives and crashes every MCP request with
-// DOMException "Illegal invocation".
+// Sentry config
 // ---------------------------------------------------------------------------
 
-const parseSampleRatio = (value: string | undefined): number => {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 1;
-  return Math.min(1, Math.max(0, n));
-};
-
-const otelConfig = (env: Env): TraceConfig => ({
-  service: { name: "executor-cloud", version: "1.0.0" },
-  exporter: {
-    url: env.AXIOM_TRACES_URL ?? "https://api.axiom.co/v1/traces",
-    headers: {
-      Authorization: `Bearer ${env.AXIOM_TOKEN ?? ""}`,
-      "X-Axiom-Dataset": env.AXIOM_DATASET ?? "executor-cloud",
-    },
-  },
-  sampling: {
-    headSampler: {
-      // Keep remote parent decisions and make local sampling policy explicit.
-      acceptRemote: true,
-      ratio: parseSampleRatio(env.AXIOM_TRACES_SAMPLE_RATIO),
-    },
-  },
-});
-
-// otel-cf-workers owns the global TracerProvider. Sentry's OTEL compat shim
-// registers a ProxyTracerProvider of its own, which prevents otel-cf-workers
-// from finding its WorkerTracer and breaks the whole request path with
-// "global tracer is not of type WorkerTracer".
 const sentryOptions = (env: Env) => ({
   dsn: env.SENTRY_DSN,
   tracesSampleRate: 0,
@@ -58,8 +32,8 @@ const sentryOptions = (env: Env) => ({
 // ---------------------------------------------------------------------------
 // Durable Object — wrapped with Sentry so DO errors land in Sentry (inits the
 // client inside the DO isolate, which plain `Sentry.captureException` cannot
-// do on its own). We deliberately do NOT wrap with otel-cf-workers'
-// `instrumentDO` (see note above).
+// do on its own). OTEL is installed through Effect layers (services/telemetry),
+// not a global fetch wrapper.
 // ---------------------------------------------------------------------------
 
 export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
@@ -69,30 +43,61 @@ export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
 
 // ---------------------------------------------------------------------------
 // Worker fetch handler
+//
+// We open a single `http.server <METHOD>` span at the worker boundary using
+// the same WebTracerProvider that `services/telemetry.ts` already installs for
+// Effect-driven spans. This restores the per-request envelope span that was
+// previously emitted by `@microlabs/otel-cf-workers` and lost in the alchemy
+// migration — without the OTel-SDK version-conflict that package would now
+// drag in (it pins `@opentelemetry/otlp-* ^0.200.0`, we ship ^0.214.0).
+//
+// SimpleSpanProcessor exports synchronously at span end but the underlying
+// `fetch()` to Axiom is fire-and-forget; the Worker may terminate before it
+// completes. `ctx.waitUntil(flushTracerProvider())` keeps the isolate alive
+// until the in-flight export resolves.
 // ---------------------------------------------------------------------------
 
-// Skip OTLP wiring when no Axiom token is configured (dev without secrets).
-// Otherwise the exporter ships every span with `Bearer ` (empty), which
-// returns 401 on every batch and eventually drops the keep-alive socket —
-// the Node http agent's unhandled `'error'` then crashes the process with
-// ECONNRESET. It also registers otel-cf-workers' `WorkerTracer` as the
-// global tracer; spans started outside its config ALS then die with
-// "Config is undefined". Matches the gate in `DoTelemetryLive`.
-// `instrument()` mutates the handler it's given (replaces `.fetch` with the
-// proxied version), so capture the raw fetch first and then build the
-// instrumented handler from a separate object.
-const rawFetch = handler.fetch;
-const instrumentedHandler = instrument({ fetch: rawFetch }, otelConfig);
+const fetchHandler = handler.fetch as (
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+) => Response | Promise<Response>;
 
-const dispatchHandler = {
-  fetch: (request: Request, env: Env, ctx: unknown) => {
-    const fn = env.AXIOM_TOKEN ? instrumentedHandler.fetch! : rawFetch;
-    return (fn as (req: Request, env: Env, ctx: unknown) => Response | Promise<Response>)(
-      request,
-      env,
-      ctx,
-    );
+const tracer = trace.getTracer("executor-cloud-worker");
+
+const cloudflareHandler: ExportedHandler<Env> = {
+  fetch: async (request, env, ctx) => {
+    if (!installTracerProvider()) {
+      return fetchHandler(request, env, ctx);
+    }
+    const url = new URL(request.url);
+    return tracer.startActiveSpan(`http.server ${request.method}`, async (span) => {
+      span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
+      span.setAttribute(ATTR_URL_FULL, request.url);
+      span.setAttribute(ATTR_URL_PATH, url.pathname);
+      span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
+      // Adapter boundary: Cloudflare's fetch handler is a Promise-based
+      // callback and the OTel span lifecycle needs to observe both the
+      // resolved response and any thrown error before `span.end()`. Sentry's
+      // outer wrapper still captures the exception; we only mark span status.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary
+      try {
+        const response = await fetchHandler(request, env, ctx);
+        span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+        if (response.status >= 500) {
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        }
+        return response;
+      } catch (err) {
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
+        throw err;
+      } finally {
+        span.end();
+        ctx.waitUntil(flushTracerProvider());
+      }
+    });
   },
 };
 
-export default Sentry.withSentry(sentryOptions, dispatchHandler);
+export default Sentry.withSentry(sentryOptions, cloudflareHandler);

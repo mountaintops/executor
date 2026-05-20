@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import type { StorageFailure } from "@executor/storage-core";
+import type { StorageFailure } from "./fuma-runtime";
 
 import { SecretId, ScopeId } from "./ids";
 
@@ -30,30 +30,28 @@ export interface SecretProvider {
    *  failed, etc.) surface as `StorageFailure` — the executor treats
    *  a provider call the same as a DB call; `StorageError` is captured
    *  at the HTTP edge to `InternalError`, `UniqueViolationError` dies. */
-  readonly get: (
-    id: string,
-    scope: string,
-  ) => Effect.Effect<string | null, StorageFailure>;
+  readonly get: (id: string, scope: string) => Effect.Effect<string | null, StorageFailure>;
+  /** Check whether a provider has a backing value without returning it.
+   *  Providers that can answer this cheaply should implement it so
+   *  stale core routing rows don't appear as selectable secrets. */
+  readonly has?: (id: string, scope: string) => Effect.Effect<boolean, StorageFailure>;
   /** Set a secret value at a named scope. Only called on writable
    *  providers. Providers that partition by scope use this arg to
    *  decide where to write; flat providers ignore it. */
-  readonly set?: (
-    id: string,
-    value: string,
-    scope: string,
-  ) => Effect.Effect<void, StorageFailure>;
+  readonly set?: (id: string, value: string, scope: string) => Effect.Effect<void, StorageFailure>;
   /** Delete a secret at a named scope. Only called on writable providers.
    *  Returns true if something was deleted. */
-  readonly delete?: (
-    id: string,
-    scope: string,
-  ) => Effect.Effect<boolean, StorageFailure>;
+  readonly delete?: (id: string, scope: string) => Effect.Effect<boolean, StorageFailure>;
   /** Enumerate known secret entries. Optional — not all backends can
    *  enumerate (env-backed providers, for example). */
   readonly list?: () => Effect.Effect<
     readonly { readonly id: string; readonly name: string }[],
     StorageFailure
   >;
+  /** Whether the provider may be asked during id-only fallback resolution.
+   *  Providers whose own auth depends on `ctx.secrets.get` should opt out to
+   *  avoid recursive fallback through themselves. */
+  readonly allowFallback?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,15 +60,16 @@ export interface SecretProvider {
 // and is only reachable via `executor.secrets.get(id)`.
 // ---------------------------------------------------------------------------
 
-export class SecretRef extends Schema.Class<SecretRef>("SecretRef")({
+export const SecretRef = Schema.Struct({
   id: SecretId,
   scopeId: ScopeId,
   /** Human-readable label (e.g. "Cloudflare API Token") */
   name: Schema.String,
   /** Which provider holds the value */
   provider: Schema.String,
-  createdAt: Schema.DateFromNumber,
-}) {}
+  createdAt: Schema.Date,
+});
+export type SecretRef = typeof SecretRef.Type;
 
 // ---------------------------------------------------------------------------
 // SetSecretInput — all the metadata to write a secret in one call.
@@ -83,9 +82,7 @@ export class SecretRef extends Schema.Class<SecretRef>("SecretRef")({
 // OAuth token exchange writes to the innermost per-user scope.
 // ---------------------------------------------------------------------------
 
-export class SetSecretInput extends Schema.Class<SetSecretInput>(
-  "SetSecretInput",
-)({
+export const SetSecretInput = Schema.Struct({
   id: SecretId,
   /** Scope id to own this secret. Must be one of the executor's
    *  configured scopes. */
@@ -97,4 +94,13 @@ export class SetSecretInput extends Schema.Class<SetSecretInput>(
   /** Optional provider routing. If unset the executor picks the first
    *  writable provider in registration order. */
   provider: Schema.optional(Schema.String),
-}) {}
+});
+export type SetSecretInput = typeof SetSecretInput.Type;
+
+export const RemoveSecretInput = Schema.Struct({
+  id: SecretId,
+  /** Scope id whose secret row/value should be removed. Must be one of
+   *  the executor's configured scopes. */
+  targetScope: ScopeId,
+});
+export type RemoveSecretInput = typeof RemoveSecretInput.Type;

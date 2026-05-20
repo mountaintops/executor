@@ -1,9 +1,10 @@
 import type { APIRoute } from "astro";
 import { Effect } from "effect";
-import { createExecutor, makeTestConfig, type Tool } from "@executor/sdk";
-import { openApiPlugin } from "@executor/plugin-openapi";
-import { graphqlPlugin } from "@executor/plugin-graphql";
-import { googleDiscoveryPlugin } from "@executor/plugin-google-discovery";
+import { createExecutor, type Tool } from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
+import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
+import { graphqlHttpPlugin } from "@executor-js/plugin-graphql/api";
+import { googleDiscoveryHttpPlugin } from "@executor-js/plugin-google-discovery/api";
 
 export const prerender = false;
 
@@ -45,6 +46,7 @@ function formatTools(tools: readonly Tool[]) {
 }
 
 export const POST: APIRoute = async ({ request }) => {
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Astro route converts request/parsing failures to a stable HTTP response
   try {
     const body = (await request.json()) as { url?: string };
     const url = body.url?.trim();
@@ -55,6 +57,7 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL constructor is the platform validator for request input
     try {
       new URL(url);
     } catch {
@@ -66,10 +69,11 @@ export const POST: APIRoute = async ({ request }) => {
 
     const program = Effect.gen(function* () {
       const config = makeTestConfig({
-        plugins: [openApiPlugin(), graphqlPlugin(), googleDiscoveryPlugin()],
+        plugins: [openApiHttpPlugin(), graphqlHttpPlugin(), googleDiscoveryHttpPlugin()],
       });
       const executor = yield* createExecutor(config);
 
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: ensure executor cleanup runs after best-effort marketing detection
       try {
         // Detect what kind of source lives at this URL
         const detected = yield* executor.sources.detect(url).pipe(Effect.timeout("10 seconds"));
@@ -81,13 +85,16 @@ export const POST: APIRoute = async ({ request }) => {
         // Add source to register its tools (Google Discovery needs auth so skip)
         if (match.kind === "openapi") {
           yield* executor.openapi.addSpec({
-            spec: match.endpoint,
+            spec: { kind: "url", url: match.endpoint },
+            name: match.name,
             namespace: match.namespace,
+            baseUrl: match.endpoint,
             scope: "test-scope",
           });
         } else if (match.kind === "graphql") {
           yield* executor.graphql.addSource({
             endpoint: match.endpoint,
+            name: match.name,
             namespace: match.namespace,
             scope: "test-scope",
           });
@@ -120,9 +127,9 @@ export const POST: APIRoute = async ({ request }) => {
 
     const result = await Effect.runPromise(
       program.pipe(
-        Effect.catchAll(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
         Effect.timeout("25 seconds"),
-        Effect.catchAll(() => Effect.succeed(null)),
+        Effect.catchCause(() => Effect.succeed(null)),
       ),
     );
 

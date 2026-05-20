@@ -13,7 +13,7 @@
 
 import { Effect } from "effect";
 import type { Layer } from "effect";
-import type { FileSystem } from "@effect/platform";
+import type { FileSystem } from "effect";
 
 import { SECRET_REF_PREFIX, type ConfigHeaderValue, type SourceConfig } from "./schema";
 import { addSourceToConfig, removeSourceFromConfig } from "./write";
@@ -22,9 +22,7 @@ import { addSourceToConfig, removeSourceFromConfig } from "./write";
 // refs) into the config file's `secret-public-ref:<id>` string form.
 type PluginHeaderValue = string | { secretId: string; prefix?: string };
 
-export const headerToConfigValue = (
-  value: PluginHeaderValue,
-): ConfigHeaderValue => {
+export const headerToConfigValue = (value: PluginHeaderValue): ConfigHeaderValue => {
   if (typeof value === "string") return value;
   const ref = `${SECRET_REF_PREFIX}${value.secretId}`;
   return value.prefix ? { value: ref, prefix: value.prefix } : ref;
@@ -52,26 +50,23 @@ export interface ConfigFileSinkOptions {
 }
 
 const defaultOnError = (op: "upsert" | "remove", err: unknown): void => {
-  const msg = err instanceof Error ? err.message : String(err);
-  console.warn(`[config-sink] ${op} failed: ${msg}`);
+  console.warn(`[config-sink] ${op} failed`, err);
 };
 
-export const makeFileConfigSink = (
-  options: ConfigFileSinkOptions,
-): ConfigFileSink => {
+export const makeFileConfigSink = (options: ConfigFileSinkOptions): ConfigFileSink => {
   const { path, fsLayer, onError = defaultOnError } = options;
 
   return {
     upsertSource: (source) =>
       addSourceToConfig(path, source).pipe(
         Effect.provide(fsLayer),
-        Effect.catchAll((err) => Effect.sync(() => onError("upsert", err))),
+        Effect.catch((err: unknown) => Effect.sync(() => onError("upsert", err))),
       ),
 
     removeSource: (namespace) =>
       removeSourceFromConfig(path, namespace).pipe(
         Effect.provide(fsLayer),
-        Effect.catchAll((err) => Effect.sync(() => onError("remove", err))),
+        Effect.catch((err: unknown) => Effect.sync(() => onError("remove", err))),
       ),
   };
 };

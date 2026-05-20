@@ -15,54 +15,29 @@
 // collide across tests.
 
 import { Effect, Layer } from "effect";
-import {
-  FetchHttpClient,
-  HttpApi,
-  HttpApiBuilder,
-  HttpApiClient,
-  HttpApiSwagger,
-  HttpApp,
-  HttpServer,
-  HttpServerRequest,
-} from "@effect/platform";
+import { HttpApiBuilder, HttpApiClient, HttpApiSwagger } from "effect/unstable/httpapi";
+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http";
 
 import {
   ExecutionEngineService,
   ExecutorService,
-} from "@executor/api/server";
-import { createExecutionEngine } from "@executor/execution";
-import { makeQuickJsExecutor } from "@executor/runtime-quickjs";
-import {
-  Scope,
-  ScopeId,
-  collectSchemas,
-  createExecutor,
-} from "@executor/sdk";
-import {
-  makePostgresAdapter,
-  makePostgresBlobStore,
-} from "@executor/storage-postgres";
-import { openApiPlugin } from "@executor/plugin-openapi";
-import { mcpPlugin } from "@executor/plugin-mcp";
-import { graphqlPlugin } from "@executor/plugin-graphql";
-import {
-  workosVaultPlugin,
-  WorkOSVaultClientError,
-  type WorkOSVaultClient,
-  type WorkOSVaultObject,
-  type WorkOSVaultObjectMetadata,
-} from "@executor/plugin-workos-vault";
-import { OpenApiExtensionService } from "@executor/plugin-openapi/api";
-import { McpExtensionService } from "@executor/plugin-mcp/api";
-import { GraphqlExtensionService } from "@executor/plugin-graphql/api";
+  providePluginExtensions,
+  type PluginExtensionServices,
+} from "@executor-js/api/server";
+import { createExecutionEngine } from "@executor-js/execution";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import { Scope, ScopeId, collectTables, createExecutor } from "@executor-js/sdk";
+import { makeTestWorkOSVaultClient } from "@executor-js/plugin-workos-vault/testing";
 
-import { AuthContext, OrgAuth } from "../../auth/middleware";
+import executorConfig from "../../../executor.config";
+import { AuthContext } from "../../auth/middleware";
 import {
   ProtectedCloudApi,
   ProtectedCloudApiHandlers,
   RouterConfig,
 } from "../../api/protected-layers";
 import { DbService } from "../db";
+import { createDrizzleFumaDb } from "../fuma";
 
 export const TEST_BASE_URL = "http://test.local";
 export const TEST_ORG_HEADER = "x-test-org-id";
@@ -71,8 +46,7 @@ export const TEST_USER_HEADER = "x-test-user-id";
 // Mirrors apps/cloud/src/services/executor.ts#createScopedExecutor — the
 // per-user scope id bakes in the org so the same user id in a different
 // org gets a distinct scope row.
-const userOrgScopeId = (userId: string, orgId: string) =>
-  `user-org:${userId}:${orgId}`;
+const userOrgScopeId = (userId: string, orgId: string) => `user-org:${userId}:${orgId}`;
 
 // `asOrg(orgId, …)` callers don't care which specific user they are, only
 // that the executor has a valid user-org scope. We give each org a stable
@@ -81,133 +55,43 @@ const userOrgScopeId = (userId: string, orgId: string) =>
 const defaultUserFor = (orgId: string) => `default_user_${orgId}`;
 
 // ---------------------------------------------------------------------------
-// Fake WorkOS Vault client — in-memory map keyed by name.
-// ---------------------------------------------------------------------------
-
-export const makeFakeVaultClient = (): WorkOSVaultClient => {
-  const byName = new Map<string, WorkOSVaultObject>();
-  let seq = 0;
-  const nextId = () => `vault_${++seq}_${crypto.randomUUID().slice(0, 8)}`;
-
-  const create = (opts: { name: string; value: string; context: Record<string, string> }) => {
-    const id = nextId();
-    const metadata: WorkOSVaultObjectMetadata = {
-      context: opts.context,
-      id,
-      updatedAt: new Date(),
-      versionId: `v_${seq}`,
-    };
-    byName.set(opts.name, { id, name: opts.name, value: opts.value, metadata });
-    return metadata;
-  };
-
-  const notFound = (name: string) =>
-    Object.assign(new Error(`not found: ${name}`), { status: 404 });
-
-  const read = (name: string): WorkOSVaultObject => {
-    const obj = byName.get(name);
-    if (!obj) throw notFound(name);
-    return obj;
-  };
-
-  const update = (opts: { id: string; value: string }): WorkOSVaultObject => {
-    for (const [name, obj] of byName.entries()) {
-      if (obj.id === opts.id) {
-        const updated: WorkOSVaultObject = {
-          ...obj,
-          value: opts.value,
-          metadata: { ...obj.metadata, updatedAt: new Date(), versionId: `v_${++seq}` },
-        };
-        byName.set(name, updated);
-        return updated;
-      }
-    }
-    throw notFound(opts.id);
-  };
-
-  const remove = (opts: { id: string }) => {
-    for (const [name, obj] of byName.entries()) {
-      if (obj.id === opts.id) byName.delete(name);
-    }
-  };
-
-  return {
-    use: (_op, fn) =>
-      Effect.tryPromise({
-        try: () =>
-          fn({
-            createObject: async (opts) => create(opts),
-            readObjectByName: async (name) => read(name),
-            updateObject: async (opts) => update(opts),
-            deleteObject: async (opts) => remove(opts),
-          }),
-        catch: (cause) => new Error(String(cause)) as never,
-      }) as never,
-    // The real client wraps SDK rejections in WorkOSVaultClientError so
-    // provider-side `isStatusError` checks can introspect `cause.status`.
-    // Mirror that here so our 404s flow through the same unwrap path.
-    createObject: (opts) =>
-      Effect.try({
-        try: () => create(opts),
-        catch: (cause) => new WorkOSVaultClientError({ cause, operation: "create_object" }),
-      }),
-    readObjectByName: (name) =>
-      Effect.try({
-        try: () => read(name),
-        catch: (cause) =>
-          new WorkOSVaultClientError({ cause, operation: "read_object_by_name" }),
-      }),
-    updateObject: (opts) =>
-      Effect.try({
-        try: () => update(opts),
-        catch: (cause) => new WorkOSVaultClientError({ cause, operation: "update_object" }),
-      }),
-    deleteObject: (opts) =>
-      Effect.try({
-        try: () => remove(opts),
-        catch: (cause) => new WorkOSVaultClientError({ cause, operation: "delete_object" }),
-      }),
-  };
-};
-
-// ---------------------------------------------------------------------------
 // Executor factory — mirrors apps/cloud/services/executor#createScopedExecutor
-// but with a fake vault client.
+// but with an in-memory test vault client (see
+// `@executor-js/plugin-workos-vault/testing`).
 // ---------------------------------------------------------------------------
 
-const fakeVault = makeFakeVaultClient();
+const fakeVault = makeTestWorkOSVaultClient();
+const testPlugins = executorConfig.plugins({
+  workosVaultClient: fakeVault,
+});
+const testHttpClientLayer = FetchHttpClient.layer;
 
-const createTestScopedExecutor = (
-  userId: string,
-  orgId: string,
-  orgName: string,
-) =>
+const createTestScopedExecutor = (userId: string, orgId: string, orgName: string) =>
   Effect.gen(function* () {
     const { db } = yield* DbService;
-    const plugins = [
-      openApiPlugin(),
-      mcpPlugin({ dangerouslyAllowStdioMCP: false }),
-      graphqlPlugin(),
-      workosVaultPlugin({ client: fakeVault }),
-    ] as const;
-    const schema = collectSchemas(plugins);
-    const adapter = makePostgresAdapter({ db, schema });
-    const blobs = makePostgresBlobStore({ db });
-    const orgScope = new Scope({
+    const plugins = testPlugins;
+    const fuma = createDrizzleFumaDb({
+      db,
+      tables: collectTables(plugins),
+      namespace: "executor_cloud",
+      provider: "postgresql",
+    });
+    const orgScope = Scope.make({
       id: ScopeId.make(orgId),
       name: orgName,
       createdAt: new Date(),
     });
-    const userOrgScope = new Scope({
+    const userOrgScope = Scope.make({
       id: ScopeId.make(userOrgScopeId(userId, orgId)),
       name: `Personal · ${orgName}`,
       createdAt: new Date(),
     });
     return yield* createExecutor({
       scopes: [userOrgScope, orgScope],
-      adapter,
-      blobs,
+      db: fuma.db,
       plugins,
+      httpClientLayer: testHttpClientLayer,
+      onElicitation: "accept-all",
     });
   });
 
@@ -215,14 +99,31 @@ const createTestScopedExecutor = (
 // HTTP plumbing
 // ---------------------------------------------------------------------------
 
-const FakeOrgAuthLive = Layer.succeed(
-  OrgAuth,
-  OrgAuth.of({
-    cookie: () =>
+// Test version of the production `ExecutionStackMiddleware` — reads the
+// `x-test-org-id` (and optional `x-test-user-id`) header, builds a
+// test-scoped executor against the live postgres test db with a fake
+// WorkOS vault, and provides `AuthContext` + the executor services to the
+// handler. Mirrors prod's HttpRouter middleware but with test-mode
+// constructors.
+const TestExecutionStackMiddleware = HttpRouter.middleware<{
+  provides:
+    | AuthContext
+    | ExecutorService
+    | ExecutionEngineService
+    | PluginExtensionServices<typeof testPlugins>;
+}>()(
+  // Layer-time setup — captures `DbService` so the per-request function
+  // only depends on `HttpRouter`-Provided context. See `api/protected.ts`
+  // for the same pattern.
+  Effect.gen(function* () {
+    const context = yield* Effect.context<DbService>();
+    const provideExecutorExtensions = providePluginExtensions(testPlugins);
+    return (httpEffect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const orgId = request.headers[TEST_ORG_HEADER];
         if (!orgId || typeof orgId !== "string") {
+          // oxlint-disable-next-line executor/no-effect-escape-hatch, executor/no-error-constructor -- boundary: test HTTP harness has no request context without x-test-org-id
           return yield* Effect.die(new Error("missing x-test-org-id"));
         }
         const userHeader = request.headers[TEST_USER_HEADER];
@@ -230,67 +131,41 @@ const FakeOrgAuthLive = Layer.succeed(
           typeof userHeader === "string" && userHeader.length > 0
             ? userHeader
             : defaultUserFor(orgId);
-        return AuthContext.of({
-          accountId: userId,
-          organizationId: orgId,
-          email: "test@example.com",
-          name: "Test User",
-          avatarUrl: null,
+        const orgName = `Org ${orgId}`;
+        const executor = yield* createTestScopedExecutor(userId, orgId, orgName);
+        const engine = createExecutionEngine({
+          executor,
+          codeExecutor: makeQuickJsExecutor(),
         });
-      }),
+        return yield* httpEffect.pipe(
+          Effect.provideService(
+            AuthContext,
+            AuthContext.of({
+              accountId: userId,
+              organizationId: orgId,
+              email: "test@example.com",
+              name: "Test User",
+              avatarUrl: null,
+            }),
+          ),
+          Effect.provideService(ExecutorService, executor),
+          Effect.provideService(ExecutionEngineService, engine),
+          provideExecutorExtensions(executor),
+        );
+      }).pipe(Effect.provideContext(context));
   }),
+).layer;
+
+const TestApiLive = HttpApiBuilder.layer(ProtectedCloudApi).pipe(
+  Layer.provide(ProtectedCloudApiHandlers),
+  Layer.provide(TestExecutionStackMiddleware),
+  Layer.provideMerge(HttpApiSwagger.layer(ProtectedCloudApi, { path: "/docs" })),
+  Layer.provideMerge(RouterConfig),
+  Layer.provideMerge(DbService.Live),
+  Layer.provideMerge(HttpServer.layerServices),
 );
 
-const TestApiLive = HttpApiBuilder.api(ProtectedCloudApi).pipe(
-  Layer.provide(Layer.merge(ProtectedCloudApiHandlers, FakeOrgAuthLive)),
-);
-
-const buildAppForScope = (userId: string, orgId: string, orgName: string) =>
-  Effect.gen(function* () {
-    const executor = yield* createTestScopedExecutor(userId, orgId, orgName);
-    const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
-    const services = Layer.mergeAll(
-      Layer.succeed(ExecutorService, executor),
-      Layer.succeed(ExecutionEngineService, engine),
-      Layer.succeed(OpenApiExtensionService, executor.openapi),
-      Layer.succeed(McpExtensionService, executor.mcp),
-      Layer.succeed(GraphqlExtensionService, executor.graphql),
-    );
-    return yield* HttpApiBuilder.httpApp.pipe(
-      Effect.provide(
-        HttpApiSwagger.layer({ path: "/docs" }).pipe(
-          Layer.provideMerge(HttpApiBuilder.middlewareOpenApi()),
-          Layer.provideMerge(TestApiLive),
-          Layer.provideMerge(services),
-          Layer.provideMerge(RouterConfig),
-          Layer.provideMerge(HttpServer.layerContext),
-          Layer.provideMerge(HttpApiBuilder.Router.Live),
-          Layer.provideMerge(HttpApiBuilder.Middleware.layer),
-        ),
-      ),
-    );
-  });
-
-const RouterApp = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest;
-  const orgId = request.headers[TEST_ORG_HEADER];
-  if (!orgId || typeof orgId !== "string") {
-    return yield* Effect.die(new Error("missing x-test-org-id"));
-  }
-  const userHeader = request.headers[TEST_USER_HEADER];
-  const userId =
-    typeof userHeader === "string" && userHeader.length > 0
-      ? userHeader
-      : defaultUserFor(orgId);
-  return yield* yield* buildAppForScope(userId, orgId, `Org ${orgId}`);
-});
-
-const handler = HttpApp.toWebHandler(
-  RouterApp.pipe(
-    Effect.provide(DbService.Live),
-    Effect.provide(HttpServer.layerContext),
-  ),
-);
+const handler = HttpRouter.toWebHandler(TestApiLive, { disableLogger: true }).handler;
 
 export const fetchForOrg = (orgId: string): typeof globalThis.fetch =>
   ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -301,10 +176,7 @@ export const fetchForOrg = (orgId: string): typeof globalThis.fetch =>
     return handler(req);
   }) as typeof globalThis.fetch;
 
-export const fetchForUser = (
-  userId: string,
-  orgId: string,
-): typeof globalThis.fetch =>
+export const fetchForUser = (userId: string, orgId: string): typeof globalThis.fetch =>
   ((input: RequestInfo | URL, init?: RequestInit) => {
     const base = input instanceof Request ? input : new Request(input, init);
     const req = new Request(base, {
@@ -319,27 +191,18 @@ export const fetchForUser = (
 
 export const clientLayerForOrg = (orgId: string) =>
   FetchHttpClient.layer.pipe(
-    Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetchForOrg(orgId))),
+    Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(fetchForOrg(orgId))),
   );
 
 export const clientLayerForUser = (userId: string, orgId: string) =>
   FetchHttpClient.layer.pipe(
-    Layer.provide(
-      Layer.succeed(FetchHttpClient.Fetch, fetchForUser(userId, orgId)),
-    ),
+    Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(fetchForUser(userId, orgId))),
   );
 
 // Constructs an HttpApiClient bound to the given org, hands it to `body`,
 // and provides the org-scoped fetch layer in one step. Keeps per-test
 // Effect blocks focused on the actual assertions.
-type ApiShape = typeof ProtectedCloudApi extends HttpApi.HttpApi<
-  infer _Id,
-  infer Groups,
-  infer ApiError,
-  infer _ApiR
->
-  ? HttpApiClient.Client<Groups, ApiError, never>
-  : never;
+type ApiShape = HttpApiClient.ForApi<typeof ProtectedCloudApi>;
 
 export const asOrg = <A, E>(
   orgId: string,
@@ -362,14 +225,11 @@ export const asUser = <A, E>(
   Effect.gen(function* () {
     const client = yield* HttpApiClient.make(ProtectedCloudApi, { baseUrl: TEST_BASE_URL });
     return yield* body(client);
-  }).pipe(
-    Effect.provide(clientLayerForUser(userId, orgId)),
-  ) as Effect.Effect<A, E>;
+  }).pipe(Effect.provide(clientLayerForUser(userId, orgId))) as Effect.Effect<A, E>;
 
 // Exposed so tests can build the same user-org scope id the harness uses
 // when writing at a specific user's scope.
-export const testUserOrgScopeId = (userId: string, orgId: string) =>
-  userOrgScopeId(userId, orgId);
+export const testUserOrgScopeId = (userId: string, orgId: string) => userOrgScopeId(userId, orgId);
 
 // Re-exports so call sites don't need a second import.
 export { ProtectedCloudApi };

@@ -1,40 +1,33 @@
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ScopeId } from "@executor/sdk";
-import { InternalError } from "@executor/api";
-
-import {
-  GoogleDiscoveryOAuthError,
-  GoogleDiscoveryParseError,
-  GoogleDiscoverySourceError,
-} from "../sdk/errors";
+import { InternalError, ScopeId, SecretBackedValue } from "@executor-js/sdk/shared";
+import { GoogleDiscoveryParseError, GoogleDiscoverySourceError } from "../sdk/errors";
 import { GoogleDiscoveryStoredSourceSchema } from "../sdk/stored-source";
 import { GoogleDiscoveryAnnotationPolicy } from "../sdk/types";
 
 export { HttpApiSchema };
 
-const scopeIdParam = HttpApiSchema.param("scopeId", ScopeId);
-const namespaceParam = HttpApiSchema.param("namespace", Schema.String);
+const DiscoveryCredentialsPayload = Schema.Struct({
+  headers: Schema.optional(Schema.Record(Schema.String, SecretBackedValue)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, SecretBackedValue)),
+});
 
-const AuthPayload = Schema.Union(
+const AuthPayload = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("none"),
   }),
   Schema.Struct({
     kind: Schema.Literal("oauth2"),
+    connectionId: Schema.String,
     clientIdSecretId: Schema.String,
     clientSecretSecretId: Schema.NullOr(Schema.String),
-    accessTokenSecretId: Schema.String,
-    refreshTokenSecretId: Schema.NullOr(Schema.String),
-    tokenType: Schema.optional(Schema.String),
-    expiresAt: Schema.NullOr(Schema.Number),
-    scope: Schema.NullOr(Schema.String),
     scopes: Schema.Array(Schema.String),
   }),
-);
+]);
 
 const ProbePayload = Schema.Struct({
   discoveryUrl: Schema.String,
+  credentials: Schema.optional(DiscoveryCredentialsPayload),
 });
 
 const ProbeOperation = Schema.Struct({
@@ -57,6 +50,7 @@ const ProbeResponse = Schema.Struct({
 const AddSourcePayload = Schema.Struct({
   name: Schema.String,
   discoveryUrl: Schema.String,
+  credentials: Schema.optional(DiscoveryCredentialsPayload),
   namespace: Schema.optional(Schema.String),
   auth: AuthPayload,
   annotationPolicy: Schema.optional(GoogleDiscoveryAnnotationPolicy),
@@ -69,7 +63,7 @@ const AddSourceResponse = Schema.Struct({
 
 const UpdateSourcePayload = Schema.Struct({
   name: Schema.optional(Schema.String),
-  // `null` clears a previously-set override; `undefined` leaves as-is.
+  auth: Schema.optional(AuthPayload),
   annotationPolicy: Schema.optional(Schema.NullOr(GoogleDiscoveryAnnotationPolicy)),
 });
 
@@ -77,55 +71,24 @@ const UpdateSourceResponse = Schema.Struct({
   updated: Schema.Boolean,
 });
 
-const StartOAuthPayload = Schema.Struct({
-  name: Schema.String,
-  discoveryUrl: Schema.String,
-  clientIdSecretId: Schema.String,
-  clientSecretSecretId: Schema.optional(Schema.NullOr(Schema.String)),
-  redirectUrl: Schema.String,
-  scopes: Schema.optional(Schema.Array(Schema.String)),
-});
+// OAuth start/complete/callback payloads/responses live on the shared
+// `/scopes/:scopeId/oauth/*` group in `@executor-js/api` now — no
+// plugin-specific OAuth schemas needed here.
 
-const StartOAuthResponse = Schema.Struct({
-  sessionId: Schema.String,
-  authorizationUrl: Schema.String,
-  scopes: Schema.Array(Schema.String),
-});
-
-const CompleteOAuthPayload = Schema.Struct({
-  state: Schema.String,
-  code: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-});
-
-const CompleteOAuthResponse = Schema.Struct({
-  kind: Schema.Literal("oauth2"),
-  clientIdSecretId: Schema.String,
-  clientSecretSecretId: Schema.NullOr(Schema.String),
-  accessTokenSecretId: Schema.String,
-  refreshTokenSecretId: Schema.NullOr(Schema.String),
-  tokenType: Schema.String,
-  expiresAt: Schema.NullOr(Schema.Number),
-  scope: Schema.NullOr(Schema.String),
-  scopes: Schema.Array(Schema.String),
-});
-
-const OAuthCallbackParams = Schema.Struct({
-  state: Schema.String,
-  code: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-  error_description: Schema.optional(Schema.String),
-});
-
-const HtmlResponse = HttpApiSchema.Text({ contentType: "text/html" });
-
-export class GoogleDiscoveryApiError extends Schema.TaggedError<GoogleDiscoveryApiError>()(
+export class GoogleDiscoveryApiError extends Schema.TaggedErrorClass<GoogleDiscoveryApiError>()(
   "GoogleDiscoveryApiError",
   {
     message: Schema.String,
   },
-  HttpApiSchema.annotations({ status: 400 }),
+  { httpApiStatus: 400 },
 ) {}
+
+const GoogleDiscoveryErrors = [
+  InternalError,
+  GoogleDiscoveryApiError,
+  GoogleDiscoveryParseError,
+  GoogleDiscoverySourceError,
+] as const;
 
 // ---------------------------------------------------------------------------
 // Group
@@ -139,56 +102,36 @@ export class GoogleDiscoveryApiError extends Schema.TaggedError<GoogleDiscoveryA
 // InternalError — handlers just `return yield* ext.foo(...)`.
 // ---------------------------------------------------------------------------
 
-export class GoogleDiscoveryGroup extends HttpApiGroup.make("googleDiscovery")
+export const GoogleDiscoveryGroup = HttpApiGroup.make("googleDiscovery")
   .add(
-    HttpApiEndpoint.post("probeDiscovery")`/scopes/${scopeIdParam}/google-discovery/probe`
-      .setPayload(ProbePayload)
-      .addSuccess(ProbeResponse),
+    HttpApiEndpoint.post("probeDiscovery", "/scopes/:scopeId/google-discovery/probe", {
+      params: { scopeId: ScopeId },
+      payload: ProbePayload,
+      success: ProbeResponse,
+      error: GoogleDiscoveryErrors,
+    }),
   )
   .add(
-    HttpApiEndpoint.post("addSource")`/scopes/${scopeIdParam}/google-discovery/sources`
-      .setPayload(AddSourcePayload)
-      .addSuccess(AddSourceResponse),
+    HttpApiEndpoint.post("addSource", "/scopes/:scopeId/google-discovery/sources", {
+      params: { scopeId: ScopeId },
+      payload: AddSourcePayload,
+      success: AddSourceResponse,
+      error: GoogleDiscoveryErrors,
+    }),
   )
   .add(
-    HttpApiEndpoint.post("startOAuth")`/scopes/${scopeIdParam}/google-discovery/oauth/start`
-      .setPayload(StartOAuthPayload)
-      .addSuccess(StartOAuthResponse),
+    HttpApiEndpoint.patch("updateSource", "/scopes/:scopeId/google-discovery/sources/:namespace", {
+      params: { scopeId: ScopeId, namespace: Schema.String },
+      payload: UpdateSourcePayload,
+      success: UpdateSourceResponse,
+      error: GoogleDiscoveryErrors,
+    }),
   )
   .add(
-    HttpApiEndpoint.post("completeOAuth")`/scopes/${scopeIdParam}/google-discovery/oauth/complete`
-      .setPayload(CompleteOAuthPayload)
-      .addSuccess(CompleteOAuthResponse),
-  )
-  .add(
-    HttpApiEndpoint.get("oauthCallback")`/google-discovery/oauth/callback`
-      .setUrlParams(OAuthCallbackParams)
-      .addSuccess(HtmlResponse),
-  )
-  .add(
-    HttpApiEndpoint.get(
-      "getSource",
-    )`/scopes/${scopeIdParam}/google-discovery/sources/${namespaceParam}`
-      .addSuccess(Schema.NullOr(GoogleDiscoveryStoredSourceSchema)),
-  )
-  .add(
-    HttpApiEndpoint.patch(
-      "updateSource",
-    )`/scopes/${scopeIdParam}/google-discovery/sources/${namespaceParam}`
-      .setPayload(UpdateSourcePayload)
-      .addSuccess(UpdateSourceResponse),
-  )
-  // Errors declared once at the group level — every endpoint inherits.
-  // `InternalError` is the shared opaque 500 translated at the HTTP edge
-  // by `withCapture`. The others are 4xx domain errors carrying their
-  // status via `HttpApiSchema.annotations`; handlers return them through
-  // the typed channel and HttpApi encodes them directly. We only list
-  // errors a Google Discovery *group* endpoint can surface —
-  // `GoogleDiscoveryInvocationError` is thrown inside `invokeTool` which
-  // is reached via the core `tools.invoke` endpoint, not any Google
-  // Discovery-group endpoint, so it doesn't belong here.
-  .addError(InternalError)
-  .addError(GoogleDiscoveryApiError)
-  .addError(GoogleDiscoveryOAuthError)
-  .addError(GoogleDiscoveryParseError)
-  .addError(GoogleDiscoverySourceError) {}
+    HttpApiEndpoint.get("getSource", "/scopes/:scopeId/google-discovery/sources/:namespace", {
+      params: { scopeId: ScopeId, namespace: Schema.String },
+      success: Schema.NullOr(GoogleDiscoveryStoredSourceSchema),
+      error: GoogleDiscoveryErrors,
+    }),
+  );
+// Errors are declared per endpoint in Effect v4.

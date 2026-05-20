@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "@effect/platform";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { Effect, Option, Schema } from "effect";
 
 import { parse } from "./parse";
@@ -10,34 +10,66 @@ import { compileToolDefinitions } from "./definitions";
 // Define a test API using Effect's HttpApi
 // ---------------------------------------------------------------------------
 
-class Pet extends Schema.Class<Pet>("Pet")({
+const Pet = Schema.Struct({
   id: Schema.Number,
   name: Schema.String,
   tag: Schema.optional(Schema.String),
-}) {}
+});
+type Pet = typeof Pet.Type;
 
-class CreatePetInput extends Schema.Class<CreatePetInput>("CreatePetInput")({
+const CreatePetInput = Schema.Struct({
   name: Schema.String,
   tag: Schema.optional(Schema.String),
-}) {}
+});
 
-class PetNotFound extends Schema.TaggedError<PetNotFound>()("PetNotFound", {
+class PetNotFound extends Schema.TaggedErrorClass<PetNotFound>()("PetNotFound", {
   message: Schema.String,
 }) {}
 
 const PetstoreGroup = HttpApiGroup.make("pets")
-  .add(HttpApiEndpoint.get("listPets", "/pets").addSuccess(Schema.Array(Pet)))
-  .add(HttpApiEndpoint.post("createPet", "/pets").setPayload(CreatePetInput).addSuccess(Pet))
+  .add(HttpApiEndpoint.get("listPets", "/pets", { success: Schema.Array(Pet) }))
+  .add(HttpApiEndpoint.post("createPet", "/pets", { payload: CreatePetInput, success: Pet }))
   .add(
-    HttpApiEndpoint.get("getPet", "/pets/:petId")
-      .addSuccess(Pet)
-      .addError(PetNotFound, { status: 404 }),
+    HttpApiEndpoint.get("getPet", "/pets/:petId", {
+      success: Pet,
+      error: PetNotFound,
+    }),
   );
 
 const PetstoreApi = HttpApi.make("petstore").add(PetstoreGroup);
 
 // Generate OpenAPI spec from the Effect API definition
 const spec = OpenApi.fromApi(PetstoreApi);
+
+type TestOpenApiServer = {
+  readonly url: string;
+  readonly description?: string;
+  readonly variables?: Record<
+    string,
+    {
+      readonly default: string;
+      readonly enum?: [string, ...string[]];
+      readonly description?: string;
+    }
+  >;
+};
+
+const pingSpecWithServers = (title: string, servers: readonly TestOpenApiServer[]) =>
+  OpenApi.fromApi(
+    HttpApi.make("serverVariablesTest")
+      .add(
+        HttpApiGroup.make("default", { topLevel: true }).add(
+          HttpApiEndpoint.get("ping", "/ping", { success: Schema.Unknown }),
+        ),
+      )
+      .annotateMerge(
+        OpenApi.annotations({
+          title,
+          version: "1.0.0",
+          servers,
+        }),
+      ),
+  );
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -163,26 +195,19 @@ describe("OpenAPI plugin", () => {
 
   it.effect("extracts server variables with enum and description", () =>
     Effect.gen(function* () {
-      const specWithServerVars = {
-        openapi: "3.0.0",
-        info: { title: "Sentry", version: "1.0.0" },
-        servers: [
-          {
-            url: "https://{region}.sentry.io",
-            description: "Regional endpoint",
-            variables: {
-              region: {
-                default: "us",
-                description: "The data-storage-location for an organization",
-                enum: ["us", "de"],
-              },
+      const specWithServerVars = pingSpecWithServers("Sentry", [
+        {
+          url: "https://{region}.sentry.io",
+          description: "Regional endpoint",
+          variables: {
+            region: {
+              default: "us",
+              description: "The data-storage-location for an organization",
+              enum: ["us", "de"],
             },
           },
-        ],
-        paths: {
-          "/ping": { get: { responses: { "200": { description: "ok" } } } },
         },
-      };
+      ]);
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       const doc = yield* parse(JSON.stringify(specWithServerVars));
       const result = yield* extract(doc);
@@ -194,9 +219,10 @@ describe("OpenAPI plugin", () => {
 
       const vars = Option.getOrThrow(server.variables);
       expect(vars.region!.default).toBe("us");
-      expect(
-        Option.getOrElse(vars.region!.enum, () => [] as readonly string[]),
-      ).toEqual(["us", "de"]);
+      expect(Option.getOrElse(vars.region!.enum, () => [] as readonly string[])).toEqual([
+        "us",
+        "de",
+      ]);
       expect(Option.getOrElse(vars.region!.description, () => "")).toBe(
         "The data-storage-location for an organization",
       );
@@ -209,27 +235,20 @@ describe("OpenAPI plugin", () => {
 // ---------------------------------------------------------------------------
 
 describe("extract — server variables", () => {
-  const specWithServerVars = {
-    openapi: "3.0.0",
-    info: { title: "Test", version: "1.0.0" },
-    servers: [
-      {
-        url: "https://{region}.example.com/{basePath}",
-        description: "Regional endpoint",
-        variables: {
-          region: {
-            default: "us",
-            enum: ["us", "eu", "ap"],
-            description: "Data region",
-          },
-          basePath: { default: "v1" },
+  const specWithServerVars = pingSpecWithServers("Test", [
+    {
+      url: "https://{region}.example.com/{basePath}",
+      description: "Regional endpoint",
+      variables: {
+        region: {
+          default: "us",
+          enum: ["us", "eu", "ap"],
+          description: "Data region",
         },
+        basePath: { default: "v1" },
       },
-    ],
-    paths: {
-      "/ping": { get: { responses: { "200": { description: "ok" } } } },
     },
-  };
+  ]);
 
   it.effect("preserves enum, default, and description for server variables", () =>
     Effect.gen(function* () {

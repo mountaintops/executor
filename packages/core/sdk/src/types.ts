@@ -11,16 +11,19 @@ import { ToolId } from "./ids";
 
 export interface Source {
   readonly id: string;
+  /** Owning scope of the visible source row. Present for dynamic
+   *  sources; static sources omit it. */
+  readonly scopeId?: string;
   readonly kind: string;
   readonly name: string;
   readonly url?: string;
   /** Which plugin owns this source. */
   readonly pluginId: string;
   /** Whether the user can remove this source via
-   *  `executor.sources.remove(id)`. `false` for static / built-in
-   *  sources declared by plugins at startup. */
+   *  `executor.sources.remove({ id, targetScope })`. `false` for
+   *  static / built-in sources declared by plugins at startup. */
   readonly canRemove: boolean;
-  /** Whether the plugin supports `executor.sources.refresh(id)`. */
+  /** Whether the plugin supports `executor.sources.refresh({ id, targetScope })`. */
   readonly canRefresh: boolean;
   /** Whether the source has editable config (headers, base url, etc.).
    *  Editing is done via plugin-specific extension methods
@@ -34,6 +37,21 @@ export interface Source {
   readonly runtime: boolean;
 }
 
+export interface RemoveSourceInput {
+  readonly id: string;
+  readonly targetScope: string;
+}
+
+export interface RefreshSourceInput {
+  readonly id: string;
+  readonly targetScope: string;
+}
+
+// `Tool` is the runtime view used across the SDK (with sourceId/pluginId/
+// annotations); `ToolSchema` below is the separate schema-side view that
+// `executor.tools.schema(toolId)` returns. It can include TypeScript previews.
+// These share a name root but are intentionally distinct shapes.
+// oxlint-disable-next-line executor/prefer-schema-inferred-types
 export interface Tool {
   readonly id: string;
   readonly sourceId: string;
@@ -48,24 +66,23 @@ export interface Tool {
 
 // ---------------------------------------------------------------------------
 // ToolSchema — the full schema-side view of a tool, returned by
-// `executor.tools.schema(toolId)`. Includes JSON schemas with `$defs`
-// attached at read time AND TypeScript preview strings rendered from
-// them via `schemaToTypeScriptPreview`. The UI uses the TS previews to
-// show "calling this tool looks like this" code samples.
+// `executor.tools.schema(toolId)`. Includes JSON schema roots plus shared
+// definitions for schema exploration, and optionally TypeScript preview strings
+// rendered from them via `schemaToTypeScriptPreview`.
 // ---------------------------------------------------------------------------
 
-export class ToolSchema extends Schema.Class<ToolSchema>("ToolSchema")({
+export const ToolSchema = Schema.Struct({
   id: ToolId,
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   inputSchema: Schema.optional(Schema.Unknown),
   outputSchema: Schema.optional(Schema.Unknown),
+  schemaDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   inputTypeScript: Schema.optional(Schema.String),
   outputTypeScript: Schema.optional(Schema.String),
-  typeScriptDefinitions: Schema.optional(
-    Schema.Record({ key: Schema.String, value: Schema.String }),
-  ),
-}) {}
+  typeScriptDefinitions: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type ToolSchema = typeof ToolSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Source detection — optional capability on `PluginSpec.detect`. When a
@@ -75,14 +92,12 @@ export class ToolSchema extends Schema.Class<ToolSchema>("ToolSchema")({
 // plugin.
 // ---------------------------------------------------------------------------
 
-export class SourceDetectionResult extends Schema.Class<SourceDetectionResult>(
-  "SourceDetectionResult",
-)({
+export const SourceDetectionResult = Schema.Struct({
   /** Plugin id that recognized the URL (e.g. "openapi", "graphql"). */
   kind: Schema.String,
   /** Confidence tier — UI uses this to pick a winner when multiple
    *  plugins claim a URL. */
-  confidence: Schema.Literal("high", "medium", "low"),
+  confidence: Schema.Literals(["high", "medium", "low"]),
   /** The (possibly normalized) endpoint the plugin will use. */
   endpoint: Schema.String,
   /** Human-readable name suggestion, typically derived from spec title
@@ -91,7 +106,8 @@ export class SourceDetectionResult extends Schema.Class<SourceDetectionResult>(
   /** Namespace suggestion — the plugin's recommendation for the source
    *  id. UI may override. */
   namespace: Schema.String,
-}) {}
+});
+export type SourceDetectionResult = typeof SourceDetectionResult.Type;
 
 // ---------------------------------------------------------------------------
 // Filter passed to `executor.tools.list(...)`. Empty filter = all tools.
@@ -102,4 +118,11 @@ export interface ToolListFilter {
   readonly sourceId?: string;
   /** Case-insensitive substring match against `name` OR `description`. */
   readonly query?: string;
+  /** Resolve plugin-derived annotations. Defaults to true. */
+  readonly includeAnnotations?: boolean;
+  /** Include tools whose effective `tool_policy` is `block`. Defaults to
+   *  `false` so the agent-facing surfaces (`searchTools`, sandbox `tools.list`)
+   *  silently omit blocked tools. The settings UI for managing policies
+   *  should pass `true` so users can author rules against blocked tools. */
+  readonly includeBlocked?: boolean;
 }

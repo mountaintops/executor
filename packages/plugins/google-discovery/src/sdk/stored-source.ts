@@ -1,19 +1,17 @@
 import { Schema } from "effect";
 
-import { GoogleDiscoveryAnnotationPolicy, GoogleDiscoveryStoredSourceData } from "./types";
+import { GoogleDiscoveryStoredSourceData } from "./types";
 
 // ---------------------------------------------------------------------------
 // Stored source — the shape persisted by the binding store and exposed
 // via the getSource HTTP endpoint.
 // ---------------------------------------------------------------------------
 
-export class GoogleDiscoveryStoredSourceSchema extends Schema.Class<GoogleDiscoveryStoredSourceSchema>(
-  "GoogleDiscoveryStoredSource",
-)({
+export const GoogleDiscoveryStoredSourceSchema = Schema.Struct({
   namespace: Schema.String,
   name: Schema.String,
   config: GoogleDiscoveryStoredSourceData,
-  annotationPolicy: Schema.optional(GoogleDiscoveryAnnotationPolicy),
-}) {}
+}).annotate({ identifier: "GoogleDiscoveryStoredSource" });
+export type GoogleDiscoveryStoredSourceSchema = typeof GoogleDiscoveryStoredSourceSchema.Type;
 
 export type GoogleDiscoveryStoredSourceSchemaType = typeof GoogleDiscoveryStoredSourceSchema.Type;

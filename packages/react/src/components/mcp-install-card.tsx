@@ -2,13 +2,17 @@ import { useEffect, useState } from "react";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
 import OpenCodeIcon from "@lobehub/icons/es/OpenCode/components/Mono";
+import { ChevronDown } from "lucide-react";
 import { CodeBlock } from "./code-block";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
+import { NativeSelect, NativeSelectOption } from "./native-select";
 import { cn } from "../lib/utils";
 import { useScopeInfo } from "../api/scope-context";
 
 type TransportMode = "stdio" | "http";
+export type McpElicitationMode = "browser" | "model" | "native";
 
 const SUPPORTED_AGENTS = [
   { key: "cursor", label: "Cursor", Icon: CursorIcon },
@@ -17,39 +21,188 @@ const SUPPORTED_AGENTS = [
 ] as const;
 
 const isDev = import.meta.env.DEV;
+const devCliCwd = import.meta.env.VITE_EXECUTOR_DEV_CLI_CWD as string | undefined;
 const isLocal =
   typeof window !== "undefined" &&
   (window.location.hostname === "localhost" ||
     window.location.hostname === "127.0.0.1" ||
     window.location.hostname.endsWith(".localhost"));
 
+export const shellQuoteWord = (value: string): string => {
+  if (/^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+};
+
+interface DesktopBridge {
+  readonly getSettings: () => Promise<{
+    readonly port: number;
+    readonly requireAuth: boolean;
+    readonly password: string;
+  }>;
+}
+
+const readDesktopBridge = (): DesktopBridge | null => {
+  if (typeof window === "undefined") return null;
+  const candidate = (window as Window & { readonly executor?: DesktopBridge }).executor;
+  if (!candidate || typeof candidate.getSettings !== "function") return null;
+  return candidate;
+};
+
+export const buildMcpHttpEndpoint = (input: {
+  readonly origin: string | null;
+  readonly desktop: {
+    readonly port: number;
+  } | null;
+  readonly elicitationMode?: McpElicitationMode;
+}): string => {
+  const endpoint = input.desktop
+    ? `http://127.0.0.1:${input.desktop.port}/mcp`
+    : input.origin
+      ? `${input.origin}/mcp`
+      : "<this-server>/mcp";
+  if (!input.elicitationMode || input.elicitationMode === "model") return endpoint;
+
+  if (endpoint.startsWith("<")) return `${endpoint}?elicitation_mode=${input.elicitationMode}`;
+  const url = new URL(endpoint);
+  url.searchParams.set("elicitation_mode", input.elicitationMode);
+  return url.toString();
+};
+
+const buildBasicAuthHeader = (password: string): string => {
+  // Renderer-only — every browser/Electron renderer has btoa. SSR doesn't
+  // render this card, so we don't need a Node fallback here.
+  if (typeof globalThis.btoa !== "function") {
+    return `Authorization: Basic executor:${password}`;
+  }
+  return `Authorization: Basic ${globalThis.btoa(`executor:${password}`)}`;
+};
+
+export const buildMcpInstallCommand = (input: {
+  readonly mode: TransportMode;
+  readonly isDev: boolean;
+  readonly origin: string | null;
+  readonly scopeDir?: string;
+  readonly desktop?: {
+    readonly port: number;
+    readonly requireAuth: boolean;
+    readonly password: string;
+  } | null;
+  readonly elicitationMode?: McpElicitationMode;
+  readonly devCliCwd?: string;
+}): string => {
+  if (input.mode === "http") {
+    const endpoint = buildMcpHttpEndpoint({
+      origin: input.origin,
+      desktop: input.desktop ? { port: input.desktop.port } : null,
+      elicitationMode: input.elicitationMode,
+    });
+    const headerFlags: string[] = [];
+    if (input.desktop?.requireAuth && input.desktop.password) {
+      headerFlags.push(`--header ${shellQuoteWord(buildBasicAuthHeader(input.desktop.password))}`);
+    }
+    const parts = [
+      `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
+      ...headerFlags,
+    ];
+    return parts.join(" ");
+  }
+
+  const innerArgs = input.isDev
+    ? input.devCliCwd
+      ? ["bun", "run", "--cwd", input.devCliCwd, "dev:cli", "mcp"]
+      : ["bun", "run", "dev:cli", "mcp"]
+    : ["executor", "mcp"];
+  if (input.scopeDir) {
+    innerArgs.push("--scope", input.scopeDir);
+  }
+  if (input.elicitationMode && input.elicitationMode !== "model") {
+    innerArgs.push("--elicitation-mode", input.elicitationMode);
+  }
+  return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
+};
+
 export function McpInstallCard(props: { className?: string }) {
-  const showStdio = isLocal;
-  const [mode, setMode] = useState<TransportMode>(showStdio ? "stdio" : "http");
+  // Desktop hosts ship Electron without putting an `executor` binary on
+  // PATH, and the bundled sidecar is locked to the running app. Force the
+  // HTTP path there — it routes through the running sidecar with the
+  // Basic auth header injected by the renderer.
+  const showStdio = isLocal && readDesktopBridge() === null;
+  const [mode, setMode] = useState<TransportMode>("http");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [httpElicitationMode, setHttpElicitationMode] = useState<McpElicitationMode>("model");
   const [origin, setOrigin] = useState<string | null>(null);
+  const [desktop, setDesktop] = useState<{
+    readonly port: number;
+    readonly requireAuth: boolean;
+    readonly password: string;
+  } | null>(null);
   const scopeInfo = useScopeInfo();
 
   useEffect(() => {
     setOrigin(window.location.origin);
+    const bridge = readDesktopBridge();
+    if (bridge) {
+      void bridge.getSettings().then(setDesktop, () => setDesktop(null));
+    }
   }, []);
 
-  const scopeFlag = scopeInfo.dir ? ` --scope ${JSON.stringify(scopeInfo.dir)}` : "";
+  const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
 
-  const command =
-    mode === "stdio"
-      ? isDev
-        ? `npx add-mcp "bun run dev:cli mcp${scopeFlag}" --name "executor"`
-        : `npx add-mcp "executor mcp${scopeFlag}" --name "executor"`
-      : origin
-        ? `npx add-mcp "${origin}/mcp" --transport http --name "executor"`
-        : 'npx add-mcp "<this-server>/mcp" --transport http --name "executor"';
+  const command = buildMcpInstallCommand({
+    mode,
+    isDev,
+    origin,
+    scopeDir: scopeInfo.dir,
+    desktop,
+    elicitationMode,
+    devCliCwd,
+  });
 
   const subtitle =
     mode === "stdio"
       ? isDev
-        ? "Uses the repo-local dev CLI. Run from the repository root."
+        ? "Uses the repo-local dev CLI from any agent working directory."
         : "Requires the executor CLI on your PATH."
       : "Connect to executor as a remote MCP server over streamable HTTP.";
+
+  const advancedControls = (
+    <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+      <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+        Advanced
+        <ChevronDown
+          className={cn("size-3.5 transition-transform", advancedOpen && "rotate-180")}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-3 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">Resume approvals</div>
+            <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              {mode === "http"
+                ? "Select how tool approvals are handled for this Remote HTTP connection."
+                : "Standard I/O exposes a resume tool to the model. Use Remote HTTP for browser approvals."}
+            </div>
+          </div>
+          <NativeSelect
+            size="sm"
+            value={elicitationMode}
+            onChange={(event) => setHttpElicitationMode(event.target.value as McpElicitationMode)}
+            aria-label="Elicitation mode"
+            className="min-w-44"
+          >
+            {mode === "http" && (
+              <NativeSelectOption value="browser">Browser approval</NativeSelectOption>
+            )}
+            <NativeSelectOption value="model">Model resume tool</NativeSelectOption>
+            {mode === "http" && (
+              <NativeSelectOption value="native">Native elicitation</NativeSelectOption>
+            )}
+          </NativeSelect>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
 
   const agentLogos = (
     <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
@@ -97,6 +250,7 @@ export function McpInstallCard(props: { className?: string }) {
     <CardStackContent>
       <div className="px-4 pt-1 pb-3">
         <CodeBlock code={command} lang="bash" />
+        {advancedControls && <div className="mt-3">{advancedControls}</div>}
       </div>
       <div className="flex items-center px-4 py-3">{agentLogos}</div>
     </CardStackContent>

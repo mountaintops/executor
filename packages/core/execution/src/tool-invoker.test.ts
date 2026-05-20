@@ -1,45 +1,91 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Schema } from "effect";
+import * as ts from "typescript";
 
 import {
   ElicitationResponse,
   FormElicitation,
+  ToolResult,
   createExecutor,
   definePlugin,
-  makeTestConfig,
-} from "@executor/sdk";
-import { makeQuickJsExecutor } from "@executor/runtime-quickjs";
+  tool,
+} from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { createExecutionEngine } from "./engine";
-import { describeTool, searchTools } from "./tool-invoker";
+import { describeTool, makeExecutorToolInvoker, searchTools } from "./tool-invoker";
 
 const codeExecutor = makeQuickJsExecutor();
 
-const RepoInputSchema = {
-  type: "object",
-  properties: {
-    owner: { type: "string" },
-    repo: { type: "string" },
-  },
-  required: ["owner", "repo"],
-  additionalProperties: false,
-} as const;
+const RepoInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ owner: Schema.String, repo: Schema.String })),
+);
 
-const ContactInputSchema = {
-  type: "object",
-  properties: {
-    email: { type: "string" },
-  },
-  required: ["email"],
-  additionalProperties: false,
-} as const;
+const RepoDetailsOutputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ defaultBranch: Schema.String })),
+);
 
-const EmptyInputSchema = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
+const ContactInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({ email: Schema.String })),
+);
 
-const acceptAll = () => Effect.succeed(new ElicitationResponse({ action: "accept" }));
+const EmptyInputSchema = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+);
+
+const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
+
+type DescribedToolContract = {
+  readonly outputTypeScript: string;
+  readonly typeScriptDefinitions: Record<string, string>;
+};
+
+const typeCheckDescribedInvocation = (
+  described: DescribedToolContract,
+  runtimeResult: unknown,
+  consumerSource: string,
+): readonly string[] => {
+  const fileName = "described-tool-contract.ts";
+  const source = [
+    ...Object.entries(described.typeScriptDefinitions).map(([name, definition]) => {
+      return `type ${name} = ${definition};`;
+    }),
+    `type ToolOutput = ${described.outputTypeScript};`,
+    `const invokedResult: ToolOutput = ${JSON.stringify(runtimeResult)};`,
+    consumerSource,
+  ].join("\n");
+
+  const options: ts.CompilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    noEmit: true,
+    skipLibCheck: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+  };
+  const host = ts.createCompilerHost(options);
+  const originalGetSourceFile = host.getSourceFile.bind(host);
+  const originalReadFile = host.readFile.bind(host);
+  const originalFileExists = host.fileExists.bind(host);
+
+  host.getSourceFile = (candidate, languageVersion, onError, shouldCreateNewSourceFile) => {
+    if (candidate === fileName) {
+      return ts.createSourceFile(candidate, source, languageVersion, true);
+    }
+    return originalGetSourceFile(candidate, languageVersion, onError, shouldCreateNewSourceFile);
+  };
+  host.readFile = (candidate) => (candidate === fileName ? source : originalReadFile(candidate));
+  host.fileExists = (candidate) => candidate === fileName || originalFileExists(candidate);
+
+  const program = ts.createProgram([fileName], options, host);
+  return ts.getPreEmitDiagnostics(program).map((diagnostic) => {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (!diagnostic.file || diagnostic.start === undefined) {
+      return message;
+    }
+    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    return `${diagnostic.file.fileName}:${position.line + 1}:${position.character + 1} ${message}`;
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Test plugins — each one declares a namespace as a static source with N
@@ -66,6 +112,7 @@ const githubPlugin = definePlugin(() => ({
           name: "getRepositoryDetails",
           description: "Get repository details including the default branch",
           inputSchema: RepoInputSchema,
+          outputSchema: RepoDetailsOutputSchema,
           handler: () => Effect.succeed({ defaultBranch: "main" }),
         },
         {
@@ -105,10 +152,121 @@ const crmPlugin = definePlugin(() => ({
   ],
 }));
 
+const errorPlugin = definePlugin(() => ({
+  id: "error-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "records",
+      kind: "in-memory",
+      name: "Records",
+      tools: [
+        {
+          name: "queryRows",
+          description: "Query rows",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "invalid_query",
+                message: 'Field with name "DisplayName" does not exist',
+              }),
+            ),
+        },
+      ],
+    },
+  ],
+}));
+
+const validatedInputPlugin = definePlugin(() => ({
+  id: "validated-input-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "validated",
+      kind: "in-memory",
+      name: "Validated",
+      tools: [
+        tool({
+          name: "getRepositoryDetails",
+          description: "Get repository details including the default branch",
+          inputSchema: RepoInputSchema,
+          outputSchema: RepoDetailsOutputSchema,
+          execute: () => Effect.succeed({ defaultBranch: "main" }),
+        }),
+      ],
+    },
+  ],
+}));
+
+const structuredFailurePlugin = definePlugin(() => ({
+  id: "structured-failure-test" as const,
+  storage: () => ({}),
+  staticSources: () => [
+    {
+      id: "upstream",
+      kind: "in-memory",
+      name: "Upstream",
+      tools: [
+        {
+          name: "nestedErrorBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 400,
+                message: 'The expression "foo" is not valid. Provide a valid expression.',
+                details: {
+                  error: {
+                    code: "invalidRequest",
+                    message: 'The expression "foo" is not valid. Provide a valid expression.',
+                  },
+                },
+              }),
+            ),
+        },
+        {
+          name: "flatErrorBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 400,
+                message: "Field 'XYZ' does not exist",
+                details: {
+                  errorCode: 400,
+                  errorMessage: "Field 'XYZ' does not exist",
+                },
+              }),
+            ),
+        },
+        {
+          name: "errorsArrayBody",
+          description: "",
+          inputSchema: EmptyInputSchema,
+          handler: () =>
+            Effect.succeed(
+              ToolResult.fail({
+                code: "upstream_http_error",
+                status: 403,
+                message: "Insufficient scope",
+                details: {
+                  errors: [{ status: "403", title: "Forbidden", detail: "Insufficient scope" }],
+                },
+              }),
+            ),
+        },
+      ],
+    },
+  ],
+}));
+
 const makeSearchExecutor = () =>
-  createExecutor(
-    makeTestConfig({ plugins: [githubPlugin(), crmPlugin()] as const }),
-  );
+  createExecutor(makeTestConfig({ plugins: [githubPlugin(), crmPlugin()] as const }));
 
 describe("tool discovery", () => {
   it.effect("ranks matches using ids, namespaces, camelCase names, and descriptions", () =>
@@ -116,15 +274,19 @@ describe("tool discovery", () => {
       const executor = yield* makeSearchExecutor();
 
       const githubMatches = yield* searchTools(executor, "github issues", 5);
-      expect(githubMatches.map((match) => match.path)).toEqual(["github.listRepositoryIssues"]);
-      expect(githubMatches[0]?.score ?? 0).toBeGreaterThan(0);
+      expect(githubMatches.items.map((match) => match.path)).toEqual([
+        "github.listRepositoryIssues",
+      ]);
+      expect(githubMatches.items[0]?.score ?? 0).toBeGreaterThan(0);
+      expect(githubMatches.hasMore).toBe(false);
+      expect(githubMatches.nextOffset).toBeNull();
 
       const repoMatches = yield* searchTools(executor, "repo details", 5);
-      expect(repoMatches[0]?.path).toBe("github.getRepositoryDetails");
+      expect(repoMatches.items[0]?.path).toBe("github.getRepositoryDetails");
 
       const crmMatches = yield* searchTools(executor, "crm create contact", 5);
-      expect(crmMatches[0]?.path).toBe("crm.createContact");
-      expect(crmMatches[0]?.score ?? 0).toBeGreaterThan(crmMatches[1]?.score ?? 0);
+      expect(crmMatches.items[0]?.path).toBe("crm.createContact");
+      expect(crmMatches.items[0]?.score ?? 0).toBeGreaterThan(crmMatches.items[1]?.score ?? 0);
     }),
   );
 
@@ -132,7 +294,49 @@ describe("tool discovery", () => {
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();
       const matches = yield* searchTools(executor, "", 5);
-      expect(matches).toEqual([]);
+      expect(matches.items).toEqual([]);
+      expect(matches.total).toBe(0);
+      expect(matches.hasMore).toBe(false);
+      expect(matches.nextOffset).toBeNull();
+    }),
+  );
+
+  it.effect("paginates ranked matches via limit + offset with hasMore + nextOffset", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+
+      // "list" matches `listRepositoryIssues`, `searchDocs` (description has
+      // "documentation" which tokenises adjacent), `listContacts`, etc.
+      // The exact match set isn't important — the pagination invariants are.
+      const all = yield* searchTools(executor, "list", 100);
+      expect(all.items.length).toBeGreaterThan(1);
+      expect(all.total).toBe(all.items.length);
+      expect(all.hasMore).toBe(false);
+      expect(all.nextOffset).toBeNull();
+
+      // First page (limit 1) — matches truncate, hasMore + nextOffset surface.
+      const firstPage = yield* searchTools(executor, "list", 1);
+      expect(firstPage.items).toEqual([all.items[0]]);
+      expect(firstPage.total).toBe(all.total);
+      expect(firstPage.hasMore).toBe(true);
+      expect(firstPage.nextOffset).toBe(1);
+
+      // Second page using nextOffset — order matches the un-paginated rank.
+      const secondPage = yield* searchTools(executor, "list", 1, {
+        offset: firstPage.nextOffset!,
+      });
+      expect(secondPage.items).toEqual([all.items[1]]);
+      expect(secondPage.total).toBe(all.total);
+      // Whether hasMore is true depends on total; at minimum it's consistent.
+      expect(secondPage.hasMore).toBe(all.total > 2);
+      expect(secondPage.nextOffset).toBe(secondPage.hasMore ? 2 : null);
+
+      // Offset past the end — empty page, no more.
+      const past = yield* searchTools(executor, "list", 5, { offset: all.total + 10 });
+      expect(past.items).toEqual([]);
+      expect(past.total).toBe(all.total);
+      expect(past.hasMore).toBe(false);
+      expect(past.nextOffset).toBeNull();
     }),
   );
 
@@ -143,21 +347,26 @@ describe("tool discovery", () => {
       const githubOnly = yield* searchTools(executor, "list", 5, {
         namespace: "github",
       });
-      expect(githubOnly.map((match) => match.path)).toEqual(["github.listRepositoryIssues"]);
+      expect(githubOnly.items.map((match) => match.path)).toEqual(["github.listRepositoryIssues"]);
 
       const crmOnly = yield* searchTools(executor, "list", 5, {
         namespace: "crm",
       });
-      expect(crmOnly.map((match) => match.path)).toEqual(["crm.listContacts"]);
+      expect(crmOnly.items.map((match) => match.path)).toEqual(["crm.listContacts"]);
 
       const sandboxResult = yield* createExecutionEngine({ executor, codeExecutor }).execute(
         'return await tools.search({ namespace: "crm", query: "create contact", limit: 5 });',
         { onElicitation: acceptAll },
       );
       expect(sandboxResult.error).toBeUndefined();
-      expect(sandboxResult.result).toEqual([
-        expect.objectContaining({ path: "crm.createContact" }),
-      ]);
+      expect(sandboxResult.result).toEqual(
+        expect.objectContaining({
+          items: [expect.objectContaining({ path: "crm.createContact" })],
+          total: 1,
+          hasMore: false,
+          nextOffset: null,
+        }),
+      );
     }),
   );
 
@@ -171,10 +380,15 @@ describe("tool discovery", () => {
       );
       expect(listed.error).toBeUndefined();
       expect(listed.result).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: "github", toolCount: 3 }),
-          expect.objectContaining({ id: "crm", toolCount: 2 }),
-        ]),
+        expect.objectContaining({
+          items: expect.arrayContaining([
+            expect.objectContaining({ id: "github", toolCount: 3 }),
+            expect.objectContaining({ id: "crm", toolCount: 2 }),
+          ]),
+          total: 2,
+          hasMore: false,
+          nextOffset: null,
+        }),
       );
 
       const searched = yield* createExecutionEngine({ executor, codeExecutor }).execute(
@@ -182,7 +396,86 @@ describe("tool discovery", () => {
         { onElicitation: acceptAll },
       );
       expect(searched.error).toBeUndefined();
-      expect(searched.result).toEqual([expect.objectContaining({ path: "crm.listContacts" })]);
+      expect(searched.result).toEqual(
+        expect.objectContaining({
+          items: [expect.objectContaining({ path: "crm.listContacts" })],
+        }),
+      );
+    }),
+  );
+
+  it.effect("paginates source listings via limit + offset", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      // total = 2 (github, crm), sorted by name ("CRM" < "GitHub")
+      const firstPage = yield* engine.execute(
+        "return await tools.executor.sources.list({ limit: 1 });",
+        { onElicitation: acceptAll },
+      );
+      expect(firstPage.error).toBeUndefined();
+      expect(firstPage.result).toEqual(
+        expect.objectContaining({
+          items: [expect.objectContaining({ id: "crm" })],
+          total: 2,
+          hasMore: true,
+          nextOffset: 1,
+        }),
+      );
+
+      const secondPage = yield* engine.execute(
+        "return await tools.executor.sources.list({ limit: 1, offset: 1 });",
+        { onElicitation: acceptAll },
+      );
+      expect(secondPage.error).toBeUndefined();
+      expect(secondPage.result).toEqual(
+        expect.objectContaining({
+          items: [expect.objectContaining({ id: "github" })],
+          total: 2,
+          hasMore: false,
+          nextOffset: null,
+        }),
+      );
+    }),
+  );
+
+  it.effect("rejects negative offsets via the engine validator", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const badSearch = yield* engine.execute(
+        [
+          "try {",
+          '  await tools.search({ query: "list", offset: -1 });',
+          '  return "unexpected";',
+          "} catch (error) {",
+          "  return error instanceof Error ? error.message : String(error);",
+          "}",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+      expect(badSearch.error).toBeUndefined();
+      expect(String(badSearch.result)).toContain(
+        "tools.search offset must be a non-negative number when provided",
+      );
+
+      const badList = yield* engine.execute(
+        [
+          "try {",
+          "  await tools.executor.sources.list({ offset: -5 });",
+          '  return "unexpected";',
+          "} catch (error) {",
+          "  return error instanceof Error ? error.message : String(error);",
+          "}",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+      expect(badList.error).toBeUndefined();
+      expect(String(badList.result)).toContain(
+        "tools.executor.sources.list offset must be a non-negative number when provided",
+      );
     }),
   );
 
@@ -194,9 +487,103 @@ describe("tool discovery", () => {
       expect(described.path).toBe("github.listRepositoryIssues");
       expect(described.name).toBe("listRepositoryIssues");
       expect(described.description).toBe("List issues for a repository");
-      expect(described.inputTypeScript).toBe("{ owner: string; repo: string }");
-      expect(described.outputTypeScript).toBeUndefined();
-      expect(described.typeScriptDefinitions).toBeUndefined();
+      expect(described.inputTypeScript).toBe("{ owner: string; repo: string; }");
+      expect(described.outputTypeScript).toBe(
+        "{ ok: true; data: unknown } | { ok: false; error: ToolError }",
+      );
+      expect(described.typeScriptDefinitions).toEqual({
+        ToolError:
+          "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+      });
+    }),
+  );
+
+  it.effect("describes a return type that accepts the sandbox invocation result", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const engine = createExecutionEngine({ executor, codeExecutor });
+
+      const execution = yield* engine.execute(
+        [
+          'const details = await tools.describe.tool({ path: "github.getRepositoryDetails" });',
+          "const result = await tools.github.getRepositoryDetails({ owner: 'executor', repo: 'executor' });",
+          "return {",
+          "  outputTypeScript: details.outputTypeScript,",
+          "  typeScriptDefinitions: details.typeScriptDefinitions,",
+          "  result,",
+          "};",
+        ].join("\n"),
+        { onElicitation: acceptAll },
+      );
+
+      expect(execution.error).toBeUndefined();
+      const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+      const diagnostics = typeCheckDescribedInvocation(
+        observed,
+        observed.result,
+        [
+          "function readDefaultBranch(result: ToolOutput): string {",
+          "  if (!result.ok) return result.error.message;",
+          "  return result.data.defaultBranch;",
+          "}",
+          "readDefaultBranch(invokedResult);",
+        ].join("\n"),
+      );
+      expect(diagnostics).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "describes an error-as-value return type that accepts sandbox invocation failures",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [errorPlugin()] as const }),
+        );
+        const engine = createExecutionEngine({ executor, codeExecutor });
+
+        const execution = yield* engine.execute(
+          [
+            'const details = await tools.describe.tool({ path: "records.queryRows" });',
+            "const result = await tools.records.queryRows({});",
+            "return {",
+            "  outputTypeScript: details.outputTypeScript,",
+            "  typeScriptDefinitions: details.typeScriptDefinitions,",
+            "  result,",
+            "};",
+          ].join("\n"),
+          { onElicitation: acceptAll },
+        );
+
+        expect(execution.error).toBeUndefined();
+        const observed = execution.result as DescribedToolContract & { readonly result: unknown };
+        const diagnostics = typeCheckDescribedInvocation(
+          observed,
+          observed.result,
+          [
+            "function readToolResult(result: ToolOutput): unknown {",
+            "  if (!result.ok) return result.error.message;",
+            "  return result.data;",
+            "}",
+            "readToolResult(invokedResult);",
+          ].join("\n"),
+        );
+        expect(diagnostics).toEqual([]);
+      }),
+  );
+
+  it.effect("describes the ToolResult wrapper through the direct describe helper", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+      const described = yield* describeTool(executor, "github.getRepositoryDetails");
+
+      expect(described.outputTypeScript).toBe(
+        "{ ok: true; data: { defaultBranch: string; } } | { ok: false; error: ToolError }",
+      );
+      expect(described.typeScriptDefinitions).toEqual({
+        ToolError:
+          "{ code: string; message: string; status?: number; details?: unknown; retryable?: boolean }",
+      });
     }),
   );
 
@@ -218,7 +605,7 @@ describe("tool discovery", () => {
       );
       expect(invalid.error).toBeUndefined();
       expect(String(invalid.result)).toContain(
-        "tools.search expects an object: { query?: string; namespace?: string; limit?: number }",
+        "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
       );
 
       const emptyQuery = yield* engine.execute(
@@ -226,7 +613,12 @@ describe("tool discovery", () => {
         { onElicitation: acceptAll },
       );
       expect(emptyQuery.error).toBeUndefined();
-      expect(emptyQuery.result).toEqual([]);
+      expect(emptyQuery.result).toEqual({
+        items: [],
+        total: 0,
+        hasMore: false,
+        nextOffset: null,
+      });
 
       const invalidDescribe = yield* engine.execute(
         [
@@ -252,6 +644,150 @@ describe("tool discovery", () => {
       expect(String(invalidSearch.result)).toContain("tools.search expects an object");
     }),
   );
+
+  it.effect("passes ToolResult.fail through to the sandbox as a value (no throw)", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [errorPlugin()] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "records.queryRows", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "invalid_query",
+          message: 'Field with name "DisplayName" does not exist',
+        },
+      });
+    }),
+  );
+
+  it.effect("returns missing tool dispatches as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [] as const }));
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "missing.sourceTool", args: {} });
+
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "tool_not_found",
+          message: "Tool not found: missing.sourceTool",
+          details: { toolId: "missing.sourceTool", suggestions: [] },
+        },
+      });
+    }),
+  );
+
+  it.effect("returns invalid static tool arguments as ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [validatedInputPlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({
+        path: "validated.getRepositoryDetails",
+        args: { url: "https://example.com/repo" },
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "invalid_tool_arguments",
+          message: "Tool arguments did not match the input schema.",
+          details: {
+            issues: expect.arrayContaining([
+              expect.objectContaining({ path: ["owner"], message: "Missing key" }),
+              expect.objectContaining({ path: ["repo"], message: "Missing key" }),
+            ]),
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves nested upstream error bodies through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.nestedErrorBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 400,
+          message: 'The expression "foo" is not valid. Provide a valid expression.',
+          details: {
+            error: {
+              code: "invalidRequest",
+              message: 'The expression "foo" is not valid. Provide a valid expression.',
+            },
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves flat upstream error bodies through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.flatErrorBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 400,
+          message: "Field 'XYZ' does not exist",
+          details: {
+            errorCode: 400,
+            errorMessage: "Field 'XYZ' does not exist",
+          },
+        },
+      });
+    }),
+  );
+
+  it.effect("preserves upstream errors arrays through ToolResult.fail", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [structuredFailurePlugin()] as const }),
+      );
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+      });
+
+      const result = yield* invoker.invoke({ path: "upstream.errorsArrayBody", args: {} });
+      expect(result).toEqual({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 403,
+          message: "Insufficient scope",
+          details: {
+            errors: [{ status: "403", title: "Forbidden", detail: "Insufficient scope" }],
+          },
+        },
+      });
+    }),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -274,13 +810,13 @@ const apiPlugin = definePlugin(() => ({
           handler: ({ elicit }) =>
             Effect.gen(function* () {
               const r1 = yield* elicit(
-                new FormElicitation({
+                FormElicitation.make({
                   message: "First approval",
                   requestedSchema: {},
                 }),
               );
               const r2 = yield* elicit(
-                new FormElicitation({
+                FormElicitation.make({
                   message: "Second approval",
                   requestedSchema: {},
                 }),
@@ -296,7 +832,7 @@ const apiPlugin = definePlugin(() => ({
           handler: ({ elicit }) =>
             Effect.gen(function* () {
               const r = yield* elicit(
-                new FormElicitation({
+                FormElicitation.make({
                   message: "Only approval",
                   requestedSchema: {},
                 }),
@@ -330,19 +866,66 @@ describe("pause/resume with multiple elicitations", () => {
         // Resume first pause — execution continues to second elicitation.
         // resume() must not hang; it should return (either a new paused
         // result or the completion).
-        const outcome2 = yield* Effect.promise(() =>
-          Promise.race([
-            Effect.runPromise(engine.resume(paused1.execution.id, { action: "accept" })),
-            new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("resume hung — second elicitation not surfaced")),
-                5000,
-              ),
-            ),
-          ]),
+        const outcome2 = yield* Effect.race(
+          engine
+            .resume(paused1.execution.id, { action: "accept" })
+            .pipe(Effect.map((outcome) => ({ kind: "resumed" as const, outcome }))),
+          Effect.sleep("5 seconds").pipe(Effect.as({ kind: "hung" as const })),
         );
 
-        expect(outcome2).not.toBeNull();
+        expect(outcome2.kind).toBe("resumed");
+        if (outcome2.kind !== "resumed") return;
+        expect(outcome2.outcome).not.toBeNull();
+      }),
+    { timeout: 10000 },
+  );
+
+  it.effect(
+    "resume drains concurrent elicitations that were queued before the first approval",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeElicitingExecutor();
+        const engine = createExecutionEngine({ executor, codeExecutor });
+
+        const code = `
+          return await Promise.all([
+            tools.api.singleApproval({}),
+            tools.api.singleApproval({}),
+            tools.api.singleApproval({})
+          ]);
+        `;
+
+        const outcome1 = yield* engine.executeWithPause(code);
+        expect(outcome1.status).toBe("paused");
+        const paused1 = outcome1 as Extract<typeof outcome1, { status: "paused" }>;
+
+        const outcome2 = yield* Effect.race(
+          engine
+            .resume(paused1.execution.id, { action: "accept" })
+            .pipe(Effect.map((outcome) => ({ kind: "resumed" as const, outcome }))),
+          Effect.sleep("2 seconds").pipe(Effect.as({ kind: "hung" as const })),
+        );
+
+        expect(outcome2.kind).toBe("resumed");
+        if (outcome2.kind !== "resumed") return;
+        expect(outcome2.outcome?.status).toBe("paused");
+        const paused2 = outcome2.outcome as Extract<
+          NonNullable<typeof outcome2.outcome>,
+          { status: "paused" }
+        >;
+
+        const outcome3 = yield* engine.resume(paused2.execution.id, { action: "accept" });
+        expect(outcome3?.status).toBe("paused");
+        const paused3 = outcome3 as Extract<NonNullable<typeof outcome3>, { status: "paused" }>;
+
+        const outcome4 = yield* engine.resume(paused3.execution.id, { action: "accept" });
+        expect(outcome4?.status).toBe("completed");
+        const completed = outcome4 as Extract<
+          NonNullable<typeof outcome4>,
+          { status: "completed" }
+        >;
+        expect(completed.result.error).toBeUndefined();
+        expect(completed.result.result).toHaveLength(3);
       }),
     { timeout: 10000 },
   );
@@ -363,11 +946,12 @@ describe("pause/resume with multiple elicitations", () => {
 
     // `execution.fiber` is on `InternalPausedExecution`; the exported
     // `PausedExecution` type doesn't carry it. Cast to read.
-    const sandboxFiber = (
-      paused1.execution as unknown as {
-        readonly fiber: Fiber.Fiber<unknown, unknown>;
-      }
-    ).fiber;
+    const pausedWithFiber = (
+      value: unknown,
+    ): {
+      readonly fiber: Fiber.Fiber<unknown, unknown>;
+    } => value as { readonly fiber: Fiber.Fiber<unknown, unknown> };
+    const sandboxFiber = pausedWithFiber(paused1.execution).fiber;
     const exitProbe = await Effect.runPromise(
       Effect.race(
         Fiber.await(sandboxFiber),
@@ -376,19 +960,22 @@ describe("pause/resume with multiple elicitations", () => {
     );
     expect(exitProbe).toBe("still-running");
 
-    const outcome2 = await Promise.race([
-      Effect.runPromise(engine.resume(paused1.execution.id, { action: "accept" })),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("resume hung across runPromise boundaries")), 2000),
+    const outcome2 = await Effect.runPromise(
+      Effect.race(
+        engine
+          .resume(paused1.execution.id, { action: "accept" })
+          .pipe(Effect.map((outcome) => ({ kind: "resumed" as const, outcome }))),
+        Effect.sleep("2 seconds").pipe(Effect.as({ kind: "hung" as const })),
       ),
-    ]);
+    );
 
-    expect(outcome2).not.toBeNull();
-    const resumed = outcome2 as NonNullable<typeof outcome2>;
+    expect(outcome2.kind).toBe("resumed");
+    if (outcome2.kind !== "resumed") return;
+    expect(outcome2.outcome).not.toBeNull();
+    const resumed = outcome2.outcome as NonNullable<typeof outcome2.outcome>;
     expect(resumed.status).toBe("completed");
-    if (resumed.status === "completed") {
-      expect(resumed.result.error).toBeUndefined();
-      expect(resumed.result.result).toMatchObject({ ok: true });
-    }
+    if (resumed.status !== "completed") return;
+    expect(resumed.result.error).toBeUndefined();
+    expect(resumed.result.result).toMatchObject({ ok: true });
   }, 10000);
 });

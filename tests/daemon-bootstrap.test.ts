@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { createServer } from "node:net";
 import * as Effect from "effect/Effect";
 
@@ -6,6 +6,7 @@ import {
   buildDaemonSpawnSpec,
   canAutoStartLocalDaemonForHost,
   chooseDaemonPort,
+  isDevCliEntrypoint,
   parseDaemonBaseUrl,
 } from "../apps/cli/src/daemon";
 
@@ -33,6 +34,14 @@ describe("daemon bootstrap helpers", () => {
     expect(canAutoStartLocalDaemonForHost("api.example.com")).toBe(false);
   });
 
+  it("treats source entrypoints as dev mode but excludes bun embedded paths", () => {
+    expect(isDevCliEntrypoint("/repo/apps/cli/src/main.ts")).toBe(true);
+    expect(isDevCliEntrypoint("/repo/apps/cli/src/main.js")).toBe(true);
+    expect(isDevCliEntrypoint("/$bunfs/root/main.js")).toBe(false);
+    expect(isDevCliEntrypoint("/usr/local/bin/executor")).toBe(false);
+    expect(isDevCliEntrypoint(undefined)).toBe(false);
+  });
+
   it("builds bun-run spec in dev mode", () => {
     const spec = buildDaemonSpawnSpec({
       port: 4788,
@@ -52,6 +61,7 @@ describe("daemon bootstrap helpers", () => {
       "4788",
       "--hostname",
       "localhost",
+      "--foreground",
     ]);
   });
 
@@ -72,6 +82,32 @@ describe("daemon bootstrap helpers", () => {
       "5000",
       "--hostname",
       "127.0.0.1",
+      "--foreground",
+    ]);
+  });
+
+  it("propagates allowed hosts as repeated flags", () => {
+    const spec = buildDaemonSpawnSpec({
+      port: 4788,
+      hostname: "0.0.0.0",
+      isDevMode: false,
+      scriptPath: undefined,
+      executablePath: "/usr/local/bin/executor",
+      allowedHosts: ["my.box", "other.host"],
+    });
+
+    expect(spec.args).toEqual([
+      "daemon",
+      "run",
+      "--port",
+      "4788",
+      "--hostname",
+      "0.0.0.0",
+      "--foreground",
+      "--allowed-host",
+      "my.box",
+      "--allowed-host",
+      "other.host",
     ]);
   });
 
@@ -89,26 +125,37 @@ describe("daemon bootstrap helpers", () => {
 
   it("falls back when preferred daemon port is occupied", async () => {
     const blocker = createServer();
-    await new Promise<void>((resolve, reject) => {
-      blocker.once("error", reject);
-      blocker.listen({ port: 0, host: "127.0.0.1" }, () => resolve());
-    });
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(
+            Effect.callback<void, Error>((resume) => {
+              blocker.once("error", (error) => resume(Effect.fail(error)));
+              blocker.listen({ port: 0, host: "127.0.0.1" }, () =>
+                resume(Effect.succeed(undefined)),
+              );
+            }),
+            () =>
+              Effect.promise(
+                () =>
+                  new Promise<void>((resolve) => {
+                    blocker.close(() => resolve());
+                  }),
+              ),
+          );
 
-    const occupied = (() => {
-      const address = blocker.address();
-      return typeof address === "object" && address !== null ? address.port : 0;
-    })();
+          const occupied = (() => {
+            const address = blocker.address();
+            return typeof address === "object" && address !== null ? address.port : 0;
+          })();
 
-    try {
-      const picked = await Effect.runPromise(
-        chooseDaemonPort({
-          preferredPort: occupied,
-          hostname: "127.0.0.1",
+          const picked = yield* chooseDaemonPort({
+            preferredPort: occupied,
+            hostname: "127.0.0.1",
+          });
+          expect(picked).not.toBe(occupied);
         }),
-      );
-      expect(picked).not.toBe(occupied);
-    } finally {
-      await new Promise<void>((resolve) => blocker.close(() => resolve()));
-    }
+      ),
+    );
   });
 });

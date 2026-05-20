@@ -1,24 +1,16 @@
-import { HttpApiBuilder, HttpServerResponse } from "@effect/platform";
+import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Context, Effect } from "effect";
 
-import { runOAuthCallback } from "@executor/plugin-oauth2/http";
-
-import { addGroup, capture, InternalError } from "@executor/api";
-import { OpenApiOAuthError } from "../sdk/errors";
+import { addGroup, capture } from "@executor-js/api";
 import type {
+  OpenApiConfiguredValueInput,
+  OpenApiConfigureInput,
   OpenApiPluginExtension,
-  HeaderValue,
-  OpenApiUpdateSourceInput,
+  OpenApiPreviewSpecFetchCredentialsInput,
+  OpenApiSpecFetchCredentialsInput,
 } from "../sdk/plugin";
-import { OAuth2Auth } from "../sdk/types";
+import { StoredSourceSchema } from "../sdk/store";
 import { OpenApiGroup } from "./group";
-
-const OPENAPI_OAUTH_CHANNEL = "executor:openapi-oauth-result";
-
-const toPopupErrorMessage = (error: unknown): string => {
-  if (error instanceof OpenApiOAuthError) return error.message;
-  return "Authentication failed";
-};
 
 // ---------------------------------------------------------------------------
 // Service tag
@@ -31,10 +23,10 @@ const toPopupErrorMessage = (error: unknown): string => {
 // `.addError(InternalError)` on the group — no per-handler translation.
 // ---------------------------------------------------------------------------
 
-export class OpenApiExtensionService extends Context.Tag("OpenApiExtensionService")<
+export class OpenApiExtensionService extends Context.Service<
   OpenApiExtensionService,
   OpenApiPluginExtension
->() {}
+>()("OpenApiExtensionService") {}
 
 // ---------------------------------------------------------------------------
 // Composed API — core + openapi group
@@ -55,98 +47,76 @@ const ExecutorApiWithOpenApi = addGroup(OpenApiGroup);
 export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "openapi", (handlers) =>
   handlers
     .handle("previewSpec", ({ payload }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        return yield* ext.previewSpec(payload.spec);
-      })),
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* OpenApiExtensionService;
+          return yield* ext.previewSpec({
+            spec: payload.spec,
+            specFetchCredentials: payload.specFetchCredentials as
+              | OpenApiPreviewSpecFetchCredentialsInput
+              | undefined,
+          });
+        }),
+      ),
     )
-    .handle("addSpec", ({ path, payload }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        const result = yield* ext.addSpec({
-          spec: payload.spec,
-          scope: path.scopeId,
-          name: payload.name,
-          baseUrl: payload.baseUrl,
-          namespace: payload.namespace,
-          headers: payload.headers as Record<string, HeaderValue> | undefined,
-          oauth2: payload.oauth2,
-          annotationPolicy: payload.annotationPolicy,
-        });
-        return {
-          toolCount: result.toolCount,
-          namespace: result.sourceId,
-        };
-      })),
+    .handle("addSpec", ({ params: path, payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* OpenApiExtensionService;
+          const result = yield* ext.addSpec({
+            spec: payload.spec,
+            specFetchCredentials: payload.specFetchCredentials as
+              | OpenApiSpecFetchCredentialsInput
+              | undefined,
+            scope: path.scopeId,
+            name: payload.name,
+            baseUrl: payload.baseUrl,
+            namespace: payload.namespace,
+            headers: payload.headers as Record<string, OpenApiConfiguredValueInput> | undefined,
+            queryParams: payload.queryParams as
+              | Record<string, OpenApiConfiguredValueInput>
+              | undefined,
+            oauth2: payload.oauth2,
+            annotationPolicy: payload.annotationPolicy,
+          });
+          return {
+            toolCount: result.toolCount,
+            namespace: result.sourceId,
+          };
+        }),
+      ),
     )
-    .handle("getSource", ({ path }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        return yield* ext.getSource(path.namespace, path.scopeId);
-      })),
+    .handle("getSource", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* OpenApiExtensionService;
+          const source = yield* ext.getSource(path.namespace, path.scopeId);
+          return source
+            ? StoredSourceSchema.make({
+                namespace: source.namespace,
+                scope: source.scope,
+                name: source.name,
+                config: {
+                  sourceUrl: source.config.sourceUrl,
+                  baseUrl: source.config.baseUrl,
+                  namespace: source.config.namespace,
+                  headers: source.config.headers,
+                  queryParams: source.config.queryParams,
+                  specFetchCredentials: source.config.specFetchCredentials,
+                  oauth2: source.config.oauth2,
+                  annotationPolicy: source.config.annotationPolicy,
+                },
+              })
+            : null;
+        }),
+      ),
     )
-    .handle("updateSource", ({ path, payload }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        yield* ext.updateSource(path.namespace, path.scopeId, {
-          name: payload.name,
-          baseUrl: payload.baseUrl,
-          headers: payload.headers as Record<string, HeaderValue> | undefined,
-          annotationPolicy: payload.annotationPolicy,
-        } as OpenApiUpdateSourceInput);
-        return { updated: true };
-      })),
-    )
-    .handle("startOAuth", ({ payload }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        return yield* ext.startOAuth({
-          displayName: payload.displayName,
-          securitySchemeName: payload.securitySchemeName,
-          flow: payload.flow,
-          authorizationUrl: payload.authorizationUrl,
-          tokenUrl: payload.tokenUrl,
-          redirectUrl: payload.redirectUrl,
-          clientIdSecretId: payload.clientIdSecretId,
-          clientSecretSecretId: payload.clientSecretSecretId ?? null,
-          scopes: [...payload.scopes],
-          // No tokenScope → plugin defaults to ctx.scopes[0].id (innermost).
-          // Single-scope executors: only scope in stack.
-          // Stacked executors: per-user scope, so tokens shadow by id.
-          tokenScope: payload.tokenScope as string | undefined,
-          accessTokenSecretId: payload.accessTokenSecretId,
-          refreshTokenSecretId: payload.refreshTokenSecretId ?? null,
-        });
-      })),
-    )
-    .handle("completeOAuth", ({ payload }) =>
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        return yield* ext.completeOAuth({
-          state: payload.state,
-          code: payload.code,
-          error: payload.error,
-        });
-      })),
-    )
-    .handle("oauthCallback", ({ urlParams }) =>
-      // OAuth popup is special: it always returns 200 HTML and renders the
-      // failure into the popup body so the parent window's listener gets a
-      // structured result.
-      capture(Effect.gen(function* () {
-        const ext = yield* OpenApiExtensionService;
-        const html = yield* runOAuthCallback<OAuth2Auth, OpenApiOAuthError | InternalError, never>({
-          complete: ({ state, code, error }) =>
-            ext.completeOAuth({
-              state,
-              code: code ?? undefined,
-              error: error ?? undefined,
-            }),
-          urlParams,
-          toErrorMessage: toPopupErrorMessage,
-          channelName: OPENAPI_OAUTH_CHANNEL,
-        });
-        return yield* HttpServerResponse.html(html);
-      })),
+    .handle("configure", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* OpenApiExtensionService;
+          return yield* ext.configure(payload.source, payload as OpenApiConfigureInput);
+        }),
+      ),
     ),
 );

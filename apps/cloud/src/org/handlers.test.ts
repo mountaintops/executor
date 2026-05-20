@@ -1,8 +1,8 @@
 import { describe, it, expect } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Data, Effect, Layer } from "effect";
 
 import { AuthContext } from "../auth/middleware";
-import { WorkOSAuth } from "../auth/workos";
+import { WorkOSAuth, type WorkOSAuthService } from "../auth/workos";
 import { Forbidden } from "./api";
 
 // ---------------------------------------------------------------------------
@@ -14,6 +14,7 @@ type StubFn = (...args: never[]) => Effect.Effect<any>;
 
 type StubOverrides = {
   listOrgMembers?: StubFn;
+  getUserOrgMembership?: StubFn;
   getUser?: StubFn;
   sendInvitation?: StubFn;
   deleteOrgMembership?: StubFn;
@@ -21,15 +22,24 @@ type StubOverrides = {
   listOrgRoles?: StubFn;
 };
 
+class UnstubbedWorkOSMethod extends Data.TaggedError("UnstubbedWorkOSMethod")<{
+  method: string;
+}> {}
+
 const stubWorkOS = (overrides: StubOverrides = {}) =>
   Layer.succeed(
     WorkOSAuth,
-    new Proxy({} as WorkOSAuth["Type"], {
+    new Proxy({} as WorkOSAuthService, {
       get: (_target, prop) => {
-        if (prop in overrides) return (overrides as Record<string, unknown>)[prop as string];
-        return () => {
-          throw new Error(`WorkOSAuth.${String(prop)} not stubbed`);
-        };
+        if (typeof prop === "string" && prop in overrides) {
+          return overrides[prop as keyof StubOverrides];
+        }
+        return () =>
+          Effect.fail(
+            new UnstubbedWorkOSMethod({
+              method: typeof prop === "string" ? prop : (prop.description ?? "symbol"),
+            }),
+          );
       },
     }),
   );
@@ -113,18 +123,22 @@ const fakeRoles: FakeRole[] = [
 const requireAdmin = Effect.gen(function* () {
   const auth = yield* AuthContext;
   const workos = yield* WorkOSAuth;
-  const memberships = yield* workos.listOrgMembers(auth.organizationId);
-  const current = memberships.data.find((m: FakeMembership) => m.userId === auth.accountId);
+  const current = yield* workos.getUserOrgMembership(auth.organizationId, auth.accountId);
   if (!current || current.role?.slug !== "admin") {
     return yield* new Forbidden();
   }
 });
 
 const provide = (auth: typeof adminAuth, workosOverrides: StubOverrides = {}) =>
-  Layer.mergeAll(Layer.succeed(AuthContext, auth), stubWorkOS(workosOverrides));
+  Layer.mergeAll(Layer.succeed(AuthContext)(auth), stubWorkOS(workosOverrides));
 
 const withMembers: StubOverrides = {
   listOrgMembers: () => Effect.succeed({ data: fakeMemberships }),
+};
+
+const withCurrentMembership: StubOverrides = {
+  getUserOrgMembership: (_organizationId: string, userId: string) =>
+    Effect.succeed(fakeMemberships.find((m) => m.userId === userId) ?? null),
 };
 
 // ---------------------------------------------------------------------------
@@ -196,14 +210,14 @@ describe("Org handlers", () => {
 
   describe("requireAdmin", () => {
     it.effect("passes for admin user", () =>
-      requireAdmin.pipe(Effect.provide(provide(adminAuth, withMembers))),
+      requireAdmin.pipe(Effect.provide(provide(adminAuth, withCurrentMembership))),
     );
 
     it.effect("rejects non-admin with Forbidden", () =>
       Effect.gen(function* () {
         const error = yield* Effect.flip(requireAdmin);
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withMembers))),
+      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
     );
   });
 
@@ -222,7 +236,7 @@ describe("Org handlers", () => {
       }).pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withMembers,
+            ...withCurrentMembership,
             sendInvitation: (p: { email: string }) =>
               Effect.succeed({ id: "inv_1", email: p.email }),
           }),
@@ -243,7 +257,7 @@ describe("Org handlers", () => {
           }),
         );
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withMembers))),
+      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
     );
   });
 
@@ -256,7 +270,7 @@ describe("Org handlers", () => {
       }).pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withMembers,
+            ...withCurrentMembership,
             deleteOrgMembership: () => Effect.void,
           }),
         ),
@@ -273,7 +287,7 @@ describe("Org handlers", () => {
           }),
         );
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withMembers))),
+      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
     );
   });
 
@@ -286,7 +300,7 @@ describe("Org handlers", () => {
       }).pipe(
         Effect.provide(
           provide(adminAuth, {
-            ...withMembers,
+            ...withCurrentMembership,
             updateOrgMembershipRole: () => Effect.void,
           }),
         ),
@@ -303,7 +317,7 @@ describe("Org handlers", () => {
           }),
         );
         expect(error).toBeInstanceOf(Forbidden);
-      }).pipe(Effect.provide(provide(memberAuth, withMembers))),
+      }).pipe(Effect.provide(provide(memberAuth, withCurrentMembership))),
     );
   });
 });

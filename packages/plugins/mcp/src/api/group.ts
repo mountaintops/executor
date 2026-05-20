@@ -1,55 +1,25 @@
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ScopeId } from "@executor/sdk";
-import { InternalError } from "@executor/api";
+import { InternalError, ScopeId, SecretBackedMap } from "@executor-js/sdk/shared";
 
-import {
-  McpConnectionError,
-  McpOAuthError,
-  McpToolDiscoveryError,
-} from "../sdk/errors";
+import { McpConnectionError, McpToolDiscoveryError } from "../sdk/errors";
 import { McpStoredSourceSchema } from "../sdk/stored-source";
-import { AnnotationPolicy } from "../sdk/types";
-
-// Re-export for handler use
-export { HttpApiSchema };
+import {
+  AnnotationPolicy,
+  McpConfiguredValueInput,
+  McpConnectionAuthInput,
+  McpCredentialInput,
+} from "../sdk/types";
+import { OAuth2SourceConfig } from "@executor-js/sdk/http-source";
 
 // ---------------------------------------------------------------------------
 // Params
 // ---------------------------------------------------------------------------
 
-const scopeIdParam = HttpApiSchema.param("scopeId", ScopeId);
-const namespaceParam = HttpApiSchema.param("namespace", Schema.String);
+const ScopeParams = { scopeId: ScopeId };
+const SourceParams = { scopeId: ScopeId, namespace: Schema.String };
 
-// ---------------------------------------------------------------------------
-// Auth payload (only for remote)
-// ---------------------------------------------------------------------------
-
-const JsonObject = Schema.Record({ key: Schema.String, value: Schema.Unknown });
-
-const AuthPayload = Schema.Union(
-  Schema.Struct({ kind: Schema.Literal("none") }),
-  Schema.Struct({
-    kind: Schema.Literal("header"),
-    headerName: Schema.String,
-    secretId: Schema.String,
-    prefix: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("oauth2"),
-    accessTokenSecretId: Schema.String,
-    refreshTokenSecretId: Schema.NullOr(Schema.String),
-    tokenType: Schema.optional(Schema.String),
-    expiresAt: Schema.NullOr(Schema.Number),
-    scope: Schema.NullOr(Schema.String),
-    clientInformation: Schema.optional(Schema.NullOr(JsonObject)),
-    authorizationServerUrl: Schema.optional(Schema.NullOr(Schema.String)),
-    resourceMetadataUrl: Schema.optional(Schema.NullOr(Schema.String)),
-  }),
-);
-
-const StringMap = Schema.Record({ key: Schema.String, value: Schema.String });
-
+const StringMap = Schema.Record(Schema.String, Schema.String);
 // ---------------------------------------------------------------------------
 // Add source — discriminated union on transport
 // ---------------------------------------------------------------------------
@@ -58,12 +28,20 @@ const AddRemoteSourcePayload = Schema.Struct({
   transport: Schema.Literal("remote"),
   name: Schema.String,
   endpoint: Schema.String,
-  remoteTransport: Schema.optional(Schema.Literal("streamable-http", "sse", "auto")),
+  remoteTransport: Schema.optional(Schema.Literals(["streamable-http", "sse", "auto"])),
   namespace: Schema.optional(Schema.String),
-  queryParams: Schema.optional(StringMap),
-  headers: Schema.optional(StringMap),
-  auth: Schema.optional(AuthPayload),
+  queryParams: Schema.optional(Schema.Record(Schema.String, McpConfiguredValueInput)),
+  headers: Schema.optional(Schema.Record(Schema.String, McpConfiguredValueInput)),
+  oauth2: Schema.optional(OAuth2SourceConfig),
   annotationPolicy: Schema.optional(AnnotationPolicy),
+  credentials: Schema.optional(
+    Schema.Struct({
+      scope: ScopeId,
+      headers: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
+      queryParams: Schema.optional(Schema.Record(Schema.String, McpCredentialInput)),
+      auth: Schema.optional(McpConnectionAuthInput),
+    }),
+  ),
 });
 
 const AddStdioSourcePayload = Schema.Struct({
@@ -77,33 +55,18 @@ const AddStdioSourcePayload = Schema.Struct({
   annotationPolicy: Schema.optional(AnnotationPolicy),
 });
 
-const AddSourcePayload = Schema.Union(AddRemoteSourcePayload, AddStdioSourcePayload);
-
-// ---------------------------------------------------------------------------
-// Other payloads
-// ---------------------------------------------------------------------------
-
-const UpdateSourcePayload = Schema.Struct({
-  name: Schema.optional(Schema.String),
-  endpoint: Schema.optional(Schema.String),
-  headers: Schema.optional(StringMap),
-  queryParams: Schema.optional(StringMap),
-  auth: Schema.optional(AuthPayload),
-  // `null` clears a previously-set override; `undefined` leaves as-is.
-  annotationPolicy: Schema.optional(Schema.NullOr(AnnotationPolicy)),
-});
-
-const UpdateSourceResponse = Schema.Struct({
-  updated: Schema.Boolean,
-});
+const AddSourcePayload = Schema.Union([AddRemoteSourcePayload, AddStdioSourcePayload]);
 
 const ProbeEndpointPayload = Schema.Struct({
   endpoint: Schema.String,
+  headers: Schema.optional(SecretBackedMap),
+  queryParams: Schema.optional(SecretBackedMap),
 });
 
 const ProbeEndpointResponse = Schema.Struct({
   connected: Schema.Boolean,
   requiresOAuth: Schema.Boolean,
+  supportsDynamicRegistration: Schema.Boolean,
   name: Schema.String,
   namespace: Schema.String,
   toolCount: Schema.NullOr(Schema.Number),
@@ -113,35 +76,6 @@ const ProbeEndpointResponse = Schema.Struct({
 const NamespacePayload = Schema.Struct({
   namespace: Schema.String,
 });
-
-const StartOAuthPayload = Schema.Struct({
-  endpoint: Schema.String,
-  redirectUrl: Schema.String,
-  queryParams: Schema.optional(Schema.NullOr(StringMap)),
-  accessTokenSecretId: Schema.String,
-  refreshTokenSecretId: Schema.optional(Schema.NullOr(Schema.String)),
-  /** Source-level OAuth state captured by a previous user's flow. When
-   *  passed, DCR is skipped — the same client_id is re-used so the
-   *  source's auth config stays stable across users. */
-  clientInformation: Schema.optional(Schema.NullOr(JsonObject)),
-  authorizationServerUrl: Schema.optional(Schema.NullOr(Schema.String)),
-  resourceMetadataUrl: Schema.optional(Schema.NullOr(Schema.String)),
-});
-
-const CompleteOAuthPayload = Schema.Struct({
-  state: Schema.String,
-  code: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-});
-
-const OAuthCallbackParams = Schema.Struct({
-  state: Schema.String,
-  code: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-  error_description: Schema.optional(Schema.String),
-});
-
-const HtmlResponse = HttpApiSchema.Text({ contentType: "text/html" });
 
 // ---------------------------------------------------------------------------
 // Responses
@@ -160,22 +94,6 @@ const RemoveSourceResponse = Schema.Struct({
   removed: Schema.Boolean,
 });
 
-const StartOAuthResponse = Schema.Struct({
-  sessionId: Schema.String,
-  authorizationUrl: Schema.String,
-});
-
-const CompleteOAuthResponse = Schema.Struct({
-  accessTokenSecretId: Schema.String,
-  refreshTokenSecretId: Schema.NullOr(Schema.String),
-  tokenType: Schema.String,
-  expiresAt: Schema.NullOr(Schema.Number),
-  scope: Schema.NullOr(Schema.String),
-  clientInformation: Schema.NullOr(JsonObject),
-  authorizationServerUrl: Schema.NullOr(Schema.String),
-  resourceMetadataUrl: Schema.NullOr(Schema.String),
-});
-
 // ---------------------------------------------------------------------------
 // Group
 //
@@ -192,59 +110,52 @@ const CompleteOAuthResponse = Schema.Struct({
 // No per-handler wrapping, no per-plugin InternalError.
 // ---------------------------------------------------------------------------
 
-export class McpGroup extends HttpApiGroup.make("mcp")
+export const McpGroup = HttpApiGroup.make("mcp")
   .add(
-    HttpApiEndpoint.post("probeEndpoint")`/scopes/${scopeIdParam}/mcp/probe`
-      .setPayload(ProbeEndpointPayload)
-      .addSuccess(ProbeEndpointResponse),
+    HttpApiEndpoint.post("probeEndpoint", "/scopes/:scopeId/mcp/probe", {
+      params: ScopeParams,
+      payload: ProbeEndpointPayload,
+      success: ProbeEndpointResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
   )
   .add(
-    HttpApiEndpoint.post("addSource")`/scopes/${scopeIdParam}/mcp/sources`
-      .setPayload(AddSourcePayload)
-      .addSuccess(AddSourceResponse),
+    HttpApiEndpoint.post("addSource", "/scopes/:scopeId/mcp/sources", {
+      params: ScopeParams,
+      payload: AddSourcePayload,
+      success: AddSourceResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
   )
   .add(
-    HttpApiEndpoint.post("removeSource")`/scopes/${scopeIdParam}/mcp/sources/remove`
-      .setPayload(NamespacePayload)
-      .addSuccess(RemoveSourceResponse),
+    HttpApiEndpoint.post("removeSource", "/scopes/:scopeId/mcp/sources/remove", {
+      params: ScopeParams,
+      payload: NamespacePayload,
+      success: RemoveSourceResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
   )
   .add(
-    HttpApiEndpoint.post("refreshSource")`/scopes/${scopeIdParam}/mcp/sources/refresh`
-      .setPayload(NamespacePayload)
-      .addSuccess(RefreshSourceResponse),
+    HttpApiEndpoint.post("refreshSource", "/scopes/:scopeId/mcp/sources/refresh", {
+      params: ScopeParams,
+      payload: NamespacePayload,
+      success: RefreshSourceResponse,
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
   )
   .add(
-    HttpApiEndpoint.post("startOAuth")`/scopes/${scopeIdParam}/mcp/oauth/start`
-      .setPayload(StartOAuthPayload)
-      .addSuccess(StartOAuthResponse),
-  )
-  .add(
-    HttpApiEndpoint.post("completeOAuth")`/scopes/${scopeIdParam}/mcp/oauth/complete`
-      .setPayload(CompleteOAuthPayload)
-      .addSuccess(CompleteOAuthResponse),
-  )
-  .add(
-    HttpApiEndpoint.get("oauthCallback")`/mcp/oauth/callback`
-      .setUrlParams(OAuthCallbackParams)
-      .addSuccess(HtmlResponse),
-  )
-  .add(
-    HttpApiEndpoint.get("getSource")`/scopes/${scopeIdParam}/mcp/sources/${namespaceParam}`
-      .addSuccess(Schema.NullOr(McpStoredSourceSchema)),
-  )
-  .add(
-    HttpApiEndpoint.patch("updateSource")`/scopes/${scopeIdParam}/mcp/sources/${namespaceParam}`
-      .setPayload(UpdateSourcePayload)
-      .addSuccess(UpdateSourceResponse),
-  )
-  // Errors declared once at the group level — every endpoint inherits.
-  // Plugin domain errors carry their own HttpApiSchema status (4xx);
-  // `InternalError` is the shared opaque 500 translated at the HTTP
-  // edge by `withCapture`. We only list errors an MCP *group*
-  // endpoint can surface: `McpInvocationError` is thrown inside
-  // `invokeTool` which is reached via the core `tools.invoke`
-  // endpoint, not any MCP-group endpoint, so it doesn't belong here.
-  .addError(InternalError)
-  .addError(McpOAuthError)
-  .addError(McpConnectionError)
-  .addError(McpToolDiscoveryError) {}
+    HttpApiEndpoint.get("getSource", "/scopes/:scopeId/mcp/sources/:namespace", {
+      params: SourceParams,
+      success: Schema.NullOr(McpStoredSourceSchema),
+      error: [InternalError, McpConnectionError, McpToolDiscoveryError],
+    }),
+  );
+// Errors declared once at the group level — every endpoint inherits.
+// Plugin domain errors carry their own HttpApiSchema status (4xx);
+// `InternalError` is the shared opaque 500 translated at the HTTP
+// edge by `withCapture`. We only list errors an MCP *group*
+// endpoint can surface: `McpInvocationError` is thrown inside
+// `invokeTool` which is reached via the core `tools.invoke`
+// endpoint, not any MCP-group endpoint, so it doesn't belong here.
+// OAuth errors live on the shared `/oauth/*` group in `@executor-js/api`
+// now — the MCP group only declares its own plugin-domain errors.

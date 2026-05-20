@@ -1,156 +1,272 @@
-// ---------------------------------------------------------------------------
-// Core data model — the SDK owns these tables. Plugins write into them via
-// `ctx.core.sources.register(...)` and `ctx.core.definitions.register(...)`;
-// the executor reads from them directly on every list / invoke / schema
-// call. There is no in-memory registry layered on top.
-//
-// Static (code-declared) sources and tools are NOT in these tables — they
-// live in an in-memory map built at executor startup from each plugin's
-// `staticSources` declaration. See executor.ts. The DB only holds
-// dynamic (runtime-registered) rows.
-// ---------------------------------------------------------------------------
+import { column, idColumn, table, type AnyColumn, type AnyTable } from "fumadb/schema";
+import type { FumaRow } from "./fuma-runtime";
+import {
+  assertExecutorScopeAllowed,
+  assertExecutorScopeTargetValue,
+  executorScopePolicyName,
+  executorUnscopedPolicyName,
+  executorScopeIds,
+  requireExecutorScopeTarget,
+  type ExecutorScopePolicyContext,
+} from "./scope-policy";
 
-import type {
-  DBSchema,
-  InferDBFieldsOutput,
-} from "@executor/storage-core";
+type UserColumns = Record<string, AnyColumn>;
 
-export const coreSchema = {
-  source: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      kind: { type: "string", required: true },
-      name: { type: "string", required: true },
-      url: { type: "string", required: false },
-      can_remove: {
-        type: "boolean",
-        required: true,
-        defaultValue: true,
-      },
-      can_refresh: {
-        type: "boolean",
-        required: true,
-        defaultValue: false,
-      },
-      can_edit: {
-        type: "boolean",
-        required: true,
-        defaultValue: false,
-      },
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
+export const textColumn = (name: string) => column(name, "string");
+export const nullableTextColumn = (name: string) => column(name, "string").nullable();
+export const boolColumn = (name: string, defaultValue: boolean) =>
+  column(name, "bool").defaultTo(defaultValue);
+export const bigintColumn = (name: string) => column(name, "bigint");
+export const nullableBigintColumn = (name: string) => column(name, "bigint").nullable();
+export const jsonColumn = (name: string) => column(name, "json");
+export const nullableJsonColumn = (name: string) => column(name, "json").nullable();
+export const dateColumn = (name: string) => column(name, "timestamp");
+
+const unscopedExecutorTable = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    id: column("id", "varchar(255)"),
+  });
+  out.unique(`${name}_id_uidx`, ["id"]);
+  return out.policy({
+    name: executorUnscopedPolicyName,
+  });
+};
+
+const scopedExecutorTableBase = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+) => {
+  const out = table(name, {
+    ...columns,
+    row_id: idColumn("row_id", "varchar(255)").defaultTo$("auto"),
+    id: column("id", "varchar(255)"),
+    scope_id: column("scope_id", "varchar(255)"),
+  });
+  out.unique(`${name}_scope_id_id_uidx`, ["scope_id", "id"]);
+  return out;
+};
+
+export const scopedExecutorTable = <const TColumns extends UserColumns>(
+  name: string,
+  columns: TColumns,
+) => {
+  const out = scopedExecutorTableBase(name, columns);
+  return out.policy<ExecutorScopePolicyContext>({
+    name: executorScopePolicyName,
+    onRead: ({ builder, context }) =>
+      builder("scope_id", "in", executorScopeIds(name, "read", context)),
+    onCreate: ({ values, context }) =>
+      assertExecutorScopeAllowed(name, "write", values.scope_id, context),
+    onUpdate: ({ builder, set, create, where, context }) => {
+      const target = requireExecutorScopeTarget(name, "write", where, context);
+      if (set.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(name, "write", set.scope_id, target, context);
+      }
+      if (create?.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(name, "write", create.scope_id, target, context);
+      }
+      return builder("scope_id", "=", target.value);
     },
-  },
-  tool: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      description: { type: "string", required: true },
-      input_schema: { type: "json", required: false },
-      output_schema: { type: "json", required: false },
-      // NOTE: tool annotations (requiresApproval, approvalDescription,
-      // mayElicit) are NOT stored on this row. They're derived at read
-      // time from plugin-owned data via `plugin.resolveAnnotations`,
-      // because the source of truth already lives in each plugin's own
-      // storage (openapi's OperationBinding, etc.) and duplicating it
-      // here would just mean bulk-rewriting rows every time the
-      // derivation logic changes.
-      created_at: { type: "date", required: true },
-      updated_at: { type: "date", required: true },
+    onDelete: ({ builder, where, context }) => {
+      const target = requireExecutorScopeTarget(name, "delete", where, context);
+      return builder("scope_id", "=", target.value);
     },
-  },
-  // Shared JSON-schema `$defs` stored once per source. Tool input/output
-  // schemas carry `$ref: "#/$defs/X"` pointers; the read path attaches
-  // matching defs under `$defs` before returning. Keyed by synthetic id
-  // `${source_id}.${name}` so cleanup on source removal is a single
-  // deleteMany by source_id.
-  definition: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      source_id: { type: "string", required: true, index: true },
-      plugin_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      schema: { type: "json", required: true },
-      created_at: { type: "date", required: true },
+  });
+};
+
+const defineTables = <const TTables extends Record<string, AnyTable>>(tables: TTables): TTables =>
+  tables;
+
+export const credentialBindingKinds = ["text", "secret", "connection"] as const;
+
+const credentialBindingTable = (() => {
+  const out = scopedExecutorTableBase("credential_binding", {
+    plugin_id: textColumn("plugin_id"),
+    source_id: textColumn("source_id"),
+    source_scope_id: textColumn("source_scope_id"),
+    slot_key: textColumn("slot_key"),
+    kind: textColumn("kind"),
+    text_value: nullableTextColumn("text_value"),
+    secret_id: nullableTextColumn("secret_id"),
+    secret_scope_id: nullableTextColumn("secret_scope_id"),
+    connection_id: nullableTextColumn("connection_id"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  });
+
+  return out.policy<ExecutorScopePolicyContext>({
+    name: executorScopePolicyName,
+    onRead: ({ builder, context }) =>
+      builder("scope_id", "in", executorScopeIds("credential_binding", "read", context)),
+    onCreate: ({ values, context }) =>
+      assertExecutorScopeAllowed("credential_binding", "write", values.scope_id, context),
+    onUpdate: ({ builder, set, create, where, context }) => {
+      const target = requireExecutorScopeTarget("credential_binding", "write", where, context);
+      if (set.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(
+          "credential_binding",
+          "write",
+          set.scope_id,
+          target,
+          context,
+        );
+      }
+      if (create?.scope_id !== undefined) {
+        assertExecutorScopeTargetValue(
+          "credential_binding",
+          "write",
+          create.scope_id,
+          target,
+          context,
+        );
+      }
+      return builder("scope_id", "=", target.value);
     },
-  },
-  // Secrets live in the core surface as metadata (id, display name,
-  // provider key). Actual values never touch this table — they live in
-  // the secret provider (keychain, 1password, file, etc.) and are
-  // resolved on demand via `ctx.secrets.get(id)`.
-  secret: {
-    fields: {
-      id: { type: "string", required: true },
-      scope_id: { type: "string", required: true, index: true },
-      name: { type: "string", required: true },
-      provider: { type: "string", required: true, index: true },
-      created_at: { type: "date", required: true },
+    onDelete: ({ builder, where, context }) => {
+      const target = requireExecutorScopeTarget("credential_binding", "delete", where, context, [
+        "scope_id",
+        "source_scope_id",
+      ]);
+      return builder(target.column, "=", target.value);
     },
-  },
-} as const satisfies DBSchema;
+  });
+})();
 
-export type CoreSchema = typeof coreSchema;
+export const coreTables = defineTables({
+  source: scopedExecutorTable("source", {
+    plugin_id: textColumn("plugin_id"),
+    kind: textColumn("kind"),
+    name: textColumn("name"),
+    url: nullableTextColumn("url"),
+    can_remove: boolColumn("can_remove", true),
+    can_refresh: boolColumn("can_refresh", false),
+    can_edit: boolColumn("can_edit", false),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  }),
+  tool: scopedExecutorTable("tool", {
+    source_id: textColumn("source_id"),
+    plugin_id: textColumn("plugin_id"),
+    name: textColumn("name"),
+    description: textColumn("description"),
+    input_schema: nullableJsonColumn("input_schema"),
+    output_schema: nullableJsonColumn("output_schema"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  }),
+  definition: scopedExecutorTable("definition", {
+    source_id: textColumn("source_id"),
+    plugin_id: textColumn("plugin_id"),
+    name: textColumn("name"),
+    schema: jsonColumn("schema"),
+    created_at: dateColumn("created_at"),
+  }),
+  secret: scopedExecutorTable("secret", {
+    name: textColumn("name"),
+    provider: textColumn("provider"),
+    owned_by_connection_id: nullableTextColumn("owned_by_connection_id"),
+    created_at: dateColumn("created_at"),
+  }),
+  connection: scopedExecutorTable("connection", {
+    provider: textColumn("provider"),
+    identity_label: nullableTextColumn("identity_label"),
+    access_token_secret_id: textColumn("access_token_secret_id"),
+    refresh_token_secret_id: nullableTextColumn("refresh_token_secret_id"),
+    expires_at: nullableBigintColumn("expires_at"),
+    scope: nullableTextColumn("scope"),
+    provider_state: nullableJsonColumn("provider_state"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  }),
+  oauth2_session: scopedExecutorTable("oauth2_session", {
+    plugin_id: textColumn("plugin_id"),
+    strategy: textColumn("strategy"),
+    connection_id: textColumn("connection_id"),
+    token_scope: textColumn("token_scope"),
+    redirect_url: textColumn("redirect_url"),
+    payload: jsonColumn("payload"),
+    expires_at: bigintColumn("expires_at"),
+    created_at: dateColumn("created_at"),
+  }),
+  credential_binding: credentialBindingTable,
+  plugin_storage: scopedExecutorTable("plugin_storage", {
+    plugin_id: textColumn("plugin_id"),
+    collection: textColumn("collection"),
+    key: textColumn("key"),
+    data: jsonColumn("data"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  }),
+  tool_policy: scopedExecutorTable("tool_policy", {
+    pattern: textColumn("pattern"),
+    action: textColumn("action"),
+    position: textColumn("position"),
+    created_at: dateColumn("created_at"),
+    updated_at: dateColumn("updated_at"),
+  }),
+  blob: unscopedExecutorTable("blob", {
+    namespace: textColumn("namespace"),
+    key: textColumn("key"),
+    value: textColumn("value"),
+  }),
+});
 
-// ---------------------------------------------------------------------------
-// Row types — derived from the schema. Adding a field to coreSchema.fields
-// adds it to the row type automatically.
-// ---------------------------------------------------------------------------
+export const coreSchema = coreTables;
+export type CoreSchema = typeof coreTables;
 
-export type SourceRow = InferDBFieldsOutput<CoreSchema["source"]["fields"]> &
+export type SourceRow = FumaRow<CoreSchema["source"]>;
+export type ToolRow = FumaRow<CoreSchema["tool"]>;
+export type DefinitionRow = FumaRow<CoreSchema["definition"]>;
+export type SecretRow = FumaRow<CoreSchema["secret"]>;
+export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
+export type PluginStorageRow = FumaRow<CoreSchema["plugin_storage"]>;
+
+type CredentialBindingRowBase = Omit<
+  FumaRow<CoreSchema["credential_binding"]>,
+  "kind" | "text_value" | "secret_id" | "secret_scope_id" | "connection_id"
+>;
+
+export type CredentialBindingRow = CredentialBindingRowBase &
+  (
+    | {
+        kind: "text";
+        text_value: string;
+      }
+    | {
+        kind: "secret";
+        secret_id: string;
+        secret_scope_id?: string | null;
+      }
+    | {
+        kind: "connection";
+        connection_id: string;
+      }
+  ) &
   Record<string, unknown>;
 
-export type ToolRow = InferDBFieldsOutput<CoreSchema["tool"]["fields"]> &
-  Record<string, unknown>;
+export type ToolPolicyRow = FumaRow<CoreSchema["tool_policy"]>;
 
-export type DefinitionRow = InferDBFieldsOutput<
-  CoreSchema["definition"]["fields"]
-> &
-  Record<string, unknown>;
+export type ToolPolicyAction = "approve" | "require_approval" | "block";
 
-export type SecretRow = InferDBFieldsOutput<CoreSchema["secret"]["fields"]> &
-  Record<string, unknown>;
+export const TOOL_POLICY_ACTIONS = [
+  "approve",
+  "require_approval",
+  "block",
+] as const satisfies readonly ToolPolicyAction[];
 
-// ---------------------------------------------------------------------------
-// Tool annotations — default-policy metadata the executor consults
-// before invocation. Returned by `plugin.resolveAnnotations` (dynamic
-// tools) or declared inline on `StaticToolDecl` (static tools). Never
-// stored on `tool` rows — every field here is derived at read time
-// from plugin-owned data.
-//
-// OpenAPI derives from HTTP method:
-//   - GET / HEAD / OPTIONS → {} (auto-approved)
-//   - POST / PUT / PATCH / DELETE → { requiresApproval: true,
-//                                     approvalDescription: "DELETE /users/:id" }
-//
-// MCP derives from the server's tool declaration (mcp has its own
-// may-elicit and approval signals).
-// ---------------------------------------------------------------------------
+export const isToolPolicyAction = (value: unknown): value is ToolPolicyAction =>
+  typeof value === "string" && (TOOL_POLICY_ACTIONS as readonly string[]).includes(value);
 
 export interface ToolAnnotations {
-  /** If true, the executor will call the invoke-time elicitation handler
-   *  before running the tool and abort if the user declines. */
   readonly requiresApproval?: boolean;
-  /** Free-text message shown in the approval prompt. Falls back to the
-   *  tool's id / description if unset. */
   readonly approvalDescription?: string;
-  /** Hint for UI — tool may suspend to ask the user for input mid-invocation.
-   *  Not enforced by the executor; purely a UI signal. */
   readonly mayElicit?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// SourceInput — what a plugin passes to `ctx.core.sources.register(...)`.
-// Writes both the source row and all its tool rows in one transaction.
-// Annotations are NOT part of this input — they're computed from
-// plugin-owned data via `plugin.resolveAnnotations` when the executor
-// needs them.
-// ---------------------------------------------------------------------------
 
 export interface SourceInputTool {
   readonly name: string;
@@ -161,9 +277,6 @@ export interface SourceInputTool {
 
 export interface SourceInput {
   readonly id: string;
-  /** Scope id this source belongs to. Must be one of the executor's
-   *  configured scopes. Callers (plugins) pick the target scope
-   *  explicitly — typically the scope the source was authored against. */
   readonly scope: string;
   readonly kind: string;
   readonly name: string;
@@ -174,17 +287,8 @@ export interface SourceInput {
   readonly tools: readonly SourceInputTool[];
 }
 
-// ---------------------------------------------------------------------------
-// DefinitionsInput — paired with SourceInput when a plugin registers
-// shared JSON-schema `$defs` alongside a source. Usually called inside
-// the same `ctx.transaction` as `sources.register` so a failure rolls
-// back both the source rows and the def rows.
-// ---------------------------------------------------------------------------
-
 export interface DefinitionsInput {
   readonly sourceId: string;
-  /** Scope id these definitions belong to — should match the scope of
-   *  the source they're registered under. */
   readonly scope: string;
   readonly definitions: Record<string, unknown>;
 }

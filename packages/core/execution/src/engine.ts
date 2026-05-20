@@ -1,4 +1,4 @@
-import { Deferred, Effect, Fiber, Ref } from "effect";
+import { Deferred, Effect, Fiber, Predicate, Queue } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type {
@@ -7,9 +7,9 @@ import type {
   ElicitationResponse,
   ElicitationHandler,
   ElicitationContext,
-} from "@executor/sdk";
-import { CodeExecutionError } from "@executor/codemode-core";
-import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor/codemode-core";
+} from "@executor-js/sdk/core";
+import { CodeExecutionError } from "@executor-js/codemode-core";
+import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
 import {
   makeExecutorToolInvoker,
@@ -24,9 +24,7 @@ import { buildExecuteDescription } from "./description";
 // Types
 // ---------------------------------------------------------------------------
 
-export type ExecutionEngineConfig<
-  E extends Cause.YieldableError = CodeExecutionError,
-> = {
+export type ExecutionEngineConfig<E extends Cause.YieldableError = CodeExecutionError> = {
   readonly executor: Executor;
   readonly codeExecutor: CodeExecutor<E>;
 };
@@ -44,7 +42,7 @@ export type PausedExecution = {
 type InternalPausedExecution<E> = PausedExecution & {
   readonly response: Deferred.Deferred<typeof ElicitationResponse.Type>;
   readonly fiber: Fiber.Fiber<ExecuteResult, E>;
-  readonly pauseSignalRef: Ref.Ref<Deferred.Deferred<InternalPausedExecution<E>>>;
+  readonly pauseQueue: Queue.Queue<InternalPausedExecution<E>>;
 };
 
 export type ResumeResponse = {
@@ -107,19 +105,33 @@ export const formatPausedExecution = (
 } => {
   const req = paused.elicitationContext.request;
   const lines: string[] = [`Execution paused: ${req.message}`];
+  const isUrlElicitation = Predicate.isTagged(req, "UrlElicitation");
+  const isFormElicitation = Predicate.isTagged(req, "FormElicitation");
+  const requestedSchema = isFormElicitation ? req.requestedSchema : undefined;
+  const hasRequestedSchema =
+    requestedSchema !== undefined && Object.keys(requestedSchema).length > 0;
+  const instructions = isUrlElicitation
+    ? `The user needs to open this URL in a browser and complete the flow. After the user finishes, call the resume tool with executionId "${paused.id}" and action "accept".`
+    : hasRequestedSchema
+      ? `Ask the user for values matching requestedSchema. Then call the resume tool with executionId "${paused.id}", action "accept", and content matching requestedSchema. If the user declines, call resume with action "decline" or "cancel".`
+      : `This is a model-side confirmation gate; there is no browser form to open. Ask the user whether to approve the paused tool call. If the user approves, call the resume tool with executionId "${paused.id}" and action "accept". If the user declines, call resume with action "decline" or "cancel".`;
 
-  if (req._tag === "UrlElicitation") {
+  if (isUrlElicitation) {
     lines.push(`\nOpen this URL in a browser:\n${req.url}`);
-    lines.push("\nAfter the browser flow, resume with the executionId below:");
+    lines.push('\nAfter the browser flow, call the resume tool with action "accept".');
+  } else if (hasRequestedSchema) {
+    lines.push(
+      "\nAsk the user for a response matching the requested schema, then call the resume tool.",
+    );
+    lines.push(`\nRequested schema:\n${JSON.stringify(requestedSchema, null, 2)}`);
   } else {
-    lines.push("\nResume with the executionId below and a response matching the requested schema:");
-    const schema = req.requestedSchema;
-    if (schema && Object.keys(schema).length > 0) {
-      lines.push(`\nRequested schema:\n${JSON.stringify(schema, null, 2)}`);
-    }
+    lines.push(
+      '\nThis is a model-side confirmation gate; no browser form is waiting. Ask the user whether to approve, then call the resume tool with action "accept", "decline", or "cancel".',
+    );
   }
 
   lines.push(`\nexecutionId: ${paused.id}`);
+  lines.push(`\ninstructions: ${instructions}`);
 
   return {
     text: lines.join("\n"),
@@ -127,10 +139,13 @@ export const formatPausedExecution = (
       status: "waiting_for_interaction",
       executionId: paused.id,
       interaction: {
-        kind: req._tag === "UrlElicitation" ? "url" : "form",
+        kind: isUrlElicitation ? "url" : "form",
         message: req.message,
-        ...(req._tag === "UrlElicitation" ? { url: req.url } : {}),
-        ...(req._tag === "FormElicitation" ? { requestedSchema: req.requestedSchema } : {}),
+        instructions,
+        toolId: String(paused.elicitationContext.toolId),
+        args: paused.elicitationContext.args,
+        ...(isUrlElicitation ? { url: req.url } : {}),
+        ...(isFormElicitation ? { requestedSchema: req.requestedSchema } : {}),
       },
     },
   };
@@ -157,6 +172,20 @@ const readOptionalLimit = (value: unknown, toolName: string): number | Execution
   return Math.floor(value);
 };
 
+const readOptionalOffset = (value: unknown, toolName: string): number | ExecutionToolError => {
+  if (value === undefined) {
+    return 0;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return new ExecutionToolError({
+      message: `${toolName} offset must be a non-negative number when provided`,
+    });
+  }
+
+  return Math.floor(value);
+};
+
 const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): SandboxToolInvoker => {
   const base = makeExecutorToolInvoker(executor, { invokeOptions });
   return {
@@ -166,7 +195,7 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
           return Effect.fail(
             new ExecutionToolError({
               message:
-                "tools.search expects an object: { query?: string; namespace?: string; limit?: number }",
+                "tools.search expects an object: { query?: string; namespace?: string; limit?: number; offset?: number }",
             }),
           );
         }
@@ -188,12 +217,18 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
         }
 
         const limit = readOptionalLimit(args.limit, "tools.search");
-        if (limit instanceof ExecutionToolError) {
+        if (Predicate.isTagged(limit, "ExecutionToolError")) {
           return Effect.fail(limit);
+        }
+
+        const offset = readOptionalOffset(args.offset, "tools.search");
+        if (Predicate.isTagged(offset, "ExecutionToolError")) {
+          return Effect.fail(offset);
         }
 
         return searchTools(executor, args.query ?? "", limit, {
           namespace: args.namespace,
+          offset,
         }).pipe(
           Effect.withSpan("mcp.tool.dispatch", {
             attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
@@ -205,7 +240,7 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
           return Effect.fail(
             new ExecutionToolError({
               message:
-                "tools.executor.sources.list expects an object: { query?: string; limit?: number }",
+                "tools.executor.sources.list expects an object: { query?: string; limit?: number; offset?: number }",
             }),
           );
         }
@@ -222,13 +257,22 @@ const makeFullInvoker = (executor: Executor, invokeOptions: InvokeOptions): Sand
           isRecord(args) ? args.limit : undefined,
           "tools.executor.sources.list",
         );
-        if (limit instanceof ExecutionToolError) {
+        if (Predicate.isTagged(limit, "ExecutionToolError")) {
           return Effect.fail(limit);
+        }
+
+        const offset = readOptionalOffset(
+          isRecord(args) ? args.offset : undefined,
+          "tools.executor.sources.list",
+        );
+        if (Predicate.isTagged(offset, "ExecutionToolError")) {
+          return Effect.fail(offset);
         }
 
         return listExecutorSources(executor, {
           query: isRecord(args) && typeof args.query === "string" ? args.query : undefined,
           limit,
+          offset,
         }).pipe(
           Effect.withSpan("mcp.tool.dispatch", {
             attributes: { "mcp.tool.name": path, "executor.tool.builtin": true },
@@ -306,14 +350,18 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   ) => Effect.Effect<ExecutionResult | null, E>;
 
   /**
+   * Inspect a paused execution without resuming it. Returns null if the id is
+   * unknown or has already been resumed.
+   */
+  readonly getPausedExecution: (executionId: string) => Effect.Effect<PausedExecution | null>;
+
+  /**
    * Get the dynamic tool description (workflow + namespaces).
    */
   readonly getDescription: Effect.Effect<string>;
 };
 
-export const createExecutionEngine = <
-  E extends Cause.YieldableError = CodeExecutionError,
->(
+export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecutionError>(
   config: ExecutionEngineConfig<E>,
 ): ExecutionEngine<E> => {
   const { executor, codeExecutor } = config;
@@ -321,19 +369,27 @@ export const createExecutionEngine = <
   let nextId = 0;
 
   /**
-   * Race a running fiber against a pause signal. Returns when either
+   * Race a running fiber against the pause queue. Returns when either
    * the fiber completes or an elicitation handler fires (whichever
    * comes first). Re-used by both executeWithPause and resume.
+   *
+   * `Effect.raceFirst` (not `Effect.race`) — `race` has prefer-success
+   * semantics in Effect v4 ("first successful result"), which means a
+   * fiber failure waits indefinitely for the pause Deferred to succeed.
+   * For a fast `codeExecutor.execute` failure (e.g. a syntax error
+   * inside the dynamic worker) the pause signal never fires, so the
+   * outer Effect hangs until the upstream client gives up. `raceFirst`
+   * settles on whichever side completes first, success or failure.
    */
   const awaitCompletionOrPause = (
     fiber: Fiber.Fiber<ExecuteResult, E>,
-    pauseSignal: Deferred.Deferred<InternalPausedExecution<E>>,
+    pauseQueue: Queue.Queue<InternalPausedExecution<E>>,
   ): Effect.Effect<ExecutionResult, E> =>
-    Effect.race(
+    Effect.raceFirst(
       Fiber.join(fiber).pipe(
         Effect.map((result): ExecutionResult => ({ status: "completed", result })),
       ),
-      Deferred.await(pauseSignal).pipe(
+      Queue.take(pauseQueue).pipe(
         Effect.map((paused): ExecutionResult => ({ status: "paused", execution: paused })),
       ),
     );
@@ -350,10 +406,9 @@ export const createExecutionEngine = <
       "mcp.execute.code_length": code.length,
     });
 
-    // Ref holds the current pause signal. The elicitation handler reads
-    // it each time it fires, so resume() can swap in a fresh Deferred
-    // before unblocking the fiber.
-    const pauseSignalRef = yield* Ref.make(yield* Deferred.make<InternalPausedExecution<E>>());
+    // Queue preserves pauses that arrive before the previous approval has
+    // returned to the caller, which can happen with concurrent tool calls.
+    const pauseQueue = yield* Queue.unbounded<InternalPausedExecution<E>>();
 
     // Will be set once the fiber is forked.
     let fiber: Fiber.Fiber<ExecuteResult, E>;
@@ -368,30 +423,27 @@ export const createExecutionEngine = <
           elicitationContext: ctx,
           response: responseDeferred,
           fiber: fiber!,
-          pauseSignalRef,
+          pauseQueue,
         };
         pausedExecutions.set(id, paused);
 
-        const currentSignal = yield* Ref.get(pauseSignalRef);
-        yield* Deferred.succeed(currentSignal, paused);
+        yield* Queue.offer(pauseQueue, paused);
 
         // Suspend until resume() completes responseDeferred.
         return yield* Deferred.await(responseDeferred);
       });
 
     const invoker = makeFullInvoker(executor, { onElicitation: elicitationHandler });
-    fiber = yield* Effect.forkDaemon(
+    fiber = yield* Effect.forkDetach(
       codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec")),
     );
 
-    const initialSignal = yield* Ref.get(pauseSignalRef);
-    return (yield* awaitCompletionOrPause(fiber, initialSignal)) as ExecutionResult;
+    return (yield* awaitCompletionOrPause(fiber, pauseQueue)) as ExecutionResult;
   });
 
   /**
-   * Resume a paused execution. Swaps in a fresh pause signal, completes
-   * the response Deferred to unblock the fiber, then races completion
-   * against the next pause.
+   * Resume a paused execution. Completes the response Deferred to unblock the
+   * fiber, then races completion against the next queued or future pause.
    */
   const resumeExecution = Effect.fn("mcp.execute.resume")(function* (
     executionId: string,
@@ -405,17 +457,12 @@ export const createExecutionEngine = <
     if (!paused) return null;
     pausedExecutions.delete(executionId);
 
-    // Swap in a fresh pause signal BEFORE unblocking the fiber, so the
-    // next elicitation handler call signals this new Deferred.
-    const nextSignal = yield* Deferred.make<InternalPausedExecution<E>>();
-    yield* Ref.set(paused.pauseSignalRef, nextSignal);
-
     yield* Deferred.succeed(paused.response, {
-      action: response.action,
+      action: response.action as typeof ElicitationResponse.Type.action,
       content: response.content,
     });
 
-    return (yield* awaitCompletionOrPause(paused.fiber, nextSignal)) as ExecutionResult;
+    return (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue)) as ExecutionResult;
   });
 
   /**
@@ -433,15 +480,15 @@ export const createExecutionEngine = <
     const invoker = makeFullInvoker(executor, {
       onElicitation: options.onElicitation,
     });
-    return yield* codeExecutor
-      .execute(code, invoker)
-      .pipe(Effect.withSpan("executor.code.exec"));
+    return yield* codeExecutor.execute(code, invoker).pipe(Effect.withSpan("executor.code.exec"));
   });
 
   return {
     execute: runInlineExecution,
     executeWithPause: startPausableExecution,
     resume: resumeExecution,
+    getPausedExecution: (executionId) =>
+      Effect.sync(() => pausedExecutions.get(executionId) ?? null),
     getDescription: buildExecuteDescription(executor),
   };
 };

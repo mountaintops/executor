@@ -8,31 +8,25 @@
 //     → test-worker's default.fetch
 //     → HttpApp.toWebHandler(mcpApp, { McpAuth: test })
 //     → mcpApp: CORS / OAuth metadata / auth / dispatch
-//     → env.MCP_SESSION.newUniqueId() → stub.init() → stub.handleRequest()
-//     → the real McpSessionDO — real DO storage, real engine, real
-//        @modelcontextprotocol/sdk McpServer over WorkerTransport
-//     → real postgres (via PGlite socket started by test-globalsetup.ts)
+//     → env.MCP_SESSION.idFromString() → stub.handleRequest()
+//     → the real McpSessionDO stale-session path
 //
-// Only one seam is faked: `McpAuth.verifyBearer`. The real impl calls
-// WorkOS's JWKS endpoint, which we can't reach from the test isolate.
+// Two auth seams are faked: `McpAuth.verifyBearer` and the live WorkOS
+// membership check. The real bearer impl calls WorkOS's JWKS endpoint,
+// which we can't reach from the test isolate.
 // Test bearer format is `test-accept::<accountId>::<orgId|none>`
 // (see `makeTestBearer` in test-worker.ts).
 //
 // The node-pool test (`mcp-session.e2e.node.test.ts`) covers the DO's
 // internal wiring with an InMemoryTransport and skips HTTP entirely.
-// This suite is its complement: it drives the HTTP path and proves that
-// every layer between `fetch()` and the DO is real.
-//
-// Test-only concession: wrangler.test.jsonc sets
-// `MCP_SESSION_REQUEST_SCOPED_RUNTIME=true`, so the real McpSessionDO keeps
-// its MCP transport/session state in DO storage but rebuilds the
-// postgres-backed engine per POST/DELETE request. That avoids workerd's
-// cross-request `RefcountedFulfiller` guard while still driving the real
-// HTTP → DO → MCP transport → engine pipeline across multiple requests.
+// This suite is its complement: it drives edge behavior that workerd can
+// exercise without violating its cross-request I/O guard. Multi-request live
+// MCP session coverage lives in `mcp-miniflare.e2e.node.test.ts`.
 // ---------------------------------------------------------------------------
 
-import { env, SELF } from "cloudflare:test";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { env, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
+import { Effect } from "effect";
+import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 
 import { makeTestBearer } from "./test-bearer";
 
@@ -42,10 +36,23 @@ import { makeTestBearer } from "./test-bearer";
 
 const BASE = "https://test-resource.example.com";
 const MCP_URL = `${BASE}/mcp`;
-const OAUTH_RESOURCE_URL = `${BASE}/.well-known/oauth-protected-resource`;
+const OAUTH_RESOURCE_URL = `${BASE}/.well-known/oauth-protected-resource/mcp`;
 
 const JSON_AND_SSE = "application/json, text/event-stream";
 const CONTENT_TYPE_JSON = "application/json";
+const HEARTBEAT_MS = 30 * 1000;
+const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+const SESSION_META_KEY = "session-meta";
+const LAST_ACTIVITY_KEY = "last-activity-ms";
+
+const doRuntimeControls = (
+  instance: unknown,
+): {
+  closeRuntime: () => Effect.Effect<void>;
+} => instance as { closeRuntime: () => Effect.Effect<void> };
+
+const doActivityState = (instance: unknown): { lastActivityMs: number } =>
+  instance as { lastActivityMs: number };
 
 const INITIALIZE_REQUEST = {
   jsonrpc: "2.0" as const,
@@ -58,12 +65,6 @@ const INITIALIZE_REQUEST = {
   },
 };
 
-const INITIALIZED_NOTIFICATION = {
-  jsonrpc: "2.0" as const,
-  method: "notifications/initialized",
-  params: {},
-};
-
 const TOOLS_LIST_REQUEST = {
   jsonrpc: "2.0" as const,
   id: 2,
@@ -71,55 +72,9 @@ const TOOLS_LIST_REQUEST = {
   params: {},
 };
 
-const EXECUTE_REQUEST = {
+const INITIALIZED_NOTIFICATION = {
   jsonrpc: "2.0" as const,
-  id: 3,
-  method: "tools/call",
-  params: {
-    name: "execute",
-    arguments: { code: "return 1 + 2" },
-  },
-};
-
-// ---------------------------------------------------------------------------
-// SSE parsing — the MCP transport returns `text/event-stream` with a single
-// `event: message\ndata: {...}` payload per request. We only need the first
-// data line; the stream closes immediately after.
-// ---------------------------------------------------------------------------
-
-const readFirstSseMessage = async (response: Response): Promise<unknown> => {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("text/event-stream")) {
-    const body = await response.text();
-    const dataLine = body
-      .split("\n")
-      .find((line) => line.startsWith("data: "));
-    if (!dataLine) {
-      throw new Error(`no SSE data line in body: ${JSON.stringify(body)}`);
-    }
-    return JSON.parse(dataLine.slice("data: ".length));
-  }
-  // enableJsonResponse path returns plain JSON
-  return response.json();
-};
-
-// ---------------------------------------------------------------------------
-// Seeding — goes through the test worker's `/__test__/seed-org` endpoint
-// because importing `postgres` / `drizzle-orm/postgres-js` at the test-file
-// level segfaults workerd at module load. The seed endpoint uses the same
-// PGlite-backed database the DO uses, so `resolveOrganization` sees the
-// seeded row without the test file importing postgres.js at top level.
-// ---------------------------------------------------------------------------
-
-const seedOrg = async (orgId: string, orgName: string) => {
-  const response = await SELF.fetch(`${BASE}/__test__/seed-org`, {
-    method: "POST",
-    headers: { "content-type": CONTENT_TYPE_JSON },
-    body: JSON.stringify({ id: orgId, name: orgName }),
-  });
-  if (!response.ok) {
-    throw new Error(`seed-org failed: ${response.status} ${await response.text()}`);
-  }
+  method: "notifications/initialized",
 };
 
 const nextOrgId = (() => {
@@ -157,16 +112,23 @@ const mcpPost = (init: McpPostInit): Promise<Response> => {
   });
 };
 
-const mcpDelete = (init: Omit<McpPostInit, "body" | "accept">): Promise<Response> => {
-  const headers: Record<string, string> = {
-    accept: JSON_AND_SSE,
-  };
-  if (init.bearer) headers.authorization = `Bearer ${init.bearer}`;
-  if (init.sessionId) headers["mcp-session-id"] = init.sessionId;
-  return SELF.fetch(MCP_URL, {
-    method: "DELETE",
-    headers,
+const mcpGet = (init: { readonly bearer: string; readonly sessionId: string }): Promise<Response> =>
+  SELF.fetch(MCP_URL, {
+    method: "GET",
+    headers: {
+      accept: "text/event-stream",
+      authorization: `Bearer ${init.bearer}`,
+      "mcp-session-id": init.sessionId,
+    },
   });
+
+const seedOrg = async (id: string, name = "MCP Flow Org"): Promise<void> => {
+  const response = await SELF.fetch(`${BASE}/__test__/seed-org`, {
+    method: "POST",
+    headers: { "content-type": CONTENT_TYPE_JSON },
+    body: JSON.stringify({ id, name }),
+  });
+  expect(response.status).toBe(204);
 };
 
 // ---------------------------------------------------------------------------
@@ -176,7 +138,7 @@ const mcpDelete = (init: Omit<McpPostInit, "body" | "accept">): Promise<Response
 beforeAll(() => {
   // Env presence guard — avoids confusing errors downstream if the test
   // wrangler forgot to bind something the DO needs.
-  if (!env.MCP_SESSION) throw new Error("MCP_SESSION binding missing from test wrangler");
+  expect(env.MCP_SESSION, "MCP_SESSION binding missing from test wrangler").toBeDefined();
 });
 
 afterAll(() => undefined);
@@ -198,9 +160,7 @@ describe("/mcp CORS preflight", () => {
 
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
-    expect(response.headers.get("access-control-allow-methods")).toBe(
-      "GET, POST, DELETE, OPTIONS",
-    );
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, DELETE, OPTIONS");
     const allowedHeaders = response.headers.get("access-control-allow-headers") ?? "";
     expect(allowedHeaders).toContain("mcp-session-id");
     expect(allowedHeaders).toContain("authorization");
@@ -221,7 +181,7 @@ describe("/.well-known/oauth-protected-resource", () => {
 
     const body = (await response.json()) as Record<string, unknown>;
     expect(body).toEqual({
-      resource: "https://test-resource.example.com",
+      resource: "https://test-resource.example.com/mcp",
       authorization_servers: ["https://test-authkit.example.com"],
       bearer_methods_supported: ["header"],
       scopes_supported: [],
@@ -239,8 +199,10 @@ describe("/mcp unauthorized", () => {
     expect(response.status).toBe(401);
     const wwwAuth = response.headers.get("www-authenticate") ?? "";
     expect(wwwAuth).toContain("Bearer resource_metadata=");
+    expect(wwwAuth).not.toContain("error=");
+    expect(wwwAuth).toContain('resource_metadata="');
     expect(wwwAuth).toContain(
-      "https://test-resource.example.com/.well-known/oauth-protected-resource",
+      "https://test-resource.example.com/.well-known/oauth-protected-resource/mcp",
     );
     expect(await response.json()).toEqual({ error: "unauthorized" });
   });
@@ -267,185 +229,43 @@ describe("/mcp verified token without org", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 5. POST /mcp initialize (valid token with org) — reaches the DO
-// ---------------------------------------------------------------------------
-
-describe("/mcp initialize reaches the DO", () => {
-  it("returns a JSON-RPC initialize result with mcp-session-id", async () => {
-    const orgId = nextOrgId();
-    await seedOrg(orgId, "Init Org");
-
+describe("/mcp transient auth failure", () => {
+  it("returns a retryable JSON-RPC error instead of a generic 500", async () => {
     const response = await mcpPost({
-      bearer: makeTestBearer(nextAccountId(), orgId),
-      body: INITIALIZE_REQUEST,
-    });
-
-    expect(response.status).toBe(200);
-    const sessionId = response.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
-    expect(sessionId!.length).toBeGreaterThan(0);
-
-    const message = (await readFirstSseMessage(response)) as {
-      jsonrpc: string;
-      id: number;
-      result: {
-        protocolVersion: string;
-        serverInfo: { name: string; version: string };
-        capabilities: Record<string, unknown>;
-      };
-    };
-    expect(message.jsonrpc).toBe("2.0");
-    expect(message.id).toBe(1);
-    expect(message.result.protocolVersion).toBeTruthy();
-    expect(message.result.serverInfo.name).toBe("executor");
-    expect(message.result.capabilities.tools).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 6. Full handshake: initialize → notifications/initialized → tools/list
-// ---------------------------------------------------------------------------
-
-describe("/mcp multi-request handshake", () => {
-  it("supports initialize → initialized → tools/list on one DO session", async () => {
-    const orgId = nextOrgId();
-    const bearer = makeTestBearer(nextAccountId(), orgId);
-    await seedOrg(orgId, "Handshake Org");
-
-    const initializeResponse = await mcpPost({
-      bearer,
-      body: INITIALIZE_REQUEST,
-    });
-    expect(initializeResponse.status).toBe(200);
-    const sessionId = initializeResponse.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
-
-    const initializeMessage = (await readFirstSseMessage(initializeResponse)) as {
-      jsonrpc: string;
-      id: number;
-      result: {
-        serverInfo: { name: string };
-      };
-    };
-    expect(initializeMessage.jsonrpc).toBe("2.0");
-    expect(initializeMessage.id).toBe(1);
-    expect(initializeMessage.result.serverInfo.name).toBe("executor");
-
-    const initializedResponse = await mcpPost({
-      bearer,
-      sessionId,
-      body: INITIALIZED_NOTIFICATION,
-    });
-    expect(initializedResponse.status).toBe(202);
-
-    const toolsListResponse = await mcpPost({
-      bearer,
-      sessionId,
+      bearer: "test-system-error",
       body: TOOLS_LIST_REQUEST,
     });
-    expect(toolsListResponse.status).toBe(200);
-    expect(toolsListResponse.headers.get("mcp-session-id")).toBe(sessionId);
-
-    const toolsListMessage = (await readFirstSseMessage(toolsListResponse)) as {
-      jsonrpc: string;
-      id: number;
-      result: {
-        tools: Array<{ name: string }>;
-      };
-    };
-    expect(toolsListMessage.jsonrpc).toBe("2.0");
-    expect(toolsListMessage.id).toBe(2);
-    expect(toolsListMessage.result.tools.map((tool) => tool.name)).toContain("execute");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 7. Full tool execution across multiple requests on one DO session
-// ---------------------------------------------------------------------------
-
-describe("/mcp multi-request tools/call", () => {
-  it("executes code after initialize and initialized on the same session", async () => {
-    const orgId = nextOrgId();
-    const bearer = makeTestBearer(nextAccountId(), orgId);
-    await seedOrg(orgId, "Execute Org");
-
-    const initializeResponse = await mcpPost({
-      bearer,
-      body: INITIALIZE_REQUEST,
-    });
-    const sessionId = initializeResponse.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
-    await readFirstSseMessage(initializeResponse);
-
-    const initializedResponse = await mcpPost({
-      bearer,
-      sessionId,
-      body: INITIALIZED_NOTIFICATION,
-    });
-    expect(initializedResponse.status).toBe(202);
-
-    const executeResponse = await mcpPost({
-      bearer,
-      sessionId,
-      body: EXECUTE_REQUEST,
-    });
-    expect(executeResponse.status).toBe(200);
-
-    const executeMessage = (await readFirstSseMessage(executeResponse)) as {
-      jsonrpc: string;
-      id: number;
-      result: {
-        content: Array<{ type: string; text: string }>;
-        isError?: boolean;
-      };
-    };
-    expect(executeMessage.jsonrpc).toBe("2.0");
-    expect(executeMessage.id).toBe(3);
-    expect(executeMessage.result.isError).not.toBe(true);
-    expect(executeMessage.result.content[0]?.text).toContain("3");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 8. DELETE /mcp tears down the session
-// ---------------------------------------------------------------------------
-
-describe("/mcp delete tears down session", () => {
-  it("returns stale-session on the next request", async () => {
-    const orgId = nextOrgId();
-    const bearer = makeTestBearer(nextAccountId(), orgId);
-    await seedOrg(orgId, "Delete Org");
-
-    const initializeResponse = await mcpPost({
-      bearer,
-      body: INITIALIZE_REQUEST,
-    });
-    const sessionId = initializeResponse.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
-    await readFirstSseMessage(initializeResponse);
-
-    const deleteResponse = await mcpDelete({ bearer, sessionId });
-    expect(deleteResponse.status).toBe(200);
-
-    const staleResponse = await mcpPost({
-      bearer,
-      sessionId,
-      body: TOOLS_LIST_REQUEST,
-    });
-    expect(staleResponse.status).toBe(404);
-    const staleBody = (await staleResponse.json()) as {
+    expect(response.status).toBe(503);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    const body = (await response.json()) as {
       jsonrpc: string;
       error: { code: number; message: string };
     };
-    expect(staleBody.jsonrpc).toBe("2.0");
-    expect(staleBody.error.code).toBe(-32001);
-    expect(staleBody.error.message).toMatch(/timed out/i);
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toMatch(/temporarily unavailable/i);
+  });
+});
+
+describe("/mcp verified token without live org access", () => {
+  it("returns JSON-RPC -32001 before creating a session", async () => {
+    const response = await mcpPost({
+      bearer: makeTestBearer(nextAccountId(), `revoked_${nextOrgId()}`),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as {
+      jsonrpc: string;
+      error: { code: number; message: string };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.error.code).toBe(-32001);
+    expect(body.error.message).toMatch(/No organization/i);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 9. POST /mcp on an unknown session-id
+// 5. POST /mcp on an unknown session-id
 // ---------------------------------------------------------------------------
 //
 // A DO id that was never initialized behaves just like a timed-out
@@ -475,5 +295,336 @@ describe("/mcp unknown session id", () => {
     expect(body.jsonrpc).toBe("2.0");
     expect(body.error.code).toBe(-32001);
     expect(body.error.message).toMatch(/timed out/i);
+  });
+});
+
+describe("/mcp notification responses", () => {
+  it("returns 202 with an empty body for notifications/initialized", async () => {
+    const orgId = nextOrgId();
+    const accountId = nextAccountId();
+    await seedOrg(orgId);
+
+    const initializeResponse = await mcpPost({
+      bearer: makeTestBearer(accountId, orgId),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(initializeResponse.status).toBe(200);
+    const sessionId = initializeResponse.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    const notificationResponse = await mcpPost({
+      bearer: makeTestBearer(accountId, orgId),
+      sessionId,
+      body: INITIALIZED_NOTIFICATION,
+    });
+
+    expect(notificationResponse.status).toBe(202);
+    expect(notificationResponse.headers.get("content-type")).toBeNull();
+    expect(await notificationResponse.text()).toBe("");
+  });
+});
+
+describe("/mcp session restore", () => {
+  it("restores an initialized SDK transport from durable storage", async () => {
+    const orgId = nextOrgId();
+    const accountId = nextAccountId();
+    await seedOrg(orgId);
+
+    const initializeResponse = await mcpPost({
+      bearer: makeTestBearer(accountId, orgId),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(initializeResponse.status).toBe(200);
+    const sessionId = initializeResponse.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    const ns = env.MCP_SESSION;
+    const stub = ns.get(ns.idFromString(sessionId!));
+    await runInDurableObject(stub, async (instance) => {
+      await Effect.runPromise(doRuntimeControls(instance).closeRuntime());
+    });
+
+    const response = await mcpPost({
+      bearer: makeTestBearer(accountId, orgId),
+      sessionId,
+      body: TOOLS_LIST_REQUEST,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      readonly jsonrpc: string;
+      readonly result?: { readonly tools?: ReadonlyArray<{ readonly name: string }> };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.result?.tools?.some((tool) => tool.name === "execute")).toBe(true);
+  }, 15_000);
+
+  it("keeps JSON POST responses after a session is restored by a GET reconnect", async () => {
+    const orgId = nextOrgId();
+    const accountId = nextAccountId();
+    const bearer = makeTestBearer(accountId, orgId);
+    await seedOrg(orgId);
+
+    const initializeResponse = await mcpPost({
+      bearer,
+      body: INITIALIZE_REQUEST,
+    });
+    expect(initializeResponse.status).toBe(200);
+    const sessionId = initializeResponse.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    const ns = env.MCP_SESSION;
+    const stub = ns.get(ns.idFromString(sessionId!));
+    await runInDurableObject(stub, async (instance) => {
+      await Effect.runPromise(doRuntimeControls(instance).closeRuntime());
+    });
+
+    const getResponse = await mcpGet({ bearer, sessionId: sessionId! });
+    expect(getResponse.status).toBe(200);
+    expect(getResponse.headers.get("content-type") ?? "").toContain("text/event-stream");
+    const responseBody = getResponse.body;
+    if (responseBody) {
+      await Effect.runPromise(
+        Effect.ignore(
+          Effect.tryPromise({
+            try: () => responseBody.cancel(),
+            catch: () => "ResponseBodyCancelFailed" as const,
+          }),
+        ),
+      );
+    }
+
+    const postResult = await Promise.race([
+      mcpPost({
+        bearer,
+        sessionId,
+        body: TOOLS_LIST_REQUEST,
+      }).then((response) => ({ kind: "response" as const, response })),
+      new Promise<{ readonly kind: "timeout" }>((resolve) =>
+        setTimeout(() => resolve({ kind: "timeout" }), 5_000),
+      ),
+    ]);
+    expect(postResult).toEqual(expect.objectContaining({ kind: "response" }));
+    if (postResult.kind !== "response") return;
+
+    const response = postResult.response;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type") ?? "").toContain("application/json");
+    const body = (await response.json()) as {
+      readonly jsonrpc: string;
+      readonly result?: { readonly tools?: ReadonlyArray<{ readonly name: string }> };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.result?.tools?.some((tool) => tool.name === "execute")).toBe(true);
+  }, 15_000);
+
+  it("restores an initialized session after the idle alarm suspends the runtime", async () => {
+    const orgId = nextOrgId();
+    const accountId = nextAccountId();
+    const bearer = makeTestBearer(accountId, orgId);
+    await seedOrg(orgId);
+
+    const initializeResponse = await mcpPost({
+      bearer,
+      body: INITIALIZE_REQUEST,
+    });
+    expect(initializeResponse.status).toBe(200);
+    const sessionId = initializeResponse.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    const ns = env.MCP_SESSION;
+    const stub = ns.get(ns.idFromString(sessionId!));
+    await runInDurableObject(stub, async (instance, state) => {
+      doActivityState(instance).lastActivityMs = 0;
+      await state.storage.put(LAST_ACTIVITY_KEY, Date.now() - SESSION_TIMEOUT_MS - 1_000);
+      await state.storage.setAlarm(Date.now() - 1);
+    });
+
+    await runDurableObjectAlarm(stub);
+
+    const response = await mcpPost({
+      bearer,
+      sessionId,
+      body: TOOLS_LIST_REQUEST,
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      readonly jsonrpc: string;
+      readonly result?: { readonly tools?: ReadonlyArray<{ readonly name: string }> };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.result?.tools?.some((tool) => tool.name === "execute")).toBe(true);
+  }, 15_000);
+
+  it("reproduces cross-account session reuse via leaked mcp-session-id", async () => {
+    const victimOrgId = nextOrgId();
+    const attackerOrgId = nextOrgId();
+    const victimAccountId = nextAccountId();
+    const attackerAccountId = nextAccountId();
+    await seedOrg(victimOrgId);
+
+    const initializeResponse = await mcpPost({
+      bearer: makeTestBearer(victimAccountId, victimOrgId),
+      body: INITIALIZE_REQUEST,
+    });
+    expect(initializeResponse.status).toBe(200);
+    const sessionId = initializeResponse.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    const ns = env.MCP_SESSION;
+    const stub = ns.get(ns.idFromString(sessionId!));
+    await runInDurableObject(stub, async (instance) => {
+      await Effect.runPromise(doRuntimeControls(instance).closeRuntime());
+    });
+
+    const response = await mcpPost({
+      bearer: makeTestBearer(attackerAccountId, attackerOrgId),
+      sessionId,
+      body: TOOLS_LIST_REQUEST,
+    });
+
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as {
+      readonly jsonrpc: string;
+      readonly error?: { readonly code: number; readonly message: string };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.error?.code).toBe(-32003);
+    expect(body.error?.message).toMatch(/does not belong/i);
+  }, 15_000);
+
+  it("clears an existing session when live org access is revoked", async () => {
+    const orgId = `revoked_${nextOrgId()}`;
+    const accountId = nextAccountId();
+    const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
+    const sessionId = stub.id.toString();
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(SESSION_META_KEY, {
+        organizationId: orgId,
+        organizationName: "Revoked Org",
+        userId: accountId,
+      });
+      await state.storage.put(LAST_ACTIVITY_KEY, Date.now());
+      await state.storage.setAlarm(Date.now() + HEARTBEAT_MS);
+    });
+
+    const revokedResponse = await mcpPost({
+      bearer: makeTestBearer(accountId, orgId),
+      sessionId,
+      body: TOOLS_LIST_REQUEST,
+    });
+    expect(revokedResponse.status).toBe(403);
+    const body = (await revokedResponse.json()) as {
+      readonly jsonrpc: string;
+      readonly error?: { readonly code: number; readonly message: string };
+    };
+    expect(body.jsonrpc).toBe("2.0");
+    expect(body.error?.code).toBe(-32001);
+    expect(body.error?.message).toMatch(/No organization/i);
+
+    const stored = await runInDurableObject(stub, async (_instance, state) => ({
+      sessionMeta: await state.storage.get(SESSION_META_KEY),
+      lastActivity: await state.storage.get(LAST_ACTIVITY_KEY),
+      alarm: await state.storage.getAlarm(),
+    }));
+    expect(stored.sessionMeta).toBeUndefined();
+    expect(stored.lastActivity).toBeUndefined();
+    expect(stored.alarm).toBeNull();
+  }, 15_000);
+});
+
+describe("McpSessionDO alarm lifecycle", () => {
+  it("rejects browser approval reads and resumes from a different signed-in user", async () => {
+    const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
+    const sessionMeta = {
+      organizationId: "org_browser_resume_owner",
+      organizationName: "Browser Resume Owner",
+      userId: "user_browser_resume_owner",
+    };
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(SESSION_META_KEY, sessionMeta);
+      await state.storage.put(LAST_ACTIVITY_KEY, Date.now());
+    });
+
+    const attackerIdentity = {
+      accountId: "user_browser_resume_attacker",
+      organizationId: sessionMeta.organizationId,
+    };
+
+    await expect(
+      stub.getPausedExecutionForApproval("exec_approval", attackerIdentity),
+    ).resolves.toEqual({
+      status: "forbidden",
+    });
+
+    await expect(
+      stub.resumeExecutionForApproval("exec_approval", attackerIdentity, { action: "accept" }),
+    ).resolves.toEqual({
+      status: "forbidden",
+    });
+  });
+
+  it("keeps a recently active session after a cold-started alarm", async () => {
+    const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
+    const sessionMeta = {
+      organizationId: "org_alarm_recent",
+      organizationName: "Alarm Recent",
+      userId: "user_alarm_recent",
+    };
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      const now = Date.now();
+      await state.storage.put(SESSION_META_KEY, sessionMeta);
+      await state.storage.put(LAST_ACTIVITY_KEY, now);
+      await state.storage.setAlarm(now - 1);
+    });
+    await runInDurableObject(stub, (instance) => {
+      doActivityState(instance).lastActivityMs = 0;
+    });
+
+    await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+
+    const stored = await runInDurableObject(stub, async (_instance, state) => ({
+      sessionMeta: await state.storage.get(SESSION_META_KEY),
+      lastActivity: await state.storage.get<number>(LAST_ACTIVITY_KEY),
+      alarm: await state.storage.getAlarm(),
+    }));
+
+    expect(stored.sessionMeta).toEqual(sessionMeta);
+    expect(stored.lastActivity).toBeGreaterThan(Date.now() - SESSION_TIMEOUT_MS);
+    expect(stored.alarm).toBeGreaterThan(Date.now());
+    expect(stored.alarm).toBeLessThanOrEqual(Date.now() + HEARTBEAT_MS + 1_000);
+  });
+
+  it("suspends an expired session after a cold-started alarm", async () => {
+    const stub = env.MCP_SESSION.get(env.MCP_SESSION.newUniqueId());
+    const sessionMeta = {
+      organizationId: "org_alarm_expired",
+      organizationName: "Alarm Expired",
+      userId: "user_alarm_expired",
+    };
+    const lastActivity = Date.now() - SESSION_TIMEOUT_MS - 1_000;
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put(SESSION_META_KEY, sessionMeta);
+      await state.storage.put(LAST_ACTIVITY_KEY, lastActivity);
+      await state.storage.setAlarm(Date.now() - 1);
+    });
+    await runInDurableObject(stub, (instance) => {
+      doActivityState(instance).lastActivityMs = 0;
+    });
+
+    await runDurableObjectAlarm(stub);
+
+    const stored = await runInDurableObject(stub, async (_instance, state) => ({
+      sessionMeta: await state.storage.get(SESSION_META_KEY),
+      lastActivity: await state.storage.get(LAST_ACTIVITY_KEY),
+      alarm: await state.storage.getAlarm(),
+    }));
+
+    expect(stored.sessionMeta).toEqual(sessionMeta);
+    expect(stored.lastActivity).toBe(lastActivity);
+    expect(stored.alarm).toBeNull();
   });
 });

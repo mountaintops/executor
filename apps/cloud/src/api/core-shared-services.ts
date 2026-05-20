@@ -22,7 +22,4 @@ import { AutumnService } from "../services/autumn";
  * session DO (long-lived DB + isolate-local tracer SDK) merge this with
  * their own `DbLive` + `UserStoreLive` + telemetry layer.
  */
-export const CoreSharedServices = Layer.mergeAll(
-  WorkOSAuth.Default,
-  AutumnService.Default,
-);
+export const CoreSharedServices = Layer.mergeAll(WorkOSAuth.Default, AutumnService.Default);

@@ -6,7 +6,8 @@ export {
   type GraphqlSourceConfig,
   type GraphqlPluginExtension,
   type GraphqlPluginOptions,
-  type GraphqlUpdateSourceInput,
+  type GraphqlConfigureSourceInput,
+  type GraphqlSourceRef,
 } from "./plugin";
 export {
   graphqlSchema,
@@ -27,9 +28,17 @@ export {
   ExtractedField,
   ExtractionResult,
   GraphqlArgument,
+  GraphqlCredentialInput,
   GraphqlOperationKind,
+  GraphqlSourceAuth,
+  GraphqlSourceAuthInput,
   InvocationConfig,
   InvocationResult,
   OperationBinding,
   HeaderValue,
+  QueryParamValue,
+  ConfiguredGraphqlCredentialValue,
+  GRAPHQL_OAUTH_CONNECTION_SLOT,
+  graphqlHeaderSlot,
+  graphqlQueryParamSlot,
 } from "./types";

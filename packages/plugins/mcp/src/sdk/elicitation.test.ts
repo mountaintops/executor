@@ -1,133 +1,20 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
-import * as http from "node:http";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
+import { Effect, Schema } from "effect";
 
 import {
   createExecutor,
-  makeTestConfig,
   FormElicitation,
   ElicitationResponse,
   type InvokeOptions,
-} from "@executor/sdk";
+} from "@executor-js/sdk";
+import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import { mcpPlugin } from "./plugin";
+import { makeElicitationMcpServer, serveMcpServer } from "../testing";
 
-// ---------------------------------------------------------------------------
-// Test MCP server on a real HTTP port
-// ---------------------------------------------------------------------------
+const isFormElicitation = Schema.is(FormElicitation);
 
-function createTestMcpServer() {
-  const server = new McpServer(
-    { name: "elicitation-test-server", version: "1.0.0" },
-    { capabilities: {} },
-  );
-
-  server.registerTool(
-    "gated_echo",
-    {
-      description: "Asks for approval before echoing a value",
-      inputSchema: { value: z.string() },
-    },
-    async ({ value }: { value: string }) => {
-      const response = await server.server.elicitInput({
-        mode: "form",
-        message: `Approve echo for "${value}"?`,
-        requestedSchema: {
-          type: "object",
-          properties: {
-            approved: { type: "boolean", title: "Approve" },
-          },
-          required: ["approved"],
-        },
-      });
-
-      if (response.action !== "accept" || !response.content || response.content.approved !== true) {
-        return {
-          content: [{ type: "text" as const, text: `denied:${value}` }],
-        };
-      }
-
-      return {
-        content: [{ type: "text" as const, text: `approved:${value}` }],
-      };
-    },
-  );
-
-  server.registerTool(
-    "simple_echo",
-    {
-      description: "Echoes a value without elicitation",
-      inputSchema: { value: z.string() },
-    },
-    async ({ value }: { value: string }) => ({
-      content: [{ type: "text" as const, text: value }],
-    }),
-  );
-
-  return server;
-}
-
-type TestServer = {
-  readonly url: string;
-  readonly httpServer: http.Server;
-  /** Number of MCP sessions created (each connect = 1 session) */
-  readonly sessionCount: () => number;
-};
-
-const serveMcpServer = Effect.acquireRelease(
-  Effect.async<TestServer, Error>((resume) => {
-    const transports = new Map<string, StreamableHTTPServerTransport>();
-    let sessions = 0;
-
-    const httpServer = http.createServer(async (req, res) => {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-      if (sessionId) {
-        const transport = transports.get(sessionId);
-        if (!transport) {
-          res.writeHead(404);
-          res.end("Session not found");
-          return;
-        }
-        await transport.handleRequest(req, res);
-        return;
-      }
-
-      // New session — create a fresh McpServer per connection
-      const mcpServer = createTestMcpServer();
-      sessions++;
-
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => crypto.randomUUID(),
-        onsessioninitialized: (sid) => {
-          transports.set(sid, transport);
-        },
-      });
-
-      await mcpServer.connect(transport);
-      await transport.handleRequest(req, res);
-    });
-
-    httpServer.listen(0, () => {
-      const addr = httpServer.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resume(
-        Effect.succeed({
-          url: `http://127.0.0.1:${port}`,
-          httpServer,
-          sessionCount: () => sessions,
-        }),
-      );
-    });
-  }),
-  ({ httpServer }) =>
-    Effect.sync(() => {
-      httpServer.close();
-    }),
-);
+const serveElicitationTestServer = serveMcpServer(makeElicitationMcpServer);
 
 // ---------------------------------------------------------------------------
 // Helper — create executor with MCP plugin pointed at test server
@@ -154,9 +41,9 @@ const makeTestExecutor = (serverUrl: string) =>
 // ---------------------------------------------------------------------------
 
 describe("MCP elicitation (end-to-end)", () => {
-  it.scoped("form elicitation accepted → tool returns approved result", () =>
+  it.effect("form elicitation accepted → tool returns approved result", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer;
+      const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
 
       const tools = yield* executor.tools.list();
@@ -167,11 +54,11 @@ describe("MCP elicitation (end-to-end)", () => {
 
       const options: InvokeOptions = {
         onElicitation: (ctx) => {
-          if (ctx.request instanceof FormElicitation) {
+          if (isFormElicitation(ctx.request)) {
             elicitationMessages.push(ctx.request.message);
           }
           return Effect.succeed(
-            new ElicitationResponse({
+            ElicitationResponse.make({
               action: "accept",
               content: { approved: true },
             }),
@@ -182,7 +69,8 @@ describe("MCP elicitation (end-to-end)", () => {
       const result = yield* executor.tools.invoke(gatedEcho!.id, { value: "hello" }, options);
 
       expect(result).toMatchObject({
-        content: [{ type: "text", text: "approved:hello" }],
+        ok: true,
+        data: { content: [{ type: "text", text: "approved:hello" }] },
       });
       // At least one elicitation should be the MCP server's form
       expect(elicitationMessages.length).toBeGreaterThanOrEqual(1);
@@ -190,9 +78,9 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.scoped("form elicitation declined → tool returns denied result", () =>
+  it.effect("form elicitation declined → tool returns denied result", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer;
+      const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const gatedEcho = tools.find((t) => t.name === "gated_echo")!;
@@ -203,20 +91,20 @@ describe("MCP elicitation (end-to-end)", () => {
         gatedEcho.id,
         { value: "nope" },
         {
-          onElicitation: () =>
-            Effect.succeed(new ElicitationResponse({ action: "decline" })),
+          onElicitation: () => Effect.succeed(ElicitationResponse.make({ action: "decline" })),
         },
       );
 
       expect(result).toMatchObject({
-        content: [{ type: "text", text: "denied:nope" }],
+        ok: true,
+        data: { content: [{ type: "text", text: "denied:nope" }] },
       });
     }),
   );
 
-  it.scoped("tool without elicitation works normally", () =>
+  it.effect("tool without elicitation works normally", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer;
+      const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
@@ -228,14 +116,63 @@ describe("MCP elicitation (end-to-end)", () => {
       );
 
       expect(result).toMatchObject({
-        content: [{ type: "text", text: "plain" }],
+        ok: true,
+        data: { content: [{ type: "text", text: "plain" }] },
       });
     }),
   );
 
-  it.scoped("handler receives correct toolId, args, and FormElicitation schema", () =>
+  it.effect("successful tool invocation preserves structured MCP result fields", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer;
+      const server = yield* serveElicitationTestServer;
+      const executor = yield* makeTestExecutor(server.url);
+      const tools = yield* executor.tools.list();
+      const structuredEcho = tools.find((t) => t.name === "structured_echo")!;
+
+      const result = yield* executor.tools.invoke(
+        structuredEcho.id,
+        { value: "plain" },
+        { onElicitation: "accept-all" },
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        data: {
+          content: [{ type: "text", text: "plain" }],
+          structuredContent: { value: "plain", upper: "PLAIN" },
+          _meta: { trace: "kept" },
+        },
+      });
+    }),
+  );
+
+  it.effect("addSource preserves the configured display name over server metadata", () =>
+    Effect.gen(function* () {
+      const server = yield* serveElicitationTestServer;
+      const executor = yield* createExecutor(
+        makeTestConfig({
+          plugins: [mcpPlugin()] as const,
+        }),
+      );
+
+      yield* executor.mcp.addSource({
+        transport: "remote",
+        scope: "test-scope",
+        name: "Gmail",
+        endpoint: server.url,
+        namespace: "gmail",
+      });
+
+      const sources = yield* executor.sources.list();
+      const source = sources.find((s) => s.id === "gmail");
+
+      expect(source?.name).toBe("Gmail");
+    }),
+  );
+
+  it.effect("handler receives correct toolId, args, and FormElicitation schema", () =>
+    Effect.gen(function* () {
+      const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const gatedEcho = tools.find((t) => t.name === "gated_echo")!;
@@ -253,7 +190,7 @@ describe("MCP elicitation (end-to-end)", () => {
             capturedArgs = ctx.args;
             capturedRequest = ctx.request;
             return Effect.succeed(
-              new ElicitationResponse({
+              ElicitationResponse.make({
                 action: "accept",
                 content: { approved: true },
               }),
@@ -264,7 +201,7 @@ describe("MCP elicitation (end-to-end)", () => {
 
       expect(capturedToolId).toBe(gatedEcho.id);
       expect(capturedArgs).toEqual({ value: "ctx-test" });
-      expect(capturedRequest).toBeInstanceOf(FormElicitation);
+      expect(isFormElicitation(capturedRequest)).toBe(true);
 
       const form = capturedRequest as FormElicitation;
       expect(form.message).toContain('Approve echo for "ctx-test"?');
@@ -278,9 +215,9 @@ describe("MCP elicitation (end-to-end)", () => {
     }),
   );
 
-  it.scoped("connection is reused across multiple tool calls to the same source", () =>
+  it.effect("connection is reused across multiple tool calls to the same source", () =>
     Effect.gen(function* () {
-      const server = yield* serveMcpServer;
+      const server = yield* serveElicitationTestServer;
       const executor = yield* makeTestExecutor(server.url);
       const tools = yield* executor.tools.list();
       const simpleEcho = tools.find((t) => t.name === "simple_echo")!;
@@ -313,7 +250,7 @@ describe("MCP elicitation (end-to-end)", () => {
         {
           onElicitation: () =>
             Effect.succeed(
-              new ElicitationResponse({
+              ElicitationResponse.make({
                 action: "accept",
                 content: { approved: true },
               }),

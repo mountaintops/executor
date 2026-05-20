@@ -2,7 +2,7 @@
 //
 // The `McpSessionDO` in mcp-session.ts wires several things that previously
 // had zero integration coverage:
-//   - `createScopedExecutor` against a real drizzle adapter (the 2026-04-16
+//   - `createScopedExecutor` against a real FumaDB/Drizzle handle (the 2026-04-16
 //     prod outage was a schema spread bug here; see services/db.schema.test.ts)
 //   - `createExecutionEngine` with an in-process code executor
 //   - `createExecutorMcpServer` for the MCP request surface
@@ -15,46 +15,38 @@
 // before prod does.
 
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 
-import { createExecutorMcpServer } from "@executor/host-mcp";
-import { createExecutionEngine } from "@executor/execution";
-import { makeQuickJsExecutor } from "@executor/runtime-quickjs";
+import { createExecutorMcpServer } from "@executor-js/host-mcp";
+import { createExecutionEngine } from "@executor-js/execution";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import {
   ElicitationResponse,
   FormElicitation,
   Scope,
   ScopeId,
-  collectSchemas,
+  collectTables,
   createExecutor,
   definePlugin,
-} from "@executor/sdk";
-import {
-  makePostgresAdapter,
-  makePostgresBlobStore,
-} from "@executor/storage-postgres";
-import { openApiPlugin } from "@executor/plugin-openapi";
-import { mcpPlugin } from "@executor/plugin-mcp";
-import { graphqlPlugin } from "@executor/plugin-graphql";
-import { workosVaultPlugin } from "@executor/plugin-workos-vault";
-
+} from "@executor-js/sdk";
+import { FetchHttpClient } from "effect/unstable/http";
+import { makeTestWorkOSVaultClient } from "@executor-js/plugin-workos-vault/testing";
+import executorConfig from "../executor.config";
 import { DbService } from "./services/db";
-import { makeFakeVaultClient } from "./services/__test-harness__/api-harness";
+import { createDrizzleFumaDb } from "./services/fuma";
 
 // ---------------------------------------------------------------------------
 // Test-only plugin: exposes one in-memory tool that elicits once. Lets the
 // eliciting test drive the real engine + sandbox rather than a stub engine.
 // ---------------------------------------------------------------------------
 
-const EMPTY_INPUT_SCHEMA = {
-  type: "object",
-  properties: {},
-  additionalProperties: false,
-} as const;
+const EMPTY_INPUT_SCHEMA = Schema.toStandardSchemaV1(
+  Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+);
 
 const elicitingTestPlugin = definePlugin(() => ({
   id: "eliciting-test" as const,
@@ -69,10 +61,14 @@ const elicitingTestPlugin = definePlugin(() => ({
           name: "needsApproval",
           description: "Tool that asks the caller to approve before returning.",
           inputSchema: EMPTY_INPUT_SCHEMA,
-          handler: ({ elicit }: { elicit: (r: FormElicitation) => Effect.Effect<typeof ElicitationResponse.Type, unknown> }) =>
+          handler: ({
+            elicit,
+          }: {
+            elicit: (r: FormElicitation) => Effect.Effect<typeof ElicitationResponse.Type, unknown>;
+          }) =>
             Effect.gen(function* () {
               const response = yield* elicit(
-                new FormElicitation({
+                FormElicitation.make({
                   message: "Approve?",
                   requestedSchema: {
                     type: "object",
@@ -96,33 +92,38 @@ const ELICITATION_CAPS: ClientCapabilities = {
   elicitation: { form: {}, url: {} },
 };
 
-type BuildOptions = { readonly withElicitingPlugin?: boolean };
+type BuildOptions = {
+  readonly withElicitingPlugin?: boolean;
+  readonly elicitationMode?: "model" | "native";
+};
 
-const buildScopedExecutor = (
-  scopeId: string,
-  scopeName: string,
-  options: BuildOptions = {},
-) =>
+const buildScopedExecutor = (scopeId: string, scopeName: string, options: BuildOptions = {}) =>
   Effect.gen(function* () {
     const { db } = yield* DbService;
-    const basePlugins = [
-      openApiPlugin(),
-      mcpPlugin({ dangerouslyAllowStdioMCP: false }),
-      graphqlPlugin(),
-      workosVaultPlugin({ client: makeFakeVaultClient() }),
-    ] as const;
+    const basePlugins = executorConfig.plugins({
+      workosVaultClient: makeTestWorkOSVaultClient(),
+    });
     const plugins = options.withElicitingPlugin
       ? ([...basePlugins, elicitingTestPlugin()] as const)
       : basePlugins;
-    const schema = collectSchemas(plugins);
-    const adapter = makePostgresAdapter({ db, schema });
-    const blobs = makePostgresBlobStore({ db });
-    const scope = new Scope({
+    const fuma = createDrizzleFumaDb({
+      db,
+      tables: collectTables(plugins),
+      namespace: "executor_cloud",
+      provider: "postgresql",
+    });
+    const scope = Scope.make({
       id: ScopeId.make(scopeId),
       name: scopeName,
       createdAt: new Date(),
     });
-    return yield* createExecutor({ scopes: [scope], adapter, blobs, plugins });
+    return yield* createExecutor({
+      scopes: [scope],
+      db: fuma.db,
+      plugins,
+      httpClientLayer: FetchHttpClient.layer,
+      onElicitation: "accept-all",
+    });
   });
 
 // Builds a scope, wires a real execution engine + MCP server, and yields
@@ -136,7 +137,10 @@ const openSession = (
     Effect.gen(function* () {
       const executor = yield* buildScopedExecutor(orgId, `Org ${orgId}`, options);
       const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
-      const mcpServer = yield* createExecutorMcpServer({ engine });
+      const mcpServer = yield* createExecutorMcpServer({
+        engine,
+        elicitationMode: options.elicitationMode ? { mode: options.elicitationMode } : undefined,
+      });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
       const client = new Client(
         { name: "cloud-e2e-test", version: "1.0.0" },
@@ -147,10 +151,19 @@ const openSession = (
       return { client, clientTransport, serverTransport };
     }),
     ({ clientTransport, serverTransport }) =>
-      Effect.promise(async () => {
-        await clientTransport.close().catch(() => undefined);
-        await serverTransport.close().catch(() => undefined);
-      }),
+      Effect.all(
+        [
+          Effect.tryPromise({
+            try: () => clientTransport.close(),
+            catch: (cause) => cause,
+          }).pipe(Effect.ignore),
+          Effect.tryPromise({
+            try: () => serverTransport.close(),
+            catch: (cause) => cause,
+          }).pipe(Effect.ignore),
+        ],
+        { discard: true },
+      ),
   ).pipe(Effect.map(({ client }) => ({ client })));
 
 const nextOrgId = (() => {
@@ -198,7 +211,10 @@ describe("cloud MCP session end-to-end", () => {
 
   it.effect("bridges a form elicitation from engine to client and back", () =>
     Effect.gen(function* () {
-      const { client } = yield* openSession(nextOrgId(), { withElicitingPlugin: true });
+      const { client } = yield* openSession(nextOrgId(), {
+        withElicitingPlugin: true,
+        elicitationMode: "native",
+      });
 
       client.setRequestHandler(ElicitRequestSchema, async () => ({
         action: "accept" as const,

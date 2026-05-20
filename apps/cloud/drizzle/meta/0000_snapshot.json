@@ -60,12 +60,8 @@
           "name": "memberships_account_id_accounts_id_fk",
           "tableFrom": "memberships",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -73,12 +69,8 @@
           "name": "memberships_organization_id_organizations_id_fk",
           "tableFrom": "memberships",
           "tableTo": "organizations",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["organization_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -86,10 +78,7 @@
       "compositePrimaryKeys": {
         "memberships_account_id_organization_id_pk": {
           "name": "memberships_account_id_organization_id_pk",
-          "columns": [
-            "account_id",
-            "organization_id"
-          ]
+          "columns": ["account_id", "organization_id"]
         }
       },
       "uniqueConstraints": {},
@@ -157,10 +146,7 @@
       "compositePrimaryKeys": {
         "blob_namespace_key_pk": {
           "name": "blob_namespace_key_pk",
-          "columns": [
-            "namespace",
-            "key"
-          ]
+          "columns": ["namespace", "key"]
         }
       },
       "uniqueConstraints": {},
@@ -266,10 +252,7 @@
       "compositePrimaryKeys": {
         "definition_scope_id_id_pk": {
           "name": "definition_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -342,10 +325,7 @@
       "compositePrimaryKeys": {
         "graphql_operation_scope_id_id_pk": {
           "name": "graphql_operation_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -409,10 +389,7 @@
       "compositePrimaryKeys": {
         "graphql_source_scope_id_id_pk": {
           "name": "graphql_source_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -491,10 +468,7 @@
       "compositePrimaryKeys": {
         "mcp_binding_scope_id_id_pk": {
           "name": "mcp_binding_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -558,10 +532,7 @@
       "compositePrimaryKeys": {
         "mcp_oauth_session_scope_id_id_pk": {
           "name": "mcp_oauth_session_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -625,10 +596,7 @@
       "compositePrimaryKeys": {
         "mcp_source_scope_id_id_pk": {
           "name": "mcp_source_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -686,10 +654,7 @@
       "compositePrimaryKeys": {
         "openapi_oauth_session_scope_id_id_pk": {
           "name": "openapi_oauth_session_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -762,10 +727,7 @@
       "compositePrimaryKeys": {
         "openapi_operation_scope_id_id_pk": {
           "name": "openapi_operation_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -847,10 +809,7 @@
       "compositePrimaryKeys": {
         "openapi_source_scope_id_id_pk": {
           "name": "openapi_source_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -929,10 +888,7 @@
       "compositePrimaryKeys": {
         "secret_scope_id_id_pk": {
           "name": "secret_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -1050,10 +1006,7 @@
       "compositePrimaryKeys": {
         "source_scope_id_id_pk": {
           "name": "source_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -1177,10 +1130,7 @@
       "compositePrimaryKeys": {
         "tool_scope_id_id_pk": {
           "name": "tool_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},
@@ -1244,10 +1194,7 @@
       "compositePrimaryKeys": {
         "workos_vault_metadata_scope_id_id_pk": {
           "name": "workos_vault_metadata_scope_id_id_pk",
-          "columns": [
-            "scope_id",
-            "id"
-          ]
+          "columns": ["scope_id", "id"]
         }
       },
       "uniqueConstraints": {},

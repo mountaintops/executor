@@ -1,10 +1,11 @@
 {
-  "name": "@executor/api",
-  "version": "1.4.3",
+  "name": "@executor-js/api",
+  "version": "1.4.19",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./client": "./src/client.ts",
     "./server": "./src/server.ts"
   },
   "scripts": {
@@ -13,10 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@effect/platform": "catalog:",
-    "@executor/execution": "workspace:*",
-    "@executor/sdk": "workspace:*",
-    "@executor/storage-core": "workspace:*",
+    "@executor-js/execution": "workspace:*",
+    "@executor-js/sdk": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

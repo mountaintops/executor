@@ -48,7 +48,7 @@ Open `http://127.0.0.1:4788`, go to **Add Source**, paste a URL, and Executor wi
 ### Via the CLI
 
 ```bash
-executor call openapi addSource '{
+executor call executor openapi addSource '{
   "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
   "namespace": "petstore",
   "baseUrl": "https://petstore3.swagger.io/api/v3"
@@ -103,7 +103,7 @@ executor resume --execution-id exec_123
 
 ```bash
 executor web                        # start runtime + web UI
-executor daemon run                 # run persistent local daemon
+executor daemon run                 # start persistent local daemon in background
 executor daemon status              # show daemon status
 executor daemon stop                # stop daemon
 executor daemon restart             # restart daemon
@@ -137,3 +137,18 @@ Visit [executor.sh](https://executor.sh) to learn more.
 ## Attribution
 
 - Thank you to [Crystian](https://www.linkedin.com/in/crystian/) for providing the npm package name `executor`.
+
+## References
+
+As part of my coding process, I give my agent access to references to other codebases to understand patterns and how other people have implemented systems.
+
+A non exhaustive list of references are:
+
+- [Better Auth](https://github.com/better-auth/better-auth) - Storage adapter reference
+- [Effect](https://github.com/Effect-TS/effect) - General code patterns
+- [OpenCode](https://github.com/anomalyco/opencode) - Plugin system reference
+- [OpenClaw](https://github.com/openclaw/openclaw) - Plugin system reference
+- [Emdash](https://github.com/emdash-cms/emdash) - Plugin system reference
+- [Pi](https://github.com/badlogic/pi-mono) - Plugin system reference
+
+It's encouraged also that you can use this codebase as a reference to understand how it's implemented

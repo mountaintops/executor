@@ -26,8 +26,6 @@ export const createStdioTransport = (config: StdioTransportConfig) =>
   new StdioClientTransport({
     command: config.command,
     args: config.args ? [...config.args] : undefined,
-    env: config.env
-      ? ({ ...process.env, ...config.env } as Record<string, string>)
-      : undefined,
+    env: config.env ? ({ ...process.env, ...config.env } as Record<string, string>) : undefined,
     cwd: config.cwd,
   });

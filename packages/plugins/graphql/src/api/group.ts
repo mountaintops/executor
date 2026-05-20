@@ -1,18 +1,28 @@
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "@effect/platform";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
-import { ScopeId } from "@executor/sdk";
-import { InternalError } from "@executor/api";
+import { InternalError, ScopeId } from "@executor-js/sdk/shared";
 
 import { GraphqlIntrospectionError, GraphqlExtractionError } from "../sdk/errors";
-import { AnnotationPolicy, HeaderValue } from "../sdk/types";
+import {
+  AnnotationPolicy,
+  GraphqlConfiguredValueInput,
+  ConfiguredGraphqlCredentialValue,
+  GraphqlCredentialInput,
+  GraphqlSourceAuth,
+  GraphqlSourceAuthInput,
+} from "../sdk/types";
+import { OAuth2SourceConfig } from "@executor-js/sdk/http-source";
 
 // StoredGraphqlSource shape as an HTTP response schema. Kept local to the
 // api layer because the sdk-side `StoredGraphqlSource` is a plain interface.
-const StoredSourceSchema = Schema.Struct({
+export const StoredSourceSchema = Schema.Struct({
   namespace: Schema.String,
+  scope: ScopeId,
   name: Schema.String,
   endpoint: Schema.String,
-  headers: Schema.Record({ key: Schema.String, value: HeaderValue }),
+  headers: Schema.Record(Schema.String, ConfiguredGraphqlCredentialValue),
+  queryParams: Schema.Record(Schema.String, ConfiguredGraphqlCredentialValue),
+  auth: GraphqlSourceAuth,
   annotationPolicy: Schema.optional(AnnotationPolicy),
 });
 
@@ -20,8 +30,14 @@ const StoredSourceSchema = Schema.Struct({
 // Params
 // ---------------------------------------------------------------------------
 
-const scopeIdParam = HttpApiSchema.param("scopeId", ScopeId);
-const namespaceParam = HttpApiSchema.param("namespace", Schema.String);
+const ScopeParams = {
+  scopeId: ScopeId,
+};
+
+const SourceParams = {
+  scopeId: ScopeId,
+  namespace: Schema.String,
+};
 
 // ---------------------------------------------------------------------------
 // Payloads
@@ -29,23 +45,21 @@ const namespaceParam = HttpApiSchema.param("namespace", Schema.String);
 
 const AddSourcePayload = Schema.Struct({
   endpoint: Schema.String,
-  name: Schema.optional(Schema.String),
+  name: Schema.String,
   introspectionJson: Schema.optional(Schema.String),
-  namespace: Schema.optional(Schema.String),
-  headers: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  namespace: Schema.String,
+  headers: Schema.optional(Schema.Record(Schema.String, GraphqlConfiguredValueInput)),
+  queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlConfiguredValueInput)),
+  oauth2: Schema.optional(OAuth2SourceConfig),
   annotationPolicy: Schema.optional(AnnotationPolicy),
-});
-
-const UpdateSourcePayload = Schema.Struct({
-  name: Schema.optional(Schema.String),
-  endpoint: Schema.optional(Schema.String),
-  headers: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
-  // `null` clears a previously-set override; `undefined` leaves as-is.
-  annotationPolicy: Schema.optional(Schema.NullOr(AnnotationPolicy)),
-});
-
-const UpdateSourceResponse = Schema.Struct({
-  updated: Schema.Boolean,
+  credentials: Schema.optional(
+    Schema.Struct({
+      scope: ScopeId,
+      headers: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+      queryParams: Schema.optional(Schema.Record(Schema.String, GraphqlCredentialInput)),
+      auth: Schema.optional(GraphqlSourceAuthInput),
+    }),
+  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -61,12 +75,8 @@ const AddSourceResponse = Schema.Struct({
 // Errors with HTTP status
 // ---------------------------------------------------------------------------
 
-const IntrospectionError = GraphqlIntrospectionError.annotations(
-  HttpApiSchema.annotations({ status: 400 }),
-);
-const ExtractionError = GraphqlExtractionError.annotations(
-  HttpApiSchema.annotations({ status: 400 }),
-);
+const IntrospectionError = GraphqlIntrospectionError.annotate({ httpApiStatus: 400 });
+const ExtractionError = GraphqlExtractionError.annotate({ httpApiStatus: 400 });
 
 // ---------------------------------------------------------------------------
 // Group
@@ -83,25 +93,23 @@ const ExtractionError = GraphqlExtractionError.annotations(
 // per-plugin InternalError.
 // ---------------------------------------------------------------------------
 
-export class GraphqlGroup extends HttpApiGroup.make("graphql")
+const GraphqlErrors = [InternalError, IntrospectionError, ExtractionError] as const;
+
+export const GraphqlGroup = HttpApiGroup.make("graphql")
   .add(
-    HttpApiEndpoint.post("addSource")`/scopes/${scopeIdParam}/graphql/sources`
-      .setPayload(AddSourcePayload)
-      .addSuccess(AddSourceResponse),
+    HttpApiEndpoint.post("addSource", "/scopes/:scopeId/graphql/sources", {
+      params: ScopeParams,
+      payload: AddSourcePayload,
+      success: AddSourceResponse,
+      error: GraphqlErrors,
+    }),
   )
   .add(
-    HttpApiEndpoint.get("getSource")`/scopes/${scopeIdParam}/graphql/sources/${namespaceParam}`
-      .addSuccess(Schema.NullOr(StoredSourceSchema)),
-  )
-  .add(
-    HttpApiEndpoint.patch("updateSource")`/scopes/${scopeIdParam}/graphql/sources/${namespaceParam}`
-      .setPayload(UpdateSourcePayload)
-      .addSuccess(UpdateSourceResponse),
-  )
-  // Errors declared once at the group level — every endpoint inherits.
-  // Plugin domain errors carry their own HttpApiSchema status (4xx);
-  // `InternalError` is the shared opaque 500 translated at the HTTP
-  // edge by `withCapture`.
-  .addError(InternalError)
-  .addError(IntrospectionError)
-  .addError(ExtractionError) {}
+    HttpApiEndpoint.get("getSource", "/scopes/:scopeId/graphql/sources/:namespace", {
+      params: SourceParams,
+      success: Schema.NullOr(StoredSourceSchema),
+      error: GraphqlErrors,
+    }),
+  );
+// Plugin domain errors carry their own HTTP status (4xx);
+// `InternalError` is the shared opaque 500 translated at the HTTP edge.

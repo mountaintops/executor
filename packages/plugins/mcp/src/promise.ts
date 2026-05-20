@@ -6,9 +6,5 @@ export type {
   McpRemoteSourceConfig,
   McpStdioSourceConfig,
   McpProbeResult,
-  McpUpdateSourceInput,
-  McpOAuthStartInput,
-  McpOAuthStartResponse,
-  McpOAuthCompleteInput,
-  McpOAuthCompleteResponse,
+  McpConfigureSourceInput,
 } from "./sdk/plugin";

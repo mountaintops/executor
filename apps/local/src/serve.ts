@@ -1,28 +1,28 @@
 /**
- * Production server for @executor/local.
+ * Production server for @executor-js/local.
  *
  * Serves the Vite-built SPA + Effect API + MCP server.
  *
  * Run directly:   bun run apps/local/src/serve.ts
- * Or import:      import { startServer } from "@executor/local/serve"
+ * Or import:      import { startServer } from "@executor-js/local/serve"
  */
 
 import { resolve, join } from "node:path";
 import { readdirSync } from "node:fs";
+import type { Subprocess } from "bun";
+import { setOAuthCompletionListener } from "@executor-js/api";
+import { consumeOAuthResult, publishOAuthResult } from "./oauth-result-store";
+import { startIntegrationsRefresh } from "./server/integrations";
 import { getServerHandlers } from "./server/main";
-
-// ---------------------------------------------------------------------------
-// Host allowlist
-// ---------------------------------------------------------------------------
-
-const DEFAULT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"];
-
-const makeIsAllowedHost = (allowed: ReadonlySet<string>) => (request: Request): boolean => {
-  const host = request.headers.get("host");
-  if (!host) return true;
-  const hostname = host.replace(/:\d+$/, "");
-  return allowed.has(hostname);
-};
+import {
+  DEFAULT_ALLOWED_HOSTS,
+  hasFileExtension,
+  isLoopbackBindHost,
+  isUnauthenticatedOAuthCallbackPath,
+  makeIsAllowedHost,
+  makeIsAuthorized,
+  normalizeCredential,
+} from "./serve-shared";
 
 // ---------------------------------------------------------------------------
 // Static files
@@ -30,13 +30,9 @@ const makeIsAllowedHost = (allowed: ReadonlySet<string>) => (request: Request): 
 
 type StaticHandler = () => Response | Promise<Response>;
 
-const hasFileExtension = (pathname: string): boolean => {
-  const lastSegment = pathname.split("/").at(-1) ?? "";
-  return lastSegment.includes(".");
-};
-
 function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHandler> {
   const routes: Record<string, StaticHandler> = {};
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: filesystem route discovery is best-effort for optional built assets
   try {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const fullPath = join(dir, entry.name);
@@ -72,6 +68,110 @@ function embeddedToStaticRoutes(embedded: Record<string, string>): Record<string
 }
 
 // ---------------------------------------------------------------------------
+// Dev mode: spawn vite as a child and proxy non-API requests to it
+//
+// Enabled when EXECUTOR_DEV=1. Lets `dev:cli` serve a fresh UI without
+// requiring a manual `bun run build` after every change. The daemon still
+// owns /api and /mcp — only SPA/asset requests get proxied.
+// ---------------------------------------------------------------------------
+
+interface ViteChild {
+  readonly url: string;
+  readonly stop: () => Promise<void>;
+}
+
+async function allocatePort(): Promise<number> {
+  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const port = probe.port ?? 0;
+  probe.stop(true);
+  return port;
+}
+
+async function startViteChild(): Promise<ViteChild> {
+  const vitePort = await allocatePort();
+  const cwd = resolve(import.meta.dirname, "..");
+  const env = { ...process.env };
+  delete env.PORT;
+  // `bunx --bun vite` runs vite under Bun, matching the `dev:vite` script
+  // already in apps/local. --strictPort keeps the URL we hand back stable.
+  const child: Subprocess = Bun.spawn(
+    [
+      "bunx",
+      "--bun",
+      "vite",
+      "dev",
+      "--port",
+      String(vitePort),
+      "--strictPort",
+      "--host",
+      "127.0.0.1",
+    ],
+    {
+      cwd,
+      // EXECUTOR_DEV_VITE_PORT — vite.config reads this and points the
+      // HMR client at vite's real port. The browser loads HTML through
+      // the daemon proxy but opens the HMR WebSocket directly to vite,
+      // sidestepping the daemon's lack of WS proxying.
+      env: {
+        ...env,
+        EXECUTOR_DEV_VITE_PORT: String(vitePort),
+      },
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
+
+  const url = `http://127.0.0.1:${vitePort}`;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: probing a child process that may not be listening yet
+    try {
+      const r = await fetch(`${url}/`, { redirect: "manual" });
+      if (r.status < 500) {
+        await r.body?.cancel();
+        return {
+          url,
+          stop: async () => {
+            child.kill();
+            await child.exited;
+          },
+        };
+      }
+      await r.body?.cancel();
+    } catch {
+      // not up yet
+    }
+    if (child.exitCode !== null) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: child process aborted before becoming ready
+      throw new Error(`vite dev exited with code ${child.exitCode} before becoming ready`);
+    }
+    await Bun.sleep(150);
+  }
+  child.kill();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: vite never became reachable
+  throw new Error(`vite dev did not become reachable on ${url} within 30s`);
+}
+
+async function proxyToVite(req: Request, viteUrl: string): Promise<Response> {
+  const target = new URL(req.url);
+  target.protocol = "http:";
+  target.host = new URL(viteUrl).host;
+  // Strip hop-by-hop headers that confuse the upstream
+  const headers = new Headers(req.headers);
+  headers.delete("host");
+  headers.set("host", target.host);
+  const hasBody = req.method !== "GET" && req.method !== "HEAD";
+  return fetch(target, {
+    method: req.method,
+    headers,
+    body: hasBody ? req.body : undefined,
+    redirect: "manual",
+    // @ts-expect-error — Bun/undici extension required for streamed bodies
+    duplex: hasBody ? "half" : undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
@@ -85,6 +185,12 @@ export interface StartServerOptions {
   hostname?: string;
   /** Extra hostnames permitted in the Host header, on top of localhost/127.0.0.1. */
   allowedHosts?: ReadonlyArray<string>;
+  /** Bearer token required for requests. Required for non-loopback bind addresses. */
+  authToken?: string;
+  /** Basic auth password required for requests. Required for non-loopback bind addresses. */
+  authPassword?: string;
+  /** Test hook for supplying API/MCP handlers without loading the local server graph. */
+  handlers?: ServerHandlers;
 }
 
 export interface ServerInstance {
@@ -92,20 +198,55 @@ export interface ServerInstance {
   stop: () => Promise<void>;
 }
 
+type ServerHandlers = Awaited<ReturnType<typeof getServerHandlers>>;
+
 export async function startServer(opts: StartServerOptions = {}): Promise<ServerInstance> {
   const port = opts.port ?? parseInt(process.env.PORT ?? "4788", 10);
   const hostname = opts.hostname ?? "127.0.0.1";
+  const auth = {
+    token: normalizeCredential(opts.authToken),
+    password: normalizeCredential(opts.authPassword),
+  };
+  const isNetworkBind = !isLoopbackBindHost(hostname);
+  const requiresAuth = auth.token !== null || auth.password !== null;
+  if (isNetworkBind && !requiresAuth) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: startServer is a Promise API and rejects invalid bind options
+    throw new Error("Refusing to listen on a non-loopback host without an auth token or password.");
+  }
+  const isAuthorized = makeIsAuthorized(auth);
   const allowedHostSet = new Set<string>([...DEFAULT_ALLOWED_HOSTS, ...(opts.allowedHosts ?? [])]);
   const isAllowedHost = makeIsAllowedHost(allowedHostSet);
   const clientDir = opts.clientDir ?? resolve(import.meta.dirname, "../dist");
 
-  const handlers = await getServerHandlers();
+  startIntegrationsRefresh();
 
-  // Build static routes from either embedded assets or disk
-  let staticRoutes: Record<string, StaticHandler>;
+  const handlers = opts.handlers ?? (await getServerHandlers());
+
+  // Mirror every OAuth callback completion into the local in-memory result
+  // store. The Electron desktop renderer polls /api/oauth/await/:sessionId
+  // for these when the user runs the flow in their system browser (no
+  // shared origin → no postMessage). Cloud doesn't register a listener;
+  // its same-origin web SPA receives results via postMessage directly.
+  setOAuthCompletionListener((result) => publishOAuthResult(result));
+
+  // Build static routes from either embedded assets, disk, or a spawned
+  // vite dev child (EXECUTOR_DEV=1). Vite mode takes precedence and
+  // disables the file-extension 404 short-circuit since vite serves
+  // hashed asset paths directly.
+  let staticRoutes: Record<string, StaticHandler> = {};
   let serveIndex: StaticHandler;
+  let viteChild: ViteChild | null = null;
 
-  if (opts.embeddedWebUI) {
+  const devMode = process.env.EXECUTOR_DEV === "1" && !opts.embeddedWebUI;
+  if (devMode) {
+    console.log("[executor] EXECUTOR_DEV=1 — spawning vite dev child for live UI");
+    viteChild = await startViteChild();
+    console.log(`[executor] proxying SPA requests to ${viteChild.url}`);
+    serveIndex = () =>
+      // Unused when viteChild is non-null; defined so the type checker
+      // can keep `serveIndex` non-nullable.
+      new Response("vite not ready", { status: 503 });
+  } else if (opts.embeddedWebUI) {
     staticRoutes = embeddedToStaticRoutes(opts.embeddedWebUI);
     const indexFile = Bun.file(opts.embeddedWebUI["index.html"] ?? join(clientDir, "index.html"));
     serveIndex = () => new Response(indexFile, { headers: { "content-type": "text/html" } });
@@ -129,13 +270,46 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
 
       const url = new URL(req.url);
 
+      // OAuth provider callbacks are hit by the user's external browser
+      // and can't carry our Basic auth header. The OAuth `state`
+      // parameter is the security gate — see isUnauthenticatedOAuthCallbackPath.
+      const skipAuth = isUnauthenticatedOAuthCallbackPath(url.pathname);
+
+      if (requiresAuth && !skipAuth && !isAuthorized(req)) {
+        return new Response("Unauthorized", {
+          status: 401,
+          headers: { "www-authenticate": 'Bearer realm="executor", Basic realm="executor"' },
+        });
+      }
+
       if (url.pathname.startsWith("/mcp")) {
         return handlers.mcp.handleRequest(req);
+      }
+
+      if (url.pathname.startsWith("/api/mcp-sessions/")) {
+        return handlers.mcp.handleApprovalRequest(req);
+      }
+
+      // OAuth result polling — local-only, served outside the typed API
+      // because cloud (Cloudflare Workers, stateless) can't back the
+      // in-memory store. See setOAuthCompletionListener above.
+      const awaitMatch = /^\/api\/oauth\/await\/([^/?#]+)$/.exec(url.pathname);
+      if (awaitMatch && req.method === "GET") {
+        const result = consumeOAuthResult(awaitMatch[1]);
+        return new Response(JSON.stringify(result), {
+          headers: { "content-type": "application/json" },
+        });
       }
 
       if (url.pathname.startsWith("/api/") || url.pathname === "/api") {
         url.pathname = url.pathname.slice("/api".length) || "/";
         return handlers.api.handler(new Request(url, req));
+      }
+
+      // Dev mode: forward everything else (SPA + hashed assets) to the
+      // vite child so source edits show up without a rebuild.
+      if (viteChild) {
+        return proxyToVite(req, viteChild.url);
       }
 
       // If a path looks like a static asset (has a file extension), do not
@@ -157,9 +331,11 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   return {
     port: server.port!,
     async stop() {
+      setOAuthCompletionListener(null);
       server.stop(true);
       await handlers.mcp.close();
       await handlers.api.dispose();
+      if (viteChild) await viteChild.stop();
     },
   };
 }

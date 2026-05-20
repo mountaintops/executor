@@ -13,43 +13,32 @@ import { Effect } from "effect";
 import {
   Scope,
   ScopeId,
-  collectSchemas,
+  collectTables,
   createExecutor,
-} from "@executor/sdk";
-import {
-  makePostgresAdapter,
-  makePostgresBlobStore,
-} from "@executor/storage-postgres";
-import { openApiPlugin } from "@executor/plugin-openapi";
-import { mcpPlugin } from "@executor/plugin-mcp";
-import { graphqlPlugin } from "@executor/plugin-graphql";
-import { workosVaultPlugin } from "@executor/plugin-workos-vault";
+  makeHostedHttpClientLayer,
+} from "@executor-js/sdk";
 
 import { env } from "cloudflare:workers";
+import executorConfig from "../../executor.config";
 import { DbService } from "./db";
+import { createDrizzleFumaDb } from "./fuma";
 
 // ---------------------------------------------------------------------------
-// Plugin list — one place, used for both the runtime and the CLI config
-// (executor.config.ts). No stdio MCP in cloud; no keychain/file-secrets/
-// 1password/google-discovery.
-//
-// NOTE: the CLI config (executor.config.ts) imports these same plugins with
-// stub credentials because it only reads `plugin.schema`. Here we pass
-// real credentials from the env.
+// Plugin list lives in `executor.config.ts` — that file is the single source
+// of truth for runtime, schema wiring, and the test harness. Per-request
+// runtime values (WorkOS credentials from the Worker env) are passed through
+// the factory's `deps` parameter.
 // ---------------------------------------------------------------------------
 
-const createOrgPlugins = () =>
-  [
-    openApiPlugin(),
-    mcpPlugin({ dangerouslyAllowStdioMCP: false }),
-    graphqlPlugin(),
-    workosVaultPlugin({
-      credentials: {
-        apiKey: env.WORKOS_API_KEY,
-        clientId: env.WORKOS_CLIENT_ID,
-      },
-    }),
-  ] as const;
+export type CloudPlugins = ReturnType<typeof executorConfig.plugins>;
+
+const orgPlugins = (): CloudPlugins =>
+  executorConfig.plugins({
+    workosCredentials: {
+      apiKey: env.WORKOS_API_KEY,
+      clientId: env.WORKOS_CLIENT_ID,
+    },
+  });
 
 // ---------------------------------------------------------------------------
 // Create a fresh executor for a (user, org) pair (stateless, per-request).
@@ -60,10 +49,10 @@ const createOrgPlugins = () =>
 // distinct scope row; future workspace scopes can slot in between without
 // conflicting with a hypothetical global user scope.
 //
-// OAuth tokens land at `ctx.scopes[0]` (the user-org scope) by default, so
-// a member's access/refresh tokens can't leak to other members via
-// `secrets.list`, while source rows and org-wide credentials live on the
-// outer scope.
+// OAuth token writes require an explicit `tokenScope`. User sign-in UI passes
+// the user-org scope so a member's access/refresh tokens cannot leak to other
+// members via `secrets.list`, while source rows and org-wide credentials live
+// on the outer scope.
 // ---------------------------------------------------------------------------
 
 export const createScopedExecutor = (
@@ -74,17 +63,23 @@ export const createScopedExecutor = (
   Effect.gen(function* () {
     const { db } = yield* DbService;
 
-    const plugins = createOrgPlugins();
-    const schema = collectSchemas(plugins);
-    const adapter = makePostgresAdapter({ db, schema });
-    const blobs = makePostgresBlobStore({ db });
+    const plugins = orgPlugins();
+    const httpClientLayer = makeHostedHttpClientLayer({
+      allowLocalNetwork: env.NODE_ENV === "test",
+    });
+    const fuma = createDrizzleFumaDb({
+      db,
+      tables: collectTables(plugins),
+      namespace: "executor_cloud",
+      provider: "postgresql",
+    });
 
-    const orgScope = new Scope({
+    const orgScope = Scope.make({
       id: ScopeId.make(organizationId),
       name: organizationName,
       createdAt: new Date(),
     });
-    const userOrgScope = new Scope({
+    const userOrgScope = Scope.make({
       id: ScopeId.make(`user-org:${userId}:${organizationId}`),
       name: `Personal · ${organizationName}`,
       createdAt: new Date(),
@@ -96,8 +91,12 @@ export const createScopedExecutor = (
     // where `ErrorCaptureLive` (Sentry) gets wired in.
     return yield* createExecutor({
       scopes: [userOrgScope, orgScope],
-      adapter,
-      blobs,
+      db: fuma.db,
       plugins,
+      httpClientLayer,
+      onElicitation: "accept-all",
+      coreTools: {
+        webBaseUrl: env.VITE_PUBLIC_SITE_URL ?? "https://executor.sh",
+      },
     });
   });
