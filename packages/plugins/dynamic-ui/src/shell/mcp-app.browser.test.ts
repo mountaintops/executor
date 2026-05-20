@@ -172,7 +172,9 @@ const blockedMessages = primitiveNames.map((name) => {
 });
 
 function App() {
-  const { data, error, isLoading } = useQuery(() => tools.inventory.items.listItems({}));
+  const { data, error, isLoading } = useQuery(
+    tools.inventory.items.listItems.queryOptions({})
+  );
   const items = data?.ok ? data.data : data;
   return (
     <Card>
@@ -200,13 +202,15 @@ function App() {
 const generatedApprovalCode = `
 function App() {
   const [status, setStatus] = useState("idle");
-  const createItem = useMutation((input) => tools.inventory.items.createItem(input), {
-    onSuccess: (result) => {
-      const created = result?.ok ? result.data : result;
-      setStatus(created.name + ":" + created.created);
-    },
-    onError: (error) => setStatus(error.message),
-  });
+  const createItem = useMutation(
+    tools.inventory.items.createItem.mutationOptions({
+      onSuccess: (result) => {
+        const created = result?.ok ? result.data : result;
+        setStatus(created.name + ":" + created.created);
+      },
+      onError: (error) => setStatus(error.message),
+    })
+  );
   const ask = async () => {
     setStatus("pending");
     await createItem.mutateAsync({ body: { name: "Approved Widget" } });
@@ -227,13 +231,15 @@ function App() {
 const generatedAutoMutationCode = `
 function App() {
   const [status, setStatus] = useState("idle");
-  const createItem = useMutation((input) => tools.inventory.items.createItem(input), {
-    onSuccess: (result) => {
-      const created = result?.ok ? result.data : result;
-      setStatus(created.name + ":" + created.created);
-    },
-    onError: (error) => setStatus(error.message),
-  });
+  const createItem = useMutation(
+    tools.inventory.items.createItem.mutationOptions({
+      onSuccess: (result) => {
+        const created = result?.ok ? result.data : result;
+        setStatus(created.name + ":" + created.created);
+      },
+      onError: (error) => setStatus(error.message),
+    })
+  );
 
   useEffect(() => {
     createItem.mutate({ body: { name: "Mount Widget" } });
@@ -293,12 +299,14 @@ function App() {
 const generatedSchemaApprovalCode = `
 function App() {
   const [status, setStatus] = useState("idle");
-  const requestDetails = useMutation((input) => tools.profile.submit(input), {
-    onSuccess: (result) => {
-      setStatus(JSON.stringify(result));
-    },
-    onError: (error) => setStatus(error.message),
-  });
+  const requestDetails = useMutation(
+    tools.profile.submit.mutationOptions({
+      onSuccess: (result) => {
+        setStatus(JSON.stringify(result));
+      },
+      onError: (error) => setStatus(error.message),
+    })
+  );
 
   return (
     <Card>
