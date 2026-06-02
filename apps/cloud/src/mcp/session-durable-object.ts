@@ -50,7 +50,7 @@ import {
   type DbServiceShape,
 } from "../db/db";
 import { CloudExecutionStackLayer, makeExecutionStack } from "../engine/execution-stack";
-import { DoTelemetryLive } from "../observability/telemetry";
+import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import { captureCause as reportCause } from "../observability";
 
 // Re-export the shared types so existing cloud importers
@@ -196,6 +196,9 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
       );
       // Build the description here so the postgres query it runs
       // (`executor.sources.list`) lands as a child of `McpSessionDO.createRuntime`.
+      // It also tags the span with this org's source/connector inventory (ids,
+      // kinds, plugin ids, connection counts) — see `buildExecuteDescription` —
+      // so a failing init names *what* it was resolving without re-listing.
       // host-mcp would otherwise call `Effect.runPromise(engine.getDescription)`
       // at its async MCP-SDK boundary and orphan the sub-span.
       const description = yield* buildExecuteDescription(executor);
@@ -239,5 +242,14 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
 
   protected override captureCause(cause: Cause.Cause<unknown>): void {
     reportCause(cause);
+  }
+
+  // Force-export the DO isolate's buffered spans before the RPC settles, so a
+  // dying init/handleRequest still ships its own spans (and the exception +
+  // stack recorded on them) — not just the worker-side `mcp.do.*` span. The
+  // base wraps each entrypoint's outermost effect in an `ensuring` that awaits
+  // this after the span has ended and the SimpleSpanProcessor fired its export.
+  protected override flushTelemetry(): Promise<void> {
+    return flushTracerProvider();
   }
 }
