@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import type { ReactNode } from "react";
 
-import { ScopeId } from "@executor-js/sdk/shared";
+import { Owner } from "@executor-js/sdk/shared";
 
-import { useScope, useUserScope } from "../api/scope-context";
+import { useOrganizationId } from "../api/organization-context";
 import {
   CardStack,
   CardStackContent,
@@ -23,98 +23,105 @@ import {
   SelectValue,
 } from "../components/select";
 
+// ---------------------------------------------------------------------------
+// Owner selector (v2) — the successor to v1's credential-target-scope.
+//
+// v1 chose a scope id from the stack; v2 chooses an `Owner` (Personal vs
+// Workspace). A connection is owner-scoped, so creating one here means picking
+// who owns it. The legacy names (`CredentialTargetScope*`) are kept so the
+// plugin `/react` dirs keep importing them, but every value is now an `Owner`.
+// ---------------------------------------------------------------------------
+
 export interface CredentialTargetScopeOption {
-  readonly scopeId: ScopeId;
+  readonly owner: Owner;
   readonly label: string;
   readonly description: string;
 }
 
-export const credentialTargetScopeOptions = (input: {
-  readonly sourceScope: ScopeId;
-  readonly userScope: ScopeId;
-  readonly sourceScopeLabel?: string;
-}): readonly CredentialTargetScopeOption[] => {
-  if (input.sourceScope === input.userScope) {
-    return [
-      {
-        scopeId: input.userScope,
-        label: "Personal",
-        description: "Saved only for your account.",
-      },
-    ];
-  }
+export const DEFAULT_CREDENTIAL_OWNER: Owner = "user";
+export const LOCAL_CREDENTIAL_OWNER: Owner = "org";
 
-  return [
-    {
-      scopeId: input.userScope,
-      label: "Personal",
-      description: "Saved only for your account.",
-    },
-    {
-      scopeId: input.sourceScope,
-      label: input.sourceScopeLabel ?? "Organization",
-      description: "Shared with everyone who can use this source.",
-    },
-  ];
-};
+/** The two owner choices a credential can be saved under. */
+export const credentialTargetScopeOptions = (): readonly CredentialTargetScopeOption[] => [
+  {
+    owner: "user",
+    label: "Personal",
+    description: "Saved only for your account.",
+  },
+  {
+    owner: "org",
+    label: "Workspace",
+    description: "Shared with everyone in this workspace.",
+  },
+];
+
+export const localCredentialTargetScopeOptions = (): readonly CredentialTargetScopeOption[] => [
+  {
+    owner: LOCAL_CREDENTIAL_OWNER,
+    label: "Local",
+    description: "Saved on this device for this project.",
+  },
+];
+
+export const credentialTargetScopeOptionsForHost = (
+  organizationId: string | null,
+): readonly CredentialTargetScopeOption[] =>
+  organizationId === null ? localCredentialTargetScopeOptions() : credentialTargetScopeOptions();
+
+export const defaultCredentialTargetOwnerForHost = (organizationId: string | null): Owner =>
+  organizationId === null ? LOCAL_CREDENTIAL_OWNER : DEFAULT_CREDENTIAL_OWNER;
 
 export const normalizeCredentialTargetScope = (
-  value: ScopeId,
+  value: Owner,
   options: readonly CredentialTargetScopeOption[],
-): ScopeId => options.find((option) => option.scopeId === value)?.scopeId ?? options[0]!.scopeId;
+): Owner => options.find((option) => option.owner === value)?.owner ?? options[0]!.owner;
 
-export function useCredentialTargetScope(input?: {
-  readonly sourceScope?: ScopeId;
-  readonly sourceScopeLabel?: string;
-  readonly initialTargetScope?: ScopeId;
-}): {
-  readonly credentialTargetScope: ScopeId;
-  readonly setCredentialTargetScope: (scope: ScopeId) => void;
+/**
+ * Owns the Personal/Workspace selection for a credential-create flow. The global
+ * owner toggle is retired, so this is an explicit, required create-time choice
+ * that defaults to `"user"` (Personal) in org-scoped hosts; pass
+ * `initialOwner` to override.
+ *
+ * Non-org-scoped hosts (local/desktop) have one local workspace. Existing local
+ * v1 data migrates there as `owner: "org"`, so we offer only a Local/org
+ * option; every picker below hides on a single option, so the owner choice
+ * disappears entirely on local.
+ */
+export function useCredentialTargetScope(input?: { readonly initialOwner?: Owner }): {
+  readonly credentialTargetOwner: Owner;
+  readonly setCredentialTargetOwner: (owner: Owner) => void;
   readonly credentialScopeOptions: readonly CredentialTargetScopeOption[];
 } {
-  const routeScope = useScope();
-  const sourceScope = input?.sourceScope ?? routeScope;
-  const userScope = useUserScope();
-  const credentialScopeOptions = useMemo(
-    () =>
-      credentialTargetScopeOptions({
-        sourceScope,
-        userScope,
-        sourceScopeLabel: input?.sourceScopeLabel,
-      }),
-    [sourceScope, userScope, input?.sourceScopeLabel],
-  );
-  const initialTargetScope = input?.initialTargetScope ?? credentialScopeOptions[0]!.scopeId;
-  const [credentialTargetScope, setCredentialTargetScope] = useState<ScopeId>(
-    normalizeCredentialTargetScope(initialTargetScope, credentialScopeOptions),
+  const organizationId = useOrganizationId();
+  const credentialScopeOptions = credentialTargetScopeOptionsForHost(organizationId);
+  const [credentialTargetOwner, setCredentialTargetOwner] = useState<Owner>(
+    input?.initialOwner ?? defaultCredentialTargetOwnerForHost(organizationId),
   );
 
-  useEffect(() => {
-    setCredentialTargetScope((current) =>
-      normalizeCredentialTargetScope(
-        current === routeScope && input?.sourceScope !== undefined ? initialTargetScope : current,
-        credentialScopeOptions,
-      ),
-    );
-  }, [credentialScopeOptions, initialTargetScope, input?.sourceScope, routeScope]);
+  // Always keep the selection valid against the available options — on a
+  // non-org host this forces Local regardless of any passed `initialOwner`.
+  const normalizedOwner = normalizeCredentialTargetScope(
+    credentialTargetOwner,
+    credentialScopeOptions,
+  );
 
   return {
-    credentialTargetScope,
-    setCredentialTargetScope,
+    credentialTargetOwner: normalizedOwner,
+    setCredentialTargetOwner,
     credentialScopeOptions,
   };
 }
 
 export function CredentialTargetScopeSelector(props: {
-  readonly value: ScopeId;
+  readonly value: Owner;
   readonly options: readonly CredentialTargetScopeOption[];
-  readonly onChange: (scope: ScopeId) => void;
+  readonly onChange: (owner: Owner) => void;
   readonly title?: string;
   readonly description?: string;
 }) {
   if (props.options.length <= 1) return null;
 
-  const active = props.options.find((option) => option.scopeId === props.value);
+  const active = props.options.find((option) => option.owner === props.value);
 
   return (
     <CardStack>
@@ -128,9 +135,9 @@ export function CredentialTargetScopeSelector(props: {
                 "Choose where new credentials are saved."}
             </CardStackEntryDescription>
           </CardStackEntryContent>
-          <FilterTabs<ScopeId>
+          <FilterTabs<Owner>
             tabs={props.options.map((option) => ({
-              value: option.scopeId,
+              value: option.owner,
               label: option.label,
             }))}
             value={props.value}
@@ -143,9 +150,9 @@ export function CredentialTargetScopeSelector(props: {
 }
 
 export function CredentialScopeSection(props: {
-  readonly value: ScopeId;
+  readonly value: Owner;
   readonly options: readonly CredentialTargetScopeOption[];
-  readonly onChange: (scope: ScopeId) => void;
+  readonly onChange: (owner: Owner) => void;
   readonly children: ReactNode;
   readonly title?: string;
   readonly description?: string;
@@ -165,9 +172,9 @@ export function CredentialScopeSection(props: {
 }
 
 export function CredentialScopeDropdown(props: {
-  readonly value: ScopeId;
+  readonly value: Owner;
   readonly options: readonly CredentialTargetScopeOption[];
-  readonly onChange: (scope: ScopeId) => void;
+  readonly onChange: (owner: Owner) => void;
   readonly label?: string;
   readonly help?: ReactNode;
   readonly className?: string;
@@ -185,16 +192,13 @@ export function CredentialScopeDropdown(props: {
           {props.help ?? "Choose who can use these credentials."}
         </HelpTooltip>
       </div>
-      <Select
-        value={String(props.value)}
-        onValueChange={(value) => props.onChange(ScopeId.make(value))}
-      >
+      <Select value={String(props.value)} onValueChange={(value) => props.onChange(value as Owner)}>
         <SelectTrigger className={props.triggerClassName ?? "w-full"} size={props.size}>
           <SelectValue placeholder={label} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent position="popper" side="bottom" sideOffset={4}>
           {props.options.map((option) => (
-            <SelectItem key={option.scopeId} value={option.scopeId}>
+            <SelectItem key={option.owner} value={option.owner}>
               {option.label}
             </SelectItem>
           ))}
@@ -221,9 +225,9 @@ export function CredentialControlField(props: {
 }
 
 export function CredentialUsageRow(props: {
-  readonly value: ScopeId;
+  readonly value: Owner;
   readonly options: readonly CredentialTargetScopeOption[];
-  readonly onChange: (scope: ScopeId) => void;
+  readonly onChange: (owner: Owner) => void;
   readonly children: ReactNode;
   readonly label?: string;
   readonly help?: ReactNode;

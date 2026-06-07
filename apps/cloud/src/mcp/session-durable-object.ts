@@ -69,6 +69,7 @@ export type {
 
 const LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS = 5;
 const LONG_LIVED_DB_MAX_LIFETIME_SECONDS = 120;
+const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
 
 type CloudSessionDbHandle = DbServiceShape & {
   readonly sql: Sql;
@@ -195,10 +196,10 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         Effect.withSpan("McpSessionDO.makeExecutionStack"),
       );
       // Build the description here so the postgres query it runs
-      // (`executor.sources.list`) lands as a child of `McpSessionDO.createRuntime`.
-      // It also tags the span with this org's source/connector inventory (ids,
-      // kinds, plugin ids, connection counts) — see `buildExecuteDescription` —
-      // so a failing init names *what* it was resolving without re-listing.
+      // (`executor.integrations.list`) lands as a child of `McpSessionDO.createRuntime`.
+      // It also tags the span with this org's integration/connection inventory
+      // (slugs, kinds, plugin ids, connection counts) — see `buildExecuteDescription`
+      // — so a failing init names *what* it was resolving without re-listing.
       // host-mcp would otherwise call `Effect.runPromise(engine.getDescription)`
       // at its async MCP-SDK boundary and orphan the sub-span.
       const description = yield* buildExecuteDescription(executor);
@@ -244,12 +245,26 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
     reportCause(cause);
   }
 
-  // Force-export the DO isolate's buffered spans before the RPC settles, so a
-  // dying init/handleRequest still ships its own spans (and the exception +
-  // stack recorded on them) — not just the worker-side `mcp.do.*` span. The
-  // base wraps each entrypoint's outermost effect in an `ensuring` that awaits
-  // this after the span has ended and the SimpleSpanProcessor fired its export.
+  // Best-effort export the DO isolate's buffered spans after the RPC settles,
+  // so a dying init/handleRequest can ship its own spans (and the exception +
+  // stack recorded on them) — not just the worker-side `mcp.do.*` span. Keep it
+  // off the response path and bounded: telemetry export must not hold a
+  // successful MCP response open.
   protected override flushTelemetry(): Promise<void> {
-    return flushTracerProvider();
+    this.ctx.waitUntil(
+      Effect.runPromise(
+        Effect.tryPromise({
+          try: () => flushTracerProvider(),
+          catch: () => undefined,
+        }).pipe(
+          Effect.ignore,
+          Effect.timeoutOrElse({
+            duration: `${TELEMETRY_FLUSH_TIMEOUT_MS} millis`,
+            orElse: () => Effect.void,
+          }),
+        ),
+      ),
+    );
+    return Promise.resolve();
   }
 }
