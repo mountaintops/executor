@@ -161,6 +161,68 @@ describe("connections.create", () => {
       expect(Predicate.isTagged("IntegrationNotFoundError")(result.failure)).toBe(true);
     }),
   );
+
+  // A connection is "born wired": it must reference at least one credential
+  // input. An empty binding (an empty `values`/`inputs` map) produces a
+  // credential with no credential — it persists, produces a full tool catalog,
+  // and then fails every invocation with `connection_value_missing`. These
+  // cases must be rejected at create. (An empty-STRING value is allowed — no-auth
+  // integrations bind one deliberately; and an external `from` that resolves to
+  // null is a supported case — both covered by their own tests — so neither is
+  // rejected here.)
+  it.effect("rejects an empty `values` map and persists nothing", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("empty"),
+          integration: INTEG,
+          template: TEMPLATE,
+          values: {},
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      // No connection row and — critically — no tools were produced.
+      expect(yield* executor.connections.list()).toEqual([]);
+      expect(yield* executor.tools.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects an empty `inputs` map", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const result = yield* Effect.result(
+        executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("empty2"),
+          integration: INTEG,
+          template: TEMPLATE,
+          inputs: {},
+        }),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      expect(yield* executor.connections.list()).toEqual([]);
+    }),
+  );
+
+  it.effect("allows an empty-string value (no-auth integrations bind one)", () =>
+    Effect.gen(function* () {
+      const executor = yield* setup();
+      const connection = yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("noauth"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "",
+      });
+      // The binding exists (non-empty item_ids), so tools are produced; the
+      // empty value itself is the integration's concern, surfaced at invoke.
+      expect(String(connection.address)).toBe("tools.vercel.org.noauth");
+      const tools = yield* executor.tools.list();
+      expect(tools.map((t) => String(t.name)).sort()).toEqual(["deploy", "list"]);
+    }),
+  );
 });
 
 describe("connections.list / get", () => {

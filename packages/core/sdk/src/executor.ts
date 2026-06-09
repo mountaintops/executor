@@ -1654,6 +1654,27 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             b("connection", "=", String(ref.name)),
           );
 
+        // Defense in depth (and cleanup for rows created before the create-time
+        // guard, or emptied by an external edit): a non-OAuth connection with no
+        // bound credential inputs can never resolve a value, so never advertise
+        // tools for it — every call would fail with `connection_value_missing`.
+        // OAuth connections resolve via refresh and carry their token outside
+        // `item_ids`, so they are exempt.
+        const existingRow = yield* findConnectionRow(ref);
+        if (
+          existingRow &&
+          existingRow.oauth_client == null &&
+          Object.keys(connectionItemIds(existingRow)).length === 0
+        ) {
+          yield* transaction(
+            Effect.gen(function* () {
+              yield* core.deleteMany("tool", { where });
+              yield* core.deleteMany("definition", { where });
+            }),
+          );
+          return [];
+        }
+
         if (!runtime?.plugin.resolveTools) {
           // No dynamic tools — clear any existing rows and return empty.
           yield* transaction(
@@ -1766,6 +1787,21 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const inputs = normalizeConnectionInputs(input);
         const pasted = inputs.filter((i) => "value" in i.origin);
         const external = inputs.filter((i) => "from" in i.origin);
+        // A connection is born wired: it must reference at least one credential
+        // input. An empty binding (no inputs at all — e.g. an empty `values`/
+        // `inputs` map) is a credential with no credential: it would persist,
+        // produce a full tool catalog, and then fail every invocation with
+        // `connection_value_missing`. Reject it here. (An empty-string value is
+        // NOT rejected — no-auth integrations like MCP deliberately bind one, and
+        // it yields a non-empty `item_ids`. OAuth connections are minted via
+        // `mintOAuthConnection`, not this path; an external `from` reference may
+        // resolve to null and is surfaced at invoke time, not here.)
+        if (inputs.length === 0) {
+          return yield* new StorageError({
+            message: "A connection must supply at least one credential input.",
+            cause: undefined,
+          });
+        }
         let providerKey: string;
         const itemIds: Record<string, string> = {};
         if (external.length > 0 && pasted.length > 0) {
