@@ -41,7 +41,8 @@ import {
 import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
-import { previewSpec, type SpecPreview } from "./preview";
+import { previewSpec, previewSpecText, type SpecPreview } from "./preview";
+import { deriveAuthenticationTemplateFromPreview } from "./derive-auth";
 import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore, type StoredOperation } from "./store";
 import type { Authentication } from "./types";
@@ -713,6 +714,19 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           const resolved = yield* resolveSpecForInput(config.spec, httpClientLayer);
           const compiled = yield* compileSpec(resolved.specText);
 
+          // No explicit template and nothing converter-derived → fall back to
+          // the spec's own declared auth (same derivation the add page runs on
+          // its preview). Without this, headless callers (MCP, API) silently
+          // produce auth-less integrations whose Add-connection modal is a
+          // dead end — see e2e/scenarios/connect-handoff.test.ts.
+          const derivedAuthenticationTemplate =
+            config.authenticationTemplate || resolved.authenticationTemplate
+              ? undefined
+              : deriveAuthenticationTemplateFromPreview(
+                  yield* previewSpecText(resolved.specText),
+                  config.baseUrl ?? resolved.baseUrl,
+                );
+
           const slug = IntegrationSlug.make(config.slug);
 
           // Block re-adding an existing slug. The core `integrations.register`
@@ -742,14 +756,17 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
             // Prefer the caller's explicit template; otherwise adopt the one the
             // Google Discovery converter derived from the spec (the bundle add
-            // path relies on this — it has no preview to detect auth from).
+            // path relies on this — it has no preview to detect auth from);
+            // otherwise derive from the spec's declared security schemes.
             ...(config.authenticationTemplate
               ? {
                   authenticationTemplate: normalizeOpenApiAuthInputs(config.authenticationTemplate),
                 }
               : resolved.authenticationTemplate
                 ? { authenticationTemplate: resolved.authenticationTemplate }
-                : {}),
+                : derivedAuthenticationTemplate && derivedAuthenticationTemplate.length > 0
+                  ? { authenticationTemplate: derivedAuthenticationTemplate }
+                  : {}),
           };
 
           // The spec blob is written OUTSIDE the transaction: it's
