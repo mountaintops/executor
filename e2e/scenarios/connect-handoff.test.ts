@@ -32,51 +32,17 @@ const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`
 
 const EMULATOR_BASE = "https://resend.emulators.dev";
 
-/** Minimal Resend-shaped OpenAPI subset pointed at the emulator. Bearer auth
- *  mirrors the real provider (and the Sentry spec that failed in prod): the
- *  add-account modal must render a paste-a-token flow from a bare
- *  `http`/`bearer` security scheme, not just from an explicit apiKey
- *  authenticationTemplate. */
-const resendSpec = {
-  openapi: "3.0.3",
-  info: { title: "Resend (emulated)", version: "1.0.0" },
-  paths: {
-    "/emails": {
-      post: {
-        operationId: "sendEmail",
-        tags: ["emails"],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: {
-                  from: { type: "string" },
-                  to: { type: "string" },
-                  subject: { type: "string" },
-                  html: { type: "string" },
-                },
-                required: ["from", "to", "subject"],
-              },
-            },
-          },
-        },
-        responses: { "200": { description: "sent" } },
-      },
-    },
-  },
-  components: {
-    securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
-  },
-  security: [{ auth_token: [] }],
-} as const;
+// The emulator serves its own OpenAPI document (bearer auth, same shape as
+// real Resend — and as the Sentry spec that failed in prod). Adding it by URL
+// with no authenticationTemplate exercises exactly the agentic path: the
+// add-account modal must render a paste-a-token flow derived from the spec's
+// bare `http`/`bearer` security scheme.
+const EMULATOR_SPEC_URL = `${EMULATOR_BASE}/openapi.json`;
 
 const addSpecCode = (slug: string) => `
 const added = await tools.executor.openapi.addSpec({
-  spec: { kind: "blob", value: ${JSON.stringify(JSON.stringify(resendSpec))} },
+  spec: { kind: "url", url: ${JSON.stringify(EMULATOR_SPEC_URL)} },
   slug: ${JSON.stringify(slug)},
-  baseUrl: ${JSON.stringify(EMULATOR_BASE)},
 });
 return added.ok ? { ok: true, slug: added.data.slug, toolCount: added.data.toolCount } : { ok: false, error: added.error };
 `;

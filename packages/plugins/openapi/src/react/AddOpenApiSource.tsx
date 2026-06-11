@@ -318,7 +318,13 @@ export default function AddOpenApiSource(props: {
         slug: resolvedSourceId,
         description: resolvedDisplayName,
         baseUrl: resolvedBaseUrl,
-        ...(!isGoogleBundlePreset && editedAuthenticationTemplate.length > 0
+        // Always send the edited method list (even empty) when the user has
+        // inspected a preview: an explicit [] means "no auth methods", while
+        // OMITTING the field tells the server to derive defaults from the
+        // spec — which would silently resurrect methods the user deleted.
+        // The Google bundle path stays omitted; its auth is converter-derived
+        // server-side.
+        ...(!isGoogleBundlePreset
           ? {
               // Serialize to the wire input dialect (apikey → request-shaped).
               authenticationTemplate: editedAuthenticationTemplate.map(openApiWireAuthInput),

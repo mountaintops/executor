@@ -42,7 +42,7 @@ import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
 import { previewSpec, previewSpecText, type SpecPreview } from "./preview";
-import { deriveAuthenticationTemplateFromPreview } from "./derive-auth";
+import { deriveAuthenticationTemplateFromPreview, firstBaseUrlForPreview } from "./derive-auth";
 import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore, type StoredOperation } from "./store";
 import type { Authentication } from "./types";
@@ -714,18 +714,31 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           const resolved = yield* resolveSpecForInput(config.spec, httpClientLayer);
           const compiled = yield* compileSpec(resolved.specText);
 
-          // No explicit template and nothing converter-derived → fall back to
-          // the spec's own declared auth (same derivation the add page runs on
-          // its preview). Without this, headless callers (MCP, API) silently
-          // produce auth-less integrations whose Add-connection modal is a
-          // dead end — see e2e/scenarios/connect-handoff.test.ts.
+          // Defaults the add page derives from its preview, applied here so
+          // headless callers (MCP, API) get the same integration the UI's
+          // add flow would produce — see e2e/scenarios/connect-handoff.test.ts:
+          //   - baseUrl: the spec's first server (else tools have no host to
+          //     call and every invocation fails with "HTTP request failed")
+          //   - authenticationTemplate: the spec's declared security schemes
+          //     (else the Add-connection modal is a dead "No authentication"
+          //     end with nowhere to paste a credential)
+          // An explicit input always wins; for auth, an explicit EMPTY array
+          // means "no auth methods" and suppresses the derivation.
+          const explicitBaseUrl = config.baseUrl ?? resolved.baseUrl;
+          const needsDerivedBaseUrl = explicitBaseUrl == null;
+          const needsDerivedAuth =
+            config.authenticationTemplate == null && resolved.authenticationTemplate == null;
+          const preview =
+            needsDerivedBaseUrl || needsDerivedAuth
+              ? yield* previewSpecText(resolved.specText)
+              : undefined;
+          const derivedBaseUrl =
+            needsDerivedBaseUrl && preview ? firstBaseUrlForPreview(preview) : undefined;
+          const effectiveBaseUrl = explicitBaseUrl ?? (derivedBaseUrl || undefined);
           const derivedAuthenticationTemplate =
-            config.authenticationTemplate || resolved.authenticationTemplate
-              ? undefined
-              : deriveAuthenticationTemplateFromPreview(
-                  yield* previewSpecText(resolved.specText),
-                  config.baseUrl ?? resolved.baseUrl,
-                );
+            needsDerivedAuth && preview
+              ? deriveAuthenticationTemplateFromPreview(preview, effectiveBaseUrl)
+              : undefined;
 
           const slug = IntegrationSlug.make(config.slug);
 
@@ -749,9 +762,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             ...(specInputToGoogleBundle(config.spec) !== undefined
               ? { googleDiscoveryUrls: specInputToGoogleBundle(config.spec) }
               : {}),
-            ...((config.baseUrl ?? resolved.baseUrl)
-              ? { baseUrl: config.baseUrl ?? resolved.baseUrl }
-              : {}),
+            ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
             ...(config.headers ? { headers: config.headers } : {}),
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
             // Prefer the caller's explicit template; otherwise adopt the one the
@@ -911,7 +922,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "addSpec",
             description:
-              "Add an OpenAPI integration to the catalog and persist its operations as tools. Recommended flow: call `previewSpec`, choose a `slug`, declare an `authenticationTemplate` for how a credential is applied (apiKey header/query, or oauth bearer), then create a connection for that integration with the user's API key or via `oauth.start`.",
+              "Add an OpenAPI integration to the catalog and persist its operations as tools. Recommended flow: call `previewSpec`, choose a `slug`, then create a connection for that integration with the user's API key or via `oauth.start`. When `baseUrl` is omitted it defaults to the spec's first server; when `authenticationTemplate` is omitted the auth methods are derived from the spec's declared security schemes (pass an explicit template to override how a credential is applied — apiKey header/query, or oauth bearer — or an empty array for no auth methods).",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI integration",

@@ -559,6 +559,65 @@ describe("OpenAPI Plugin", () => {
     ),
   );
 
+  it.effect("addSpec defaults baseUrl to the spec's first server when omitted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // No baseUrl passed — the spec's own servers entry must fill it, or
+        // every invocation on the integration fails with no host to call.
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithServer = JSON.stringify({
+          ...spec,
+          servers: [{ url: server.baseUrl }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithServer },
+          slug: "derived_base_api",
+        });
+
+        const config = yield* executor.openapi.getConfig("derived_base_api");
+        expect(config?.baseUrl).toBe(server.baseUrl);
+      }),
+    ),
+  );
+
+  it.effect("addSpec treats an explicit empty authenticationTemplate as no auth", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* servePluginTestApi();
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+
+        // The add page sends [] when the user deletes every detected method.
+        // That intent must survive — deriving methods back from the spec here
+        // would silently override the user's choice.
+        // oxlint-disable-next-line executor/no-json-parse -- boundary: test fixture surgery on the test server's own spec JSON
+        const spec = JSON.parse(server.specJson) as Record<string, unknown>;
+        const specWithBearer = JSON.stringify({
+          ...spec,
+          components: {
+            ...(spec.components as Record<string, unknown> | undefined),
+            securitySchemes: { auth_token: { type: "http", scheme: "bearer" } },
+          },
+          security: [{ auth_token: [] }],
+        });
+
+        yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: specWithBearer },
+          slug: "no_auth_api",
+          baseUrl: server.baseUrl,
+          authenticationTemplate: [],
+        });
+
+        const config = yield* executor.openapi.getConfig("no_auth_api");
+        expect(config?.authenticationTemplate ?? []).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect("removeSpec cleans up the integration and its tools", () =>
     Effect.scoped(
       Effect.gen(function* () {
