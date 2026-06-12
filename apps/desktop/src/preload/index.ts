@@ -40,6 +40,34 @@ const api = {
   openExternal(url: string): Promise<void> {
     return ipcRenderer.invoke("executor:shell:open-external", url);
   },
+  /**
+   * Pack logs + crash dumps + a redacted manifest into a zip in Downloads
+   * and reveal it in the file manager. Returns the zip path.
+   */
+  exportDiagnostics(): Promise<string> {
+    return ipcRenderer.invoke("executor:diagnostics:export");
+  },
+  /**
+   * Run an interactive update check (menu-flow semantics: native dialogs
+   * for "update ready", "no updates", and failures). Used by the crash
+   * screen so a broken release can heal itself.
+   */
+  checkForUpdates(): Promise<void> {
+    return ipcRenderer.invoke("executor:updates:check");
+  },
+  /**
+   * Crash-reporting config for the renderer. Null unless this desktop build
+   * shipped with a DSN baked in — the shared web UI only initializes its
+   * error reporting when this returns a config.
+   */
+  getCrashReporting(): Promise<{
+    readonly dsn: string;
+    readonly release: string;
+    readonly environment: string;
+    readonly runId: string;
+  } | null> {
+    return ipcRenderer.invoke("executor:crash-reporting:get");
+  },
 } as const;
 
 contextBridge.exposeInMainWorld("executor", api);

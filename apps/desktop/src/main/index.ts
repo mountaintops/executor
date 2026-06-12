@@ -20,9 +20,19 @@ type UpdateInfo = { readonly version: string };
 import {
   startSidecar,
   stopSidecar,
+  onUnexpectedSidecarExit,
   SidecarPortInUseError,
   type SidecarConnection,
 } from "./sidecar";
+import {
+  errorReportingEnabled,
+  exportDiagnostics,
+  exportDiagnosticsInteractive,
+  getCrashReportingConfig,
+  initErrorReporting,
+  reportAProblem,
+} from "./diagnostics";
+import { sidecarCrashHtml } from "./crash-screen";
 import {
   getServerProfiles,
   getServerSettings,
@@ -46,6 +56,12 @@ app.setPath("userData", join(app.getPath("appData"), "Executor"));
 
 log.initialize({ preload: true });
 log.transports.file.level = "info";
+
+// Crash reporting must attach before app.whenReady() so Crashpad covers
+// every child process (renderer, GPU). Sentry-backed only when a DSN was
+// baked in at build time; otherwise dumps stay local for the diagnostics
+// export.
+initErrorReporting();
 
 let mainWindow: BrowserWindow | null = null;
 let connection: SidecarConnection | null = null;
@@ -311,6 +327,12 @@ const registerIpcHandlers = () => {
     setServerProfiles(value);
   });
   ipcMain.handle("executor:server:restart", () => restartSidecarAndReload());
+  ipcMain.handle("executor:diagnostics:export", () => exportDiagnostics());
+  ipcMain.handle("executor:crash-reporting:get", () => getCrashReportingConfig());
+  // Crash-screen escape hatch: a recurring sidecar crash may already be
+  // fixed upstream. Reuses the menu flow — staged updates prompt to install,
+  // "no updates" / failures surface in their own dialogs.
+  ipcMain.handle("executor:updates:check", () => runUpdateCheck({ alertOnFail: true }));
   ipcMain.handle("executor:shell:open-external", async (_evt, rawUrl: unknown) => {
     if (typeof rawUrl !== "string") return;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: untrusted renderer string, URL ctor throws on malformed input
@@ -472,6 +494,14 @@ const installApplicationMenu = () => {
         label: "Check for Updates…",
         click: () => void runUpdateCheck({ alertOnFail: true }),
       },
+      {
+        label: "Export Diagnostics…",
+        click: () => void exportDiagnosticsInteractive(),
+      },
+      {
+        label: "Report a Problem…",
+        click: () => void reportAProblem(),
+      },
       { type: "separator" },
       ...(isMac
         ? ([
@@ -501,6 +531,19 @@ const boot = async () => {
   installApplicationMenu();
   setupAutoUpdater();
   registerIpcHandlers();
+  // A sidecar that dies under a live window would leave the web UI failing
+  // every request with no explanation. Swap in the crash screen — its
+  // buttons drive the regular preload bridge (restart / export diagnostics).
+  onUnexpectedSidecarExit(() => {
+    const window = liveMainWindow();
+    if (!window) return;
+    const html = sidecarCrashHtml({ reported: errorReportingEnabled });
+    void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    // A crashing sidecar may be a broken release — quietly stage any
+    // available update so the install prompt appears on its own (same
+    // self-heal as the fatal startup path).
+    void runUpdateCheck({ alertOnFail: false });
+  });
   connection = await startWithCurrentSettings();
   if (!connection) {
     // Port conflicts already showed their dialog inside
