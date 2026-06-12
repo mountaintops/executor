@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
@@ -68,72 +68,58 @@ const AuthProviderClient = ({
   onIdentify?: IdentifyFn;
 }) => {
   const result = useAtomValue(meAtom);
+
   // The hint applies one frame AFTER mount: SSR always renders the loading
-  // state, and React requires the first client render to match that HTML, so
-  // reading the cookie during render would be a hydration mismatch. The
-  // post-mount flip costs a frame, not a network round trip — and the hint
-  // only seeds the in-flight window; `/account/me` is the authority from its
-  // first resolution on.
-  const [hint, setHint] = React.useState<AuthHint | null>(null);
+  // state and the first client render must match that HTML, so the cookie
+  // read is deferred to an effect (the documented pattern for client-only
+  // values). The flip costs a frame, not a network round trip.
+  const [hint, setHint] = useState<AuthHint | null>(null);
   useEffect(() => {
     setHint(readAuthHintCookie());
   }, []);
 
-  // What `/account/me` actually said — the authority.
-  const resolved: AuthState = AsyncResult.match(result, {
-    onInitial: () => ({ status: "loading" as const }),
-    onSuccess: ({ value }) => ({
-      status: "authenticated" as const,
-      user: value.user,
-      organization: value.organization,
-    }),
-    onFailure: () => ({ status: "unauthenticated" as const }),
-  });
+  // What `/account/me` actually said — the authority. The atom value only
+  // changes identity when the query emits, so memoizing on it gives the
+  // effects below a dependency that tracks real transitions.
+  const resolved = useMemo<AuthState>(
+    () =>
+      AsyncResult.match(result, {
+        onInitial: () => ({ status: "loading" as const }),
+        onSuccess: ({ value }) => ({
+          status: "authenticated" as const,
+          user: value.user,
+          organization: value.organization,
+        }),
+        onFailure: () => ({ status: "unauthenticated" as const }),
+      }),
+    [result],
+  );
 
-  // What consumers see — the hint papers over the in-flight window only.
-  const state: AuthState = resolved.status === "loading" ? (hintState(hint) ?? resolved) : resolved;
-
-  // Primitive identity fields of the RESOLVED state, so the effects below
-  // fire only on real transitions (the objects are rebuilt every render) and
-  // never on hint-derived optimistic state — identify must not report a stale
-  // hint to analytics, and the hint cookie must not rewrite itself.
-  const status = resolved.status;
-  const userId = resolved.status === "authenticated" ? resolved.user.id : null;
-  const email = resolved.status === "authenticated" ? resolved.user.email : null;
-  const name = resolved.status === "authenticated" ? resolved.user.name : null;
-  const avatarUrl = resolved.status === "authenticated" ? resolved.user.avatarUrl : null;
-  const organizationId =
-    resolved.status === "authenticated" ? (resolved.organization?.id ?? null) : null;
-  const organizationName =
-    resolved.status === "authenticated" ? (resolved.organization?.name ?? null) : null;
-
+  // Both effects key off RESOLVED state, never hint-derived optimism:
+  // identify must not report a stale hint to analytics, and the hint cookie
+  // must not rewrite itself from its own contents.
   useEffect(() => {
-    if (!onIdentify) return;
-    if (status === "authenticated" && userId && email !== null) {
-      onIdentify({
-        status: "authenticated",
-        user: { id: userId, email, name, avatarUrl },
-        organization: organizationId ? { id: organizationId, name: organizationName ?? "" } : null,
-      });
-    } else if (status === "unauthenticated") {
-      onIdentify({ status: "unauthenticated" });
-    }
-  }, [onIdentify, status, userId, email, name, avatarUrl, organizationId, organizationName]);
+    if (resolved.status === "loading") return;
+    onIdentify?.(resolved);
+  }, [onIdentify, resolved]);
 
   // Keep the hint cookie in step with reality so the NEXT page load seeds
   // correctly: refresh it on every confirmed identity, drop it the moment the
   // server says signed-out.
   useEffect(() => {
-    if (status === "authenticated" && userId && email !== null) {
-      writeAuthHintCookie({
-        v: 1,
-        user: { id: userId, email, name, avatarUrl },
-        organization: organizationId ? { id: organizationId, name: organizationName ?? "" } : null,
-      });
-    } else if (status === "unauthenticated") {
+    if (resolved.status === "authenticated") {
+      writeAuthHintCookie({ v: 1, user: resolved.user, organization: resolved.organization });
+    } else if (resolved.status === "unauthenticated") {
       clearAuthHintCookie();
     }
-  }, [status, userId, email, name, avatarUrl, organizationId, organizationName]);
+  }, [resolved]);
+
+  // What consumers see — the hint papers over the in-flight window only.
+  // Memoized so context consumers don't re-render on unrelated renders.
+  const state = useMemo<AuthState>(
+    () => (resolved.status === "loading" ? (hintState(hint) ?? resolved) : resolved),
+    [resolved, hint],
+  );
 
   return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>;
 };
