@@ -19,11 +19,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Effect, Exit, Fiber } from "effect";
 
+import { markFocus, markRecordingStart } from "../timeline";
 import type { CliSurface } from "../surfaces/cli";
 
 const RENDERER = fileURLToPath(new URL("./agent-chat-tui.ts", import.meta.url));
@@ -99,11 +100,16 @@ const ptyTheater = <A, E, R>(
   body: (theater: ChatTheater) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> =>
   Effect.gen(function* () {
+    const runDir = dirname(options.record);
     const queue: TheaterEvent[] = [];
     let closed = false;
     const push = (event: TheaterEvent) =>
       Effect.sync(() => {
-        if (!closed) queue.push(event);
+        if (!closed) {
+          // Chatting IS focusing the terminal window.
+          if (event.type !== "done") markFocus(runDir, "terminal");
+          queue.push(event);
+        }
       });
 
     const pump = cli.session(
@@ -113,6 +119,9 @@ const ptyTheater = <A, E, R>(
         // it hasn't set raw mode yet, and the PTY would echo the event line
         // into the recording.
         await term.screen.waitForText(options.title, { timeoutMs: 30_000 });
+        // The cast's clock started with the PTY moments ago; anchor it for
+        // the run's focus timeline (scripts/film.ts cuts on these).
+        markRecordingStart(runDir, "terminal");
         const deadline = Date.now() + 30 * 60 * 1000;
         for (;;) {
           const event = queue.shift();
