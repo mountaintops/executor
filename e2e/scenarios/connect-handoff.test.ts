@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
+import { EmulatorClient } from "@executor-js/emulate";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 
 import { scenario } from "../src/scenario";
@@ -96,21 +97,15 @@ const executeJson = (session: McpSession, code: string) =>
     return JSON.parse(result.text) as Record<string, unknown>;
   });
 
-const mintEmulatorApiKey = Effect.promise(async () => {
-  const response = await fetch(`${EMULATOR_BASE}/_emulate/credentials`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "api-key" }),
-  });
-  const body = (await response.json()) as { credential?: { token?: string } };
-  const token = body.credential?.token;
-  if (!token) throw new Error(`emulator credential mint failed: ${JSON.stringify(body)}`);
-  return token;
-});
+// Typed handle on the hosted emulator instance (no I/O until first call).
+const emulator = new EmulatorClient(EMULATOR_BASE);
 
-const fetchLedgerText = Effect.promise(async () => {
-  const response = await fetch(`${EMULATOR_BASE}/_emulate/ledger`);
-  return response.text();
+const mintEmulatorApiKey = Effect.promise(async () => {
+  const credential = await emulator.credentials.mint({ type: "api-key" });
+  if (!credential.token) {
+    throw new Error(`emulator credential mint failed: ${JSON.stringify(credential)}`);
+  }
+  return credential.token;
 });
 
 scenario(
@@ -210,9 +205,15 @@ const runScenario = (input: {
     const sent = yield* executeJson(session, sendEmailCode(integration, emailSubject));
     expect(sent.ok, `email sent through the pasted connection: ${JSON.stringify(sent)}`).toBe(true);
 
-    const ledger = yield* fetchLedgerText;
+    const entries = yield* Effect.promise(() => emulator.ledger.list());
+    const hit = entries.find(
+      (entry) => (entry.request.body as { subject?: string } | undefined)?.subject === emailSubject,
+    );
     expect(
-      ledger.includes(emailSubject),
-      "the emulator's request ledger recorded the call made through Executor",
-    ).toBe(true);
+      hit?.summary,
+      "the emulator's request ledger recorded the send made through Executor",
+    ).toBeDefined();
+    expect(hit?.method, "the send arrived as a POST to the emails operation").toBe("POST");
+    expect(hit?.path).toBe("/emails");
+    expect(hit?.response.status, `upstream accepted the send (${hit?.summary})`).toBe(200);
   });

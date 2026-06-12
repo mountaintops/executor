@@ -15,21 +15,38 @@ target points the actual WorkOS SDK (sealed sessions, JWKS, hosted AuthKit
 login) and Autumn billing at emulators and exercises the product's real
 auth code.
 
-## Two ways to get one
+## Two ways to get one — both give the same typed handle
+
+Never hand-roll `fetch` against `/_emulate/*`: every handle carries the
+typed control-plane client (`credentials.mint`, `ledger.list/clear`, `seed`,
+`reset`, `manifest`, `specs`, `coverage`, `state`, `openapiUrl`), with
+responses typed as `LedgerEntry`, `IssuedCredential`, `ServiceManifest`, …
+and failures thrown as `EmulatorControlError`.
 
 **Local, programmatic** (what `e2e/setup/cloud.globalsetup.ts` does):
 
 ```ts
 import { createEmulator } from "@executor-js/emulate";
 const github = await createEmulator({ service: "github", port: 4501 });
-// github.url, github.reset(), await github.close()
+// github.url, await github.close() — plus the full typed control plane:
+const key = await github.credentials.mint({ type: "bearer-token" });
+const calls = await github.ledger.list(); // LedgerEntry[]
 ```
 
-`baseUrl` sets the *advertised* origin (redirects, form actions, spec
+`baseUrl` sets the _advertised_ origin (redirects, form actions, spec
 `servers`) when a proxy fronts the emulator — the bind stays on `port`.
 
-**Hosted, zero-setup** — every service runs on Cloudflare with Durable
-Object state:
+**Attach to a running instance** — another process or a hosted one:
+
+```ts
+import { connectEmulator, EmulatorClient } from "@executor-js/emulate";
+// validates via the manifest that the target IS the service you expect:
+const resend = await connectEmulator({ baseUrl: "https://resend.emulators.dev", service: "resend" });
+// or zero-I/O construction when you don't want a connect round-trip:
+const client = new EmulatorClient("https://resend.emulators.dev");
+```
+
+Hosted instances run on Cloudflare with Durable Object state, no setup:
 
 ```
 https://<service>.emulators.dev                 # service host
@@ -46,26 +63,36 @@ directly.
 Every running emulator self-describes. Start at `GET /_emulate/quickstart`
 (plain-text, written for agents) or `GET /_emulate/manifest` (machine-readable:
 surfaces, auth capabilities, per-operation spec coverage, connection snippets).
+From TypeScript, use the client methods (`client.manifest()`, `client.ledger.list()`,
+…) rather than these routes directly; the raw routes are for curl/browser
+exploration and non-TS consumers.
 
-| Endpoint | Use |
-| --- | --- |
-| `GET /_emulate/openapi` | A real OpenAPI document for the service — feed it straight to Executor's addSpec to register the emulator as an integration |
-| `POST /_emulate/credentials` | Mint a credential in the service's real shape: `{"type":"api-key"}`, bearer tokens, OAuth/OIDC clients, client-credentials apps |
-| `GET /_emulate/ledger` | Request ledger: matched operationId, sanitized headers/body, auth identity, response status, webhook deliveries. `DELETE` clears it |
-| `POST /_emulate/seed` | Add state via the service's seed schema (e.g. WorkOS `{"oauth":{"default_access_token_ttl_seconds":60}}` to compress token expiry) |
-| `POST /_emulate/reset` | Reset state + logs, replay seed |
-| `GET /_emulate/state` | Current store snapshot |
-| `GET /_emulate/coverage` | Which operations are implemented vs partial |
-| `GET /_emulate/connections` | Copyable SDK/env/curl snippets resolved against this instance |
+| Endpoint                     | Use                                                                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /_emulate/openapi`      | A real OpenAPI document for the service — feed it straight to Executor's addSpec to register the emulator as an integration         |
+| `POST /_emulate/credentials` | Mint a credential in the service's real shape: `{"type":"api-key"}`, bearer tokens, OAuth/OIDC clients, client-credentials apps     |
+| `GET /_emulate/ledger`       | Request ledger: matched operationId, sanitized headers/body, auth identity, response status, webhook deliveries. `DELETE` clears it |
+| `POST /_emulate/seed`        | Add state via the service's seed schema (e.g. WorkOS `{"oauth":{"default_access_token_ttl_seconds":60}}` to compress token expiry)  |
+| `POST /_emulate/reset`       | Reset state + logs, replay seed                                                                                                     |
+| `GET /_emulate/state`        | Current store snapshot                                                                                                              |
+| `GET /_emulate/coverage`     | Which operations are implemented vs partial                                                                                         |
+| `GET /_emulate/connections`  | Copyable SDK/env/curl snippets resolved against this instance                                                                       |
 
 ## Recipes
 
 **Test an integration end-to-end for real** (the `connect-handoff` pattern):
-mint an API key via `/_emulate/credentials` → register the emulator's
-`/_emulate/openapi` spec with the product → invoke a tool through the
-product → assert the call landed by reading `/_emulate/ledger`. The ledger
-is the proof — "the product made this exact upstream call with this auth" —
-which beats asserting on the product's own response.
+`emulator.credentials.mint(...)` → register `emulator.openapiUrl` with the
+product → invoke a tool through the product → prove the call landed with a
+typed ledger assertion. The ledger is the proof — "the product made this
+exact upstream call with this auth" — which beats asserting on the product's
+own response:
+
+```ts
+const entries = await emulator.ledger.list();
+const hit = entries.find((e) => (e.request.body as { subject?: string })?.subject === subject);
+expect(hit?.path).toBe("/emails");
+expect(hit?.response.status).toBe(200);
+```
 
 **Real OAuth/OIDC flows**: google/okta/microsoft/apple/clerk/workos mint
 OAuth clients and run real authorize/token endpoints. The WorkOS emulator
