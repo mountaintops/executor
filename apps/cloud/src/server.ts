@@ -9,6 +9,7 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
+import { isAppOwnedPath } from "./app-paths";
 import { McpSessionDO as McpSessionDOBase } from "./mcp/session-durable-object";
 import { browserTracesResponse } from "./observability/browser-traces";
 import { flushTracerProvider, installTracerProvider } from "./observability/telemetry";
@@ -53,6 +54,16 @@ export const McpSessionDO = Sentry.instrumentDurableObjectWithSentry(
 // migration — without the OTel-SDK version-conflict that package would now
 // drag in (it pins `@opentelemetry/otlp-* ^0.200.0`, we ship ^0.214.0).
 //
+// ONLY for paths the Effect app does not own. App-owned paths (/api/*, /mcp,
+// /.well-known/* — see app-paths.ts) get their `http.server` span from
+// Effect's own HttpMiddleware.tracer, which parses `traceparent` itself and
+// parents the workos/store/db child spans. Wrapping those here too produced
+// two identical sibling `http.server` spans per request (scope
+// `executor-cloud-worker` next to scope `executor-cloud`) — double ingest,
+// and the waterfall showed a childless twin. The worker span remains for
+// everything Effect never sees: Start SSR, the marketing proxy, /_astro
+// assets.
+//
 // SimpleSpanProcessor exports synchronously at span end but the underlying
 // `fetch()` to Axiom is fire-and-forget; the Worker may terminate before it
 // completes. `ctx.waitUntil(flushTracerProvider())` keeps the isolate alive
@@ -78,6 +89,18 @@ const cloudflareHandler: ExportedHandler<Env> = {
       return fetchHandler(request, env, ctx);
     }
     const url = new URL(request.url);
+    // Effect-served paths bring their own http.server span (with traceparent
+    // join) — opening one here too would duplicate it. See the header note.
+    if (isAppOwnedPath(url.pathname)) {
+      // The provider is installed (above) and the flush still must outlive
+      // the request — Effect's BatchSpanProcessor ships on a timer.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; mirror the traced path's finally
+      try {
+        return await fetchHandler(request, env, ctx);
+      } finally {
+        ctx.waitUntil(flushTracerProvider());
+      }
+    }
     // Join the caller's W3C trace when the request carries one — the web UI
     // sends traceparent on every API fetch, so the browser's spans and this
     // request share one trace id end to end. Same parsing the DO path does
