@@ -50,21 +50,24 @@ const integrationChecks = async (
   ctx: GradeContext,
   integration: string,
 ): Promise<readonly GradeCheck[]> => {
+  // The config endpoint returns non-null only once addSpec's transaction
+  // committed (integration row + operations together), so this doubles as the
+  // "operations compiled" signal.
   const config = (await ctx
     .apiGet(`/api/openapi/integrations/${integration}/config`)
     .catch(() => null)) as OpenApiConfig | null;
   const methods = config?.authenticationTemplate ?? [];
+  // NOTE: we intentionally do NOT assert the integration-level `config.baseUrl`.
+  // The host moved to per-operation baseUrl (baked into each tool at compile
+  // time from the spec's `servers`); integration-level baseUrl is now an
+  // override-only field and is null for a plain add-by-spec. The eval surfaced
+  // this when it started running against current main — see EVALS.md.
   return [
     check("integration registered under the asked-for slug", config !== null),
     check(
       "auth methods derived from the spec (apikey present)",
       methods.some((m) => m.kind === "apikey"),
       `methods: ${JSON.stringify(methods.map((m) => m.kind))}`,
-    ),
-    check(
-      "baseUrl resolved to the emulator",
-      (config?.baseUrl ?? "").startsWith(EMULATOR_BASE),
-      `baseUrl: ${config?.baseUrl}`,
     ),
   ];
 };

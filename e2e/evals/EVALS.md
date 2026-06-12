@@ -6,6 +6,26 @@ ask, does a real agent driving our real MCP server land on the behavior we
 designed?_ The tool descriptions are the only steering; if a task needs
 system-prompt coaching to pass, that's a finding about the descriptions.
 
+## The inference primitive (reusable on its own)
+
+The eval harness is built on a standalone helper that any agent or test working
+in this repo can use to run real inference, hermetically:
+
+```sh
+# Ask a model a question through the OpenCode subscription — no effect on your
+# own OpenCode history:
+bun e2e/scripts/infer.ts "Reply with exactly: pong"
+bun e2e/scripts/infer.ts -m opencode/glm-5.1 "Summarize this stack trace: ..."
+bun e2e/scripts/infer.ts --json "..."          # full JSON event stream
+cd e2e && bun run infer "..."                  # via the package script
+```
+
+Programmatically, `runInference({ model, prompt, mcp? })` from
+`e2e/src/clients/inference.ts` returns `{ answerText, events, toolNames, ... }`.
+Pass `mcp` to expose one of our MCP servers to the model (with a consent
+strategy); omit it for plain question→answer. The eval harness is just this
+primitive plus grading.
+
 ## How it works
 
 - **Client**: the real OpenCode binary (`opencode run --format json`), in a
@@ -126,3 +146,14 @@ description tweaks made because of it):
   output/log scrubbing is the pure-upside piece and the cred-hygiene task can
   A/B any candidate (it already separates "secret in tool call" vs "secret in
   answer"). Tracking this as a known gap, not a bug to fix now.
+- **2026-06-12 · integration-level baseUrl is now override-only**: against
+  current main, an add-by-spec-URL stores `config.baseUrl: null` even though
+  the spec declares `servers[0].url`. Not a regression — the storage refactors
+  (#968–970) moved the host to PER-OPERATION baseUrl (baked into each compiled
+  tool from the spec's `servers`), so tool calls still reach the right host and
+  integration-level baseUrl became an override-only field. The connect-handoff
+  task's old "baseUrl resolved to the emulator" check asserted the obsolete
+  integration-level field and started failing the moment the eval ran against
+  main instead of the PR #957 branch — exactly the kind of semantic drift the
+  eval exists to surface. Check removed; "registered + apikey derived" already
+  proves the spec compiled with auth.
