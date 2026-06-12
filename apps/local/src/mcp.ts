@@ -1,4 +1,4 @@
-import { Deferred, Effect, Option, Schema } from "effect";
+import { Deferred, Effect } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -8,6 +8,12 @@ import {
   createExecutorMcpServer,
   type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
+import {
+  approvalUrlForRequest,
+  decodeResumeResponse,
+  formatResumeAcknowledgement,
+  readElicitationMode,
+} from "@executor-js/host-mcp/browser-approval";
 import type { ResumeResponse } from "@executor-js/execution";
 
 import { startIntegrationsRefresh } from "./integrations";
@@ -32,35 +38,6 @@ const formatBoundaryError = (error: unknown): unknown => {
   // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: MCP request handler catches unknown SDK/runtime failures for process logging
   if (error instanceof Error) return error.stack ?? error.message;
   return error;
-};
-
-type McpElicitationMode = "browser" | "model" | "native";
-
-const MCP_ELICITATION_MODES = new Set<McpElicitationMode>(["browser", "model", "native"]);
-const ResumeResponsePayload = Schema.Struct({
-  action: Schema.Literals(["accept", "decline", "cancel"]),
-  content: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-});
-const decodeResumeResponsePayload = Schema.decodeUnknownOption(ResumeResponsePayload);
-
-const readElicitationMode = (request: Request): McpElicitationMode => {
-  const url = new URL(request.url);
-  const mode = url.searchParams.get("elicitation_mode");
-  if (mode && MCP_ELICITATION_MODES.has(mode as McpElicitationMode)) {
-    return mode as McpElicitationMode;
-  }
-
-  return "model";
-};
-
-const approvalUrlForRequest = (
-  request: Request,
-  executionId: string,
-  sessionId: string | null,
-): string => {
-  const url = new URL(`/resume/${encodeURIComponent(executionId)}`, request.url);
-  if (sessionId) url.searchParams.set("mcp_session_id", sessionId);
-  return url.toString();
 };
 
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
@@ -88,32 +65,14 @@ const readResumeResponse = (request: Request): Promise<ResumeResponse | null> =>
     Effect.tryPromise({
       try: () => request.json(),
       catch: () => null,
-    }).pipe(
-      Effect.map((raw) =>
-        raw === null ? null : Option.getOrNull(decodeResumeResponsePayload(raw)),
-      ),
-    ),
+    }).pipe(Effect.map((raw) => (raw === null ? null : decodeResumeResponse(raw)))),
   );
 
-const resumeApprovalResult = (executionId: string, response: ResumeResponse) => {
-  const textByAction = {
-    accept: "I've approved it",
-    decline: "I've denied it",
-    cancel: "I've canceled it",
-  } satisfies Record<ResumeResponse["action"], string>;
-  const statusByAction = {
-    accept: "approved",
-    decline: "denied",
-    cancel: "canceled",
-  } satisfies Record<ResumeResponse["action"], string>;
-
-  return {
-    status: "completed",
-    text: textByAction[response.action],
-    structured: { status: statusByAction[response.action], executionId },
-    isError: false,
-  };
-};
+const resumeApprovalResult = (executionId: string, response: ResumeResponse) => ({
+  status: "completed",
+  ...formatResumeAcknowledgement(executionId, response),
+  isError: false,
+});
 
 export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpRequestHandler => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
