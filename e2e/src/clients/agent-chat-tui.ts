@@ -5,7 +5,13 @@
 // pacing of a chat session (typed user input, streamed agent text, live
 // tool spinners that run exactly as long as the real call did).
 //
-// Run with: bun agent-chat-tui.ts "<session title>"
+// Run with: bun agent-chat-tui.ts "<session title>" [events-fifo]
+//
+// Two transports: events arrive base64-encoded one-per-line either on stdin
+// (PTY mode — the chat theater types them into the recorded terminal) or on
+// a FIFO path (desk mode — the renderer runs inside a visible xterm on the
+// virtual desktop, where stdin belongs to the terminal emulator).
+import { createReadStream, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 type TheaterEvent =
@@ -35,6 +41,7 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const sleep = (ms: number) => new Promise<void>((tick) => setTimeout(tick, ms));
 
 const title = process.argv[2] ?? "executor session";
+const eventsFifo = process.argv[3];
 out(`${BOLD}${MAGENTA}●${RESET} ${BOLD}${title}${RESET}\n`);
 out(`${DIM}${"─".repeat(Math.min(96, title.length + 24))}${RESET}\n`);
 
@@ -92,6 +99,12 @@ const handle = async (event: TheaterEvent): Promise<boolean> => {
     }
     case "done": {
       out(`\n${DIM}${"─".repeat(40)}${RESET}\n${GREEN}✦ session complete${RESET}\n`);
+      if (eventsFifo) {
+        // Desk mode: ack completion to the driver, then linger so the
+        // closing frame stays on camera before the xterm vanishes.
+        writeFileSync(`${eventsFifo}.done`, "");
+        await sleep(4_000);
+      }
       return false;
     }
   }
@@ -115,7 +128,8 @@ const drain = async () => {
   draining = false;
 };
 
-createInterface({ input: process.stdin, terminal: false }).on("line", (line) => {
+const input = eventsFifo ? createReadStream(eventsFifo) : process.stdin;
+createInterface({ input, terminal: false }).on("line", (line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: PTY stdin may echo stray keystrokes that aren't base64 JSON; ignore them

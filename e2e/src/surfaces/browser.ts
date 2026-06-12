@@ -42,7 +42,17 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         const videoTmp = join(dir, ".video-tmp");
         mkdirSync(videoTmp, { recursive: true });
 
-        const browser = await chromium.launch();
+        // On the desk (E2E_DESK), the browser is a real headed window on the
+        // virtual display — the desk's single screen recording films it next
+        // to the chat terminal, exactly like a developer tabbing over.
+        const browser = await chromium.launch(
+          process.env.E2E_DESK === "1"
+            ? {
+                headless: false,
+                args: ["--window-position=300,40", "--window-size=1100,830"],
+              }
+            : {},
+        );
         const context = await browser.newContext({
           colorScheme: "dark",
           viewport: { width: 1280, height: 800 },
