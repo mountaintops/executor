@@ -77,6 +77,8 @@ export interface ShellProps {
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
   readonly supportSlot?: ReactNode;
+  /** Replaces the routed `<Outlet />` (the org-slug gate's in-shell 404). */
+  readonly content?: ReactNode;
 }
 
 // ── Brand ────────────────────────────────────────────────────────────────
@@ -417,7 +419,7 @@ export function Shell(props: ShellProps) {
           <div className="w-8 shrink-0" />
         </div>
 
-        <Outlet />
+        {props.content ?? <Outlet />}
       </main>
     </div>
   );

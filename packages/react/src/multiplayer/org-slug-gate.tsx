@@ -45,11 +45,13 @@ export interface OrgSlugGateProps {
 
 /**
  * The default not-found page for a URL naming an org this session can't see.
- * The home link is BARE on purpose — it canonicalizes onto the active org.
+ * Sized to fill its container (the shell's content area, or the viewport when
+ * rendered bare). The home link is BARE on purpose — it canonicalizes onto
+ * the active org.
  */
 export function OrgSlugNotFound() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-6 py-10">
+    <main className="flex min-h-full flex-1 items-center justify-center bg-background px-6 py-10">
       <section className="w-full max-w-md text-center">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">404</p>
         <h1 className="mt-2 text-xl font-semibold text-foreground">Page not found</h1>

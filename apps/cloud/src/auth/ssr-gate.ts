@@ -127,26 +127,38 @@ const resolveAuthHint = async (
         avatarUrl: session.avatarUrl,
       },
       organization: session.organizationId
-        ? { id: session.organizationId, name: await organizationName(session.organizationId) }
+        ? {
+            id: session.organizationId,
+            ...(await organizationDisplay(session.organizationId)),
+          }
         : null,
     },
     mint: true,
   };
 };
 
-// The sealed session carries the org ID but not its name; the local mirror
-// has it. Only consulted when minting (absent/mismatched hint) — never on the
-// steady-state path — and over per-request layers, because a connection cached
-// in the shared runtime would be reused across requests, which Cloudflare
-// forbids. A miss or failure reads as "" — display-only, corrected by the
+// The sealed session carries the org ID but not its name/slug; the local
+// mirror has both (the slug minted lazily for orgs that predate slugs). Only
+// consulted when minting (absent/mismatched hint) — never on the steady-state
+// path — and over per-request layers, because a connection cached in the
+// shared runtime would be reused across requests, which Cloudflare forbids. A
+// miss or failure reads as empty strings — display-only, corrected by the
 // client's /account/me write.
-const organizationName = async (organizationId: string): Promise<string> => {
+const organizationDisplay = async (
+  organizationId: string,
+): Promise<{ name: string; slug: string }> => {
   const exit = await getRuntime().runPromiseExit(
     Effect.flatMap(UserStoreService.asEffect(), (users) =>
-      users.use((store) => store.getOrganization(organizationId)),
+      users.use(async (store) => {
+        const org = await store.getOrganization(organizationId);
+        if (!org) return null;
+        return store.ensureOrganizationSlug(org);
+      }),
     ).pipe(Effect.provide(Layer.provide(makeUserStoreLayer(), makeDbLayer()))),
   );
-  return Exit.isSuccess(exit) ? (exit.value?.name ?? "") : "";
+  return Exit.isSuccess(exit)
+    ? { name: exit.value?.name ?? "", slug: exit.value?.slug ?? "" }
+    : { name: "", slug: "" };
 };
 
 const hintSetCookie = (hint: AuthHint) =>

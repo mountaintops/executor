@@ -277,7 +277,15 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
               >
                 <OrgSlugGate
                   activeSlug={activeSlug}
-                  foreignSlug={(slug) => <ForeignOrgSlug slug={slug} />}
+                  // Framed by the real shell: a foreign slug resolves (or
+                  // 404s) inside the app chrome, exactly like the route-level
+                  // not-found — never a bare full-page state.
+                  foreignSlug={(slug) => (
+                    <>
+                      <Shell content={<ForeignOrgSlug slug={slug} />} />
+                      <Toaster />
+                    </>
+                  )}
                 >
                   <Shell />
                   <Toaster />

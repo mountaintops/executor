@@ -55,7 +55,7 @@ export function ForeignOrgSlug(props: { readonly slug: string }) {
   if (target === "none") return <OrgSlugNotFound />;
 
   return (
-    <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">
+    <div className="flex min-h-full flex-1 items-center justify-center text-sm text-muted-foreground">
       {targetOrgId ? "Switching organization…" : ""}
     </div>
   );

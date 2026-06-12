@@ -1,3 +1,5 @@
+import type React from "react";
+
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
 import { trackEvent } from "@executor-js/react/api/analytics";
 import { AUTH_PATHS } from "../auth/api";
@@ -27,7 +29,7 @@ const signOut = async () => {
   window.location.href = "/";
 };
 
-export function Shell() {
+export function Shell(props: { readonly content?: React.ReactNode }) {
   return (
     <SharedShell
       onSignOut={signOut}
@@ -35,6 +37,7 @@ export function Shell() {
       apiKeysTo="/api-keys"
       orgMenuSlot={<OrgMenuSlot />}
       supportSlot={<SupportSlot />}
+      content={props.content}
     />
   );
 }
