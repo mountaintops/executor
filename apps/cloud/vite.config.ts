@@ -20,7 +20,10 @@ const devCrashGuard = (): Plugin => {
     if (installed) return;
     installed = true;
     process.on("uncaughtException", (err, origin) => {
-      console.error(`[dev-crash-guard] uncaughtException (origin=${origin}):`, err);
+      console.error(
+        `[dev-crash-guard] uncaughtException (origin=${origin}):`,
+        err,
+      );
     });
     process.on("unhandledRejection", (reason, promise) => {
       console.error("[dev-crash-guard] unhandledRejection:", reason, promise);
@@ -39,7 +42,9 @@ const loadWranglerPublicVars = () => {
     { hideWarnings: true },
   );
   return Object.fromEntries(
-    Object.entries(wranglerConfig.vars ?? {}).filter(([key]) => key.startsWith("VITE_PUBLIC_")),
+    Object.entries(wranglerConfig.vars ?? {}).filter(([key]) =>
+      key.startsWith("VITE_PUBLIC_"),
+    ),
   );
 };
 
@@ -61,8 +66,20 @@ export default defineConfig(({ mode }) => {
     define: Object.fromEntries(
       Object.entries(publicEnv)
         .filter(([key]) => key.startsWith("VITE_PUBLIC_"))
-        .map(([key, value]) => [`import.meta.env.${key}`, JSON.stringify(value)]),
+        .map(([key, value]) => [
+          `import.meta.env.${key}`,
+          JSON.stringify(value),
+        ]),
     ),
+    // Browser OTLP spans (VITE_PUBLIC_OTLP_TRACES_URL=/v1/traces, set by the
+    // e2e global setup) go same-origin and proxy to the local motel server —
+    // motel serves no CORS headers, so a direct cross-origin post would die
+    // in preflight. Dev-only; unrouted when nothing listens.
+    server: {
+      proxy: {
+        "/v1/traces": process.env.MOTEL_URL ?? "http://127.0.0.1:27686",
+      },
+    },
     resolve: { tsconfigPaths: true },
     plugins: [
       devCrashGuard(),
@@ -81,7 +98,11 @@ export default defineConfig(({ mode }) => {
           virtualRouteConfig: rootRoute("__root.tsx", [
             ...consoleRoutes({
               dir: "../../../../packages/react/src/routes",
-              exclude: ["/secrets", "/resume/$executionId", "/plugins/$pluginId/$"],
+              exclude: [
+                "/secrets",
+                "/resume/$executionId",
+                "/plugins/$pluginId/$",
+              ],
             }),
             physical("", "app"),
           ]),

@@ -15,7 +15,7 @@
     "serve": "bun scripts/rebuild-viewer.ts && bun scripts/serve.ts",
     "typecheck": "tsc --noEmit",
 "test:desktop": "vitest run --project desktop",
-    "motel": "motel"
+    "motel": "MOTEL_OTEL_BASE_URL=http://127.0.0.1:4796 MOTEL_OTEL_DB_PATH=runs/.motel/telemetry.sqlite motel server"
   },
   "dependencies": {
     "@executor-js/api": "workspace:*",

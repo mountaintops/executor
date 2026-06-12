@@ -49,7 +49,11 @@ const useRoute = () => {
 
 export const App = () => {
   const route = useRoute();
-  return route ? <RunView target={route.target} slug={route.slug} /> : <Matrix />;
+  return route ? (
+    <RunView target={route.target} slug={route.slug} />
+  ) : (
+    <Matrix />
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -66,7 +70,12 @@ const Matrix = () => {
       .catch((e) => setError(String(e)));
   }, []);
 
-  if (error) return <div className="page error-text">failed to load manifest.json: {error}</div>;
+  if (error)
+    return (
+      <div className="page error-text">
+        failed to load manifest.json: {error}
+      </div>
+    );
   if (!manifest) return <div className="page dim">loading…</div>;
 
   const targets = [...new Set(manifest.runs.map((r) => r.target))].sort();
@@ -84,8 +93,8 @@ const Matrix = () => {
     <div className="page">
       <h1>Executor e2e — every scenario, on every deployment</h1>
       <p className="hint">
-        Click a result for that run's artifacts (Playwright trace, video, screenshots, failure
-        output). “—” = capability not on that target.
+        Click a result for that run's artifacts (Playwright trace, video,
+        screenshots, failure output). “—” = capability not on that target.
       </p>
       <table>
         <thead>
@@ -111,7 +120,10 @@ const Matrix = () => {
                       >
                         {run.ok ? "✓ passed" : "✗ FAILED"}
                         {run.durationMs != null && (
-                          <span className="d"> {(run.durationMs / 1000).toFixed(1)}s</span>
+                          <span className="d">
+                            {" "}
+                            {(run.durationMs / 1000).toFixed(1)}s
+                          </span>
                         )}
                       </a>
                     </td>
@@ -127,7 +139,9 @@ const Matrix = () => {
           ))}
         </tbody>
       </table>
-      <p className="stamp">generated {new Date(manifest.generatedAt).toLocaleString()}</p>
+      <p className="stamp">
+        generated {new Date(manifest.generatedAt).toLocaleString()}
+      </p>
     </div>
   );
 };
@@ -137,10 +151,10 @@ const Matrix = () => {
 // viewer (trace.playwright.dev fetches the zip from this server, client-side).
 // ---------------------------------------------------------------------------
 
-// Where this machine's motel (local OTLP store) serves its viewer. Runs
-// export distributed traces there when E2E_MOTEL=1; the run page links its
-// harvested trace ids straight into motel's per-trace waterfall.
-const MOTEL_VIEWER = "http://127.0.0.1:27686";
+// The suite's motel (local OTLP store, booted by the global setup on a
+// fixed port). Every run exports distributed traces there; the run page
+// links its harvested trace ids straight into motel's per-trace waterfall.
+const MOTEL_VIEWER = "http://127.0.0.1:4796";
 
 interface RunTraceRef {
   id: string;
@@ -166,7 +180,8 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
       .catch(() => setTraces([]));
   }, [base]);
 
-  if (error) return <div className="page error-text">failed to load run: {error}</div>;
+  if (error)
+    return <div className="page error-text">failed to load run: {error}</div>;
   if (!result) return <div className="page dim">loading…</div>;
 
   const has = (name: string) => result.artifacts.includes(name);
@@ -176,7 +191,12 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
   // When present it IS the session; the parts stay on disk for debugging.
   const film = has("film.mp4") ? "film.mp4" : null;
   const video =
-    film ?? (has("session.mp4") ? "session.mp4" : has("session.webm") ? "session.webm" : null);
+    film ??
+    (has("session.mp4")
+      ? "session.mp4"
+      : has("session.webm")
+        ? "session.webm"
+        : null);
   const cast = film ? null : has("terminal.cast") ? "terminal.cast" : null;
   const media = video ?? cast;
   const traceUrl = has("trace.zip")
@@ -191,11 +211,21 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
         <a href="#/">← all runs</a>
         <span>
           {traceUrl && (
-            <a className="tool-link" href={traceUrl} target="_blank" rel="noreferrer">
+            <a
+              className="tool-link"
+              href={traceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
               ⊙ open trace
             </a>
           )}
-          <a className="tool-link" href={`${base}/result.json`} target="_blank" rel="noreferrer">
+          <a
+            className="tool-link"
+            href={`${base}/result.json`}
+            target="_blank"
+            rel="noreferrer"
+          >
             result.json
           </a>
         </span>
@@ -256,10 +286,19 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
           {screenshots.length > 0 && (
             <div className="shots">
               {screenshots.map((shot) => (
-                <a key={shot} href={`${base}/${shot}`} target="_blank" rel="noreferrer">
+                <a
+                  key={shot}
+                  href={`${base}/${shot}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   <figure>
                     <img loading="lazy" src={`${base}/${shot}`} alt={shot} />
-                    <figcaption className={shot === "failure.png" ? "error-text" : undefined}>
+                    <figcaption
+                      className={
+                        shot === "failure.png" ? "error-text" : undefined
+                      }
+                    >
                       {labelOf(shot)}
                     </figcaption>
                   </figure>
@@ -271,16 +310,18 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
       )}
       {!media && !has("test.ts") && screenshots.length === 0 && (
         <p className="dim">
-          No visual artifacts — this surface's source of truth is the test code and its assertions.
+          No visual artifacts — this surface's source of truth is the test code
+          and its assertions.
         </p>
       )}
       {traces.length > 0 && (
         <>
           <h2 className="section">Distributed traces</h2>
           <p className="hint">
-            Every API call the recording made, as a click→server→DB waterfall. Served by your local
-            motel (`bun run motel`); runs recorded without E2E_MOTEL=1 still list ids, but motel
-            won't have the spans.
+            Every API call the recording made, as a click→server→DB waterfall in
+            the suite's motel store (runs/.motel). Links need a motel serving
+            that store — the suite's own while it runs, or `bun run motel`
+            afterwards.
           </p>
           <table>
             <thead>
@@ -298,7 +339,9 @@ const RunView = ({ target, slug }: { target: string; slug: string }) => {
                       ? `${((trace.at - result.startedAt) / 1000).toFixed(1)}s`
                       : new Date(trace.at).toLocaleTimeString()}
                   </td>
-                  <td className="dim">{trace.url.replace(/^https?:\/\/[^/]+/, "")}</td>
+                  <td className="dim">
+                    {trace.url.replace(/^https?:\/\/[^/]+/, "")}
+                  </td>
                   <td>
                     <a
                       className="tool-link"

@@ -7,6 +7,7 @@ import { claimPorts } from "../src/ports";
 import { E2E_COOKIE_PASSWORD, E2E_WORKOS_CLIENT_ID } from "../targets/cloud";
 import { waitForHttp } from "./boot";
 import { bootCloud } from "./cloud.boot";
+import { bootMotel, motelExporterEnv } from "./motel";
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
   if (process.env.E2E_CLOUD_URL) {
@@ -25,6 +26,10 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     { envVar: "E2E_AUTUMN_EMULATOR_PORT", offset: 3, label: "Autumn emulator" },
   ]);
 
+  // Suite-owned trace store — every run captures distributed traces.
+  const motel = await bootMotel();
+
+  const publicUrl = `http://127.0.0.1:${ports.E2E_CLOUD_PORT!}`;
   let booted;
   try {
     booted = await bootCloud({
@@ -34,14 +39,21 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
       autumnPort: ports.E2E_AUTUMN_EMULATOR_PORT!,
       workosClientId: E2E_WORKOS_CLIENT_ID,
       cookiePassword: E2E_COOKIE_PASSWORD,
-      publicUrl: `http://127.0.0.1:${ports.E2E_CLOUD_PORT!}`,
+      publicUrl,
+      // Server + browser spans → the suite's motel. The app's exporter is
+      // endpoint-agnostic, so the same layer that ships prod traces to
+      // Axiom ships e2e traces to the suite store — "why was that page
+      // slow" gets a span waterfall, not a guess.
+      extraEnv: motelExporterEnv(motel, publicUrl),
     });
   } catch (error) {
+    await motel?.teardown();
     await release();
     throw error;
   }
   return async () => {
     await booted.teardown();
+    await motel?.teardown();
     await release();
   };
 }

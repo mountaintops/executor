@@ -12,7 +12,9 @@ import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForHttp } from "./boot";
 
-export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
+export const cloudDir = fileURLToPath(
+  new URL("../../apps/cloud/", import.meta.url),
+);
 
 export interface CloudBootOptions {
   readonly cloudPort: number;
@@ -35,6 +37,8 @@ export interface CloudBootOptions {
   /** Wipe the dev DB before boot (hermetic). Default true. */
   readonly fresh?: boolean;
   readonly logFile?: string;
+  /** Extra env for the app's dev stack (e.g. the suite's OTLP exporter). */
+  readonly extraEnv?: Record<string, string>;
 }
 
 export interface CloudBooted {
@@ -44,7 +48,9 @@ export interface CloudBooted {
   readonly autumnUrl: string;
 }
 
-export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted> => {
+export const bootCloud = async (
+  options: CloudBootOptions,
+): Promise<CloudBooted> => {
   // Fresh dev DB per boot — the WorkOS emulator mints org ids from a
   // per-process counter, so a persisted DB from a previous invocation
   // collides with the new boot's ids (identities land in polluted orgs /
@@ -60,7 +66,10 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     port: options.workosPort,
     ...(options.workosPublicUrl ? { baseUrl: options.workosPublicUrl } : {}),
   });
-  const autumn = await createEmulator({ service: "autumn", port: options.autumnPort });
+  const autumn = await createEmulator({
+    service: "autumn",
+    port: options.autumnPort,
+  });
 
   const workosUrl = options.workosPublicUrl ?? workos.url;
   const env = {
@@ -72,7 +81,8 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     WORKOS_CLIENT_ID: options.workosClientId,
     WORKOS_COOKIE_PASSWORD: options.cookiePassword,
     AUTUMN_SECRET_KEY: "am_test_emulate",
-    ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ENCRYPTION_KEY:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     DATABASE_URL: `postgresql://postgres:postgres@127.0.0.1:${options.dbPort}/postgres`,
     EXECUTOR_DIRECT_DATABASE_URL: "true",
     CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
@@ -87,6 +97,7 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     // Vite rejects unknown Host headers; allow the public hostname when a
     // proxy fronts the app.
     __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: new URL(options.publicUrl).hostname,
+    ...options.extraEnv,
   };
 
   const procs = bootProcesses(

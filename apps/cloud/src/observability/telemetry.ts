@@ -39,7 +39,7 @@ import { trace } from "@opentelemetry/api";
 // which workerd does support.
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http/build/esm/platform/browser/index.js";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
 import { env } from "cloudflare:workers";
@@ -61,7 +61,13 @@ const ensureGlobalTracerProvider = (): boolean => {
       [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
     }),
     spanProcessors: [
-      new SimpleSpanProcessor(
+      // Batch, not Simple: SimpleSpanProcessor issues one synchronous fetch
+      // per span END — a busy MCP request emits dozens of spans, and the
+      // serialized export fetches add seconds of latency inside the request
+      // (enough to flip pause/resume timing in e2e). Batch buffers and
+      // ships on a timer; `ctx.waitUntil(flushTracerProvider())` at the end
+      // of each request still drains the buffer before the isolate exits.
+      new BatchSpanProcessor(
         new OTLPTraceExporter({
           url: env.AXIOM_TRACES_URL ?? "https://api.axiom.co/v1/traces",
           headers: {
@@ -69,6 +75,7 @@ const ensureGlobalTracerProvider = (): boolean => {
             "X-Axiom-Dataset": env.AXIOM_DATASET ?? "executor-cloud",
           },
         }),
+        { scheduledDelayMillis: 1_000, maxExportBatchSize: 512 },
       ),
     ],
   });

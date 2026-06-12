@@ -1,4 +1,4 @@
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
   ATTR_HTTP_REQUEST_METHOD,
   ATTR_HTTP_RESPONSE_STATUS_CODE,
@@ -72,32 +72,52 @@ const cloudflareHandler: ExportedHandler<Env> = {
       return fetchHandler(request, env, ctx);
     }
     const url = new URL(request.url);
-    return tracer.startActiveSpan(`http.server ${request.method}`, async (span) => {
-      span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
-      span.setAttribute(ATTR_URL_FULL, request.url);
-      span.setAttribute(ATTR_URL_PATH, url.pathname);
-      span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
-      // Adapter boundary: Cloudflare's fetch handler is a Promise-based
-      // callback and the OTel span lifecycle needs to observe both the
-      // resolved response and any thrown error before `span.end()`. Sentry's
-      // outer wrapper still captures the exception; we only mark span status.
-      // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary
-      try {
-        const response = await fetchHandler(request, env, ctx);
-        span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
-        if (response.status >= 500) {
+    // Join the caller's W3C trace when the request carries one — the web UI
+    // sends traceparent on every API fetch, so the browser's spans and this
+    // request share one trace id end to end. Same parsing the DO path does
+    // in session-durable-object.ts.
+    const traceparentMatch = /^[0-9a-f]{2}-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(
+      request.headers.get("traceparent") ?? "",
+    );
+    const parentContext = traceparentMatch
+      ? trace.setSpanContext(context.active(), {
+          traceId: traceparentMatch[1]!,
+          spanId: traceparentMatch[2]!,
+          traceFlags: parseInt(traceparentMatch[3]!, 16),
+          isRemote: true,
+        })
+      : context.active();
+    return tracer.startActiveSpan(
+      `http.server ${request.method}`,
+      { kind: SpanKind.SERVER },
+      parentContext,
+      async (span) => {
+        span.setAttribute(ATTR_HTTP_REQUEST_METHOD, request.method);
+        span.setAttribute(ATTR_URL_FULL, request.url);
+        span.setAttribute(ATTR_URL_PATH, url.pathname);
+        span.setAttribute(ATTR_URL_SCHEME, url.protocol.replace(/:$/, ""));
+        // Adapter boundary: Cloudflare's fetch handler is a Promise-based
+        // callback and the OTel span lifecycle needs to observe both the
+        // resolved response and any thrown error before `span.end()`. Sentry's
+        // outer wrapper still captures the exception; we only mark span status.
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary
+        try {
+          const response = await fetchHandler(request, env, ctx);
+          span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+          if (response.status >= 500) {
+            span.setStatus({ code: SpanStatusCode.ERROR });
+          }
+          return response;
+        } catch (err) {
           span.setStatus({ code: SpanStatusCode.ERROR });
+          // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
+          throw err;
+        } finally {
+          span.end();
+          ctx.waitUntil(flushTracerProvider());
         }
-        return response;
-      } catch (err) {
-        span.setStatus({ code: SpanStatusCode.ERROR });
-        // oxlint-disable-next-line executor/no-try-catch-or-throw -- adapter boundary; preserve original error to Cloudflare runtime
-        throw err;
-      } finally {
-        span.end();
-        ctx.waitUntil(flushTracerProvider());
-      }
-    });
+      },
+    );
   },
 };
 

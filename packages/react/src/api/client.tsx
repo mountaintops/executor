@@ -1,9 +1,12 @@
+import * as Atom from "effect/unstable/reactivity/Atom";
 import * as AtomHttpApi from "effect/unstable/reactivity/AtomHttpApi";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as HttpClientError from "effect/unstable/http/HttpClientError";
+import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 import { ExecutorApi } from "@executor-js/api/client";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -24,6 +27,51 @@ export const reportApiClientInfrastructureCause = (cause: Cause.Cause<unknown>) 
       action: "decode_or_transport",
     });
   });
+
+// ---------------------------------------------------------------------------
+// Browser tracing — only when the build names an OTLP endpoint
+// (VITE_PUBLIC_OTLP_TRACES_URL; e2e points it at a local motel through a
+// dev proxy). With a Tracer in the runtime, Effect's HttpClient opens an
+// http.client span around every API request AND sends the W3C traceparent
+// header, so server spans join the browser's trace — one trace from the
+// click to the database. Without the env var this is exactly
+// FetchHttpClient.layer: no tracing code in the hot path.
+// ---------------------------------------------------------------------------
+
+// Plain member access — vite `define` rewrites the exact expression
+// `import.meta.env.VITE_PUBLIC_OTLP_TRACES_URL`; optional chaining would
+// dodge the replacement and always read undefined.
+const otlpTracesUrl = import.meta.env.VITE_PUBLIC_OTLP_TRACES_URL as string | undefined;
+
+// The tracer must reach the runtime context the atom effects EXECUTE in.
+// Merging it into the `httpClient` option doesn't: AtomHttpApi builds the
+// client with `Layer.provide(clientLayer, httpClient)`, which consumes the
+// tracer during construction without exposing it to the running fibers
+// (spans then come from the default native tracer — ids and traceparent,
+// no export). addGlobalLayer is provideMerge'd into every runtime built by
+// the default factory, which is exactly what AtomHttpApi services use.
+//
+// TracerDisabledWhen must be URL-scoped, NOT a blanket `() => true` on the
+// exporter's client: addGlobalLayer leaks provided references into the
+// shared runtime context, and a blanket predicate silently disables
+// tracing for EVERY HttpClient — no spans, no traceparent, no export, no
+// error. URL-scoped, the leak is the desired behavior: any client posting
+// to the OTLP endpoint (the exporter) goes untraced, everything else is
+// traced.
+if (otlpTracesUrl) {
+  Atom.runtime.addGlobalLayer(
+    Layer.mergeAll(
+      OtlpTracer.layer({
+        url: otlpTracesUrl,
+        resource: { serviceName: "executor-web" },
+        // Browser sessions are short; the 5s default loses the tail spans
+        // when the tab closes.
+        exportInterval: "1 second",
+      }).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(FetchHttpClient.layer)),
+      Layer.succeed(HttpClient.TracerDisabledWhen, (request) => request.url.includes("/v1/traces")),
+    ),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Core API client — tools + secrets
