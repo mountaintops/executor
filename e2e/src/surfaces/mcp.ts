@@ -116,8 +116,11 @@ export interface McpSurface {
    * for raw-wire scenarios that drive /mcp without an MCP client library —
    * client *behavior* (scope choices, refresh, token storage) is never
    * modeled here; that's what driving the real client binaries is for.
+   * Pass a full Identity when the target's consent signs in with real
+   * credentials (selfhost); a bare email suffices where consent is
+   * login_hint-driven (cloud's emulator).
    */
-  readonly mintBearer: (email: string) => Effect.Effect<string>;
+  readonly mintBearer: (subject: string | Identity) => Effect.Effect<string>;
 }
 
 const textOf = (result: unknown): string => {
@@ -135,18 +138,27 @@ interface TokenResponse {
   readonly access_token?: string;
 }
 
-const mintBearerFlow = async (target: Target, email: string): Promise<string> => {
-  const consent = target.mcpConsent?.({
-    label: email,
-    credentials: { email, password: "" },
-  });
+const mintBearerFlow = async (target: Target, subject: string | Identity): Promise<string> => {
+  const identity: Identity =
+    typeof subject === "string"
+      ? { label: subject, credentials: { email: subject, password: "" } }
+      : subject;
+  const consent = target.mcpConsent?.(identity);
   if (!consent) throw new Error(`target ${target.name} has no mcpConsent strategy`);
 
+  // RFC 9728 discovery. Providers differ on where the protected-resource doc
+  // lives (cloud: path-suffixed /.well-known/…/mcp; selfhost: the bare origin
+  // root) — probe the suffixed doc first, fall back to the root one.
   const mcpPath = new URL(target.mcpUrl).pathname;
-  const resource = (await (
-    await fetch(new URL(`/.well-known/oauth-protected-resource${mcpPath}`, target.baseUrl))
-  ).json()) as { authorization_servers?: ReadonlyArray<string> };
-  const issuer = resource.authorization_servers?.[0];
+  const discover = async (path: string): Promise<ReadonlyArray<string> | undefined> => {
+    const response = await fetch(new URL(path, target.baseUrl));
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { authorization_servers?: ReadonlyArray<string> };
+    return body.authorization_servers;
+  };
+  const issuer = ((await discover(`/.well-known/oauth-protected-resource${mcpPath}`)) ??
+    (await discover("/.well-known/oauth-protected-resource")) ??
+    [])[0];
   if (!issuer) throw new Error("mintBearer: no authorization server advertised");
   const metadata = (await (
     await fetch(new URL("/.well-known/oauth-authorization-server", issuer))
