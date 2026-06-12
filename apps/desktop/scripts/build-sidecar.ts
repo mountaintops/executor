@@ -203,13 +203,18 @@ if (!existsSync(APPS_LOCAL_DIST)) {
 // glob-expands the bare `*` in `--cpu=*` and fails with "no matches found".
 if (!targetIsCurrentPlatform) {
   console.log("[build-sidecar] installing optional native deps for all platforms...");
+  // timeout: bun install has been observed to print a fatal error (tarball
+  // integrity check) and then hang instead of exiting, wedging the CI leg
+  // until the job-level deadline. A healthy run takes well under a minute.
   const proc = Bun.spawn(["bun", "install", "--frozen-lockfile", "--cpu=*", "--os=*"], {
     cwd: REPO_ROOT,
     stdio: ["ignore", "inherit", "inherit"],
+    timeout: 10 * 60 * 1000,
+    killSignal: "SIGKILL",
   });
   if ((await proc.exited) !== 0) {
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: build-time fatal
-    throw new Error("bun install --cpu=* --os=* failed");
+    throw new Error("bun install --cpu=* --os=* failed (or timed out after 10 minutes)");
   }
 }
 

@@ -55,6 +55,12 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    # A healthy leg finishes in ~10 minutes. Without a deadline, a hung step
+    # wedges the whole publish queue: the concurrency group below queues later
+    # runs behind this one without cancelling it (v1.5.7's mac leg sat 4 hours
+    # on a bun install that errored without exiting, holding v1.5.8 pending).
+    timeout-minutes: 45
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
