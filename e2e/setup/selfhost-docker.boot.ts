@@ -10,19 +10,27 @@
 // needs Docker Engine ≥ 26 on Docker Desktop (mac/win); the boot fails loudly
 // if the daemon lacks it.
 //
-// Data is an anonymous volume (the image declares VOLUME /data), removed with
-// the container — hermetic per suite, same as the dev target's fresh data dir.
+// Data lives in a NAMED volume so the target's restart() can destroy the
+// container and start a fresh one against the same data — a real deployment
+// cycle (upgrade/reboot), not a warm in-place restart. The volume is removed
+// in teardown — hermetic per suite, same as the dev target's fresh data dir.
 import { execFile } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { selfhostDockerContainerName } from "../targets/selfhost-docker";
 import { waitForHttp, type BootedProcesses } from "./boot";
 
 const exec = promisify(execFile);
 
 export const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+/** Container/volume names — derived identically by the globalsetup (boot,
+ * teardown) and the target (restart), which run in different processes. */
+export const selfhostDockerContainerName = (port: number): string =>
+  `executor-e2e-selfhost-docker-${port}`;
+export const selfhostDockerVolumeName = (port: number): string =>
+  `executor-e2e-selfhost-docker-data-${port}`;
 
 export interface SelfhostDockerBootOptions {
   readonly port: number;
@@ -60,16 +68,23 @@ const resolveImage = async (logFile?: string): Promise<string> => {
   return image;
 };
 
-export const bootSelfhostDocker = async (
-  options: SelfhostDockerBootOptions,
-): Promise<BootedProcesses> => {
-  const image = await resolveImage(options.logFile);
+export interface RunContainerOptions {
+  readonly image: string;
+  readonly port: number;
+  readonly webBaseUrl: string;
+  readonly admin: { readonly email: string; readonly password: string };
+  readonly logFile?: string;
+}
+
+/**
+ * Start ONE container of the production image against the named data volume
+ * and wait for health. Used by the suite boot and by the target's restart()
+ * — a restart starts a genuinely new container, so it MUST run the exact
+ * same way the boot did.
+ */
+export const runSelfhostContainer = async (options: RunContainerOptions): Promise<void> => {
   const name = selfhostDockerContainerName(options.port);
-
-  // A previous suite that died without teardown leaves the named container
-  // squatting — remove it (and its anonymous volume) before booting.
-  await exec("docker", ["rm", "-f", "-v", name]).catch(() => {});
-
+  const volume = selfhostDockerVolumeName(options.port);
   const args = [
     "run",
     "--detach",
@@ -77,6 +92,8 @@ export const bootSelfhostDocker = async (
     name,
     "--network",
     "host",
+    "--volume",
+    `${volume}:/data`,
     "-e",
     `PORT=${options.port}`,
     "-e",
@@ -91,7 +108,7 @@ export const bootSelfhostDocker = async (
     // test servers and points the instance at them.
     "-e",
     "EXECUTOR_ALLOW_LOCAL_NETWORK=true",
-    image,
+    options.image,
   ];
   log(options.logFile, `docker ${args.join(" ")}`);
   await exec("docker", args).catch((error: { stderr?: string }) => {
@@ -105,17 +122,49 @@ export const bootSelfhostDocker = async (
       stdout: "(docker logs unavailable)",
     }));
     log(options.logFile, String(stdout));
-    await exec("docker", ["rm", "-f", "-v", name]).catch(() => {});
+    await exec("docker", ["rm", "-f", name]).catch(() => {});
     throw error;
   }
+};
+
+/**
+ * A deployment shutdown, as orchestrators do it: SIGTERM (docker stop's
+ * 10s default grace, then SIGKILL), flush the container's logs, remove the
+ * container. The volume stays — it's the deployment's persistent data.
+ */
+export const stopSelfhostContainer = async (port: number, logFile?: string): Promise<void> => {
+  const name = selfhostDockerContainerName(port);
+  await exec("docker", ["stop", name]).catch(() => {});
+  if (logFile) {
+    const { stdout } = await exec("docker", ["logs", name]).catch(() => ({ stdout: "" }));
+    if (stdout) appendFileSync(logFile, stdout);
+  }
+  await exec("docker", ["rm", "-f", name]).catch(() => {});
+};
+
+export const bootSelfhostDocker = async (
+  options: SelfhostDockerBootOptions,
+): Promise<BootedProcesses> => {
+  const image = await resolveImage(options.logFile);
+  const name = selfhostDockerContainerName(options.port);
+  const volume = selfhostDockerVolumeName(options.port);
+
+  // A previous suite that died without teardown leaves the named container
+  // and volume squatting — remove both for a hermetic boot.
+  await exec("docker", ["rm", "-f", name]).catch(() => {});
+  await exec("docker", ["volume", "rm", "-f", volume]).catch(() => {});
+
+  await runSelfhostContainer({ image, ...options });
+
+  // The target's restart() runs in a different process (test worker, not
+  // globalsetup) and must re-run the same image. claimPorts-style env
+  // publication: workers spawn after globalsetup, so they inherit this.
+  process.env.E2E_SELFHOST_DOCKER_RESOLVED_IMAGE = image;
 
   return {
     teardown: async () => {
-      if (options.logFile) {
-        const { stdout } = await exec("docker", ["logs", name]).catch(() => ({ stdout: "" }));
-        if (stdout) appendFileSync(options.logFile, stdout);
-      }
-      await exec("docker", ["rm", "-f", "-v", name]).catch(() => {});
+      await stopSelfhostContainer(options.port, options.logFile);
+      await exec("docker", ["volume", "rm", "-f", volume]).catch(() => {});
     },
     pids: [],
   };

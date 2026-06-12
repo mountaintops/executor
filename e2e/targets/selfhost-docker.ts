@@ -4,27 +4,18 @@
 // target — same bootstrap admin, same Better Auth sign-in, same MCP consent —
 // so the whole scenario suite runs against what users actually deploy. Boot
 // lives in setup/selfhost-docker.globalsetup.ts.
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
 import { Effect } from "effect";
 
 import { cookieConsentStrategy } from "@executor-js/mcporter";
 
 import { e2ePort } from "../src/ports";
 import type { Identity, Target } from "../src/target";
-import { waitForHttp } from "../setup/boot";
+import { runSelfhostContainer, stopSelfhostContainer } from "../setup/selfhost-docker.boot";
 import { SELFHOST_ADMIN, signInSession } from "./selfhost";
-
-const exec = promisify(execFile);
 
 export const SELFHOST_DOCKER_PORT = e2ePort("E2E_SELFHOST_DOCKER_PORT", 5);
 export const SELFHOST_DOCKER_BASE_URL =
   process.env.E2E_SELFHOST_DOCKER_URL ?? `http://localhost:${SELFHOST_DOCKER_PORT}`;
-
-/** The globalsetup's container name — derived the same way on both sides. */
-export const selfhostDockerContainerName = (port: number): string =>
-  `executor-e2e-selfhost-docker-${port}`;
 
 export const selfhostDockerTarget = (): Target => ({
   name: "selfhost-docker",
@@ -50,16 +41,26 @@ export const selfhostDockerTarget = (): Target => ({
       email: identity.credentials?.email ?? SELFHOST_ADMIN.email,
       password: identity.credentials?.password ?? SELFHOST_ADMIN.password,
     }),
-  // `docker restart` keeps the container's volume — exactly a user upgrading
-  // or rebooting their deployment. Only when this process owns the container
-  // (attach mode can't assume the instance is restartable docker).
+  // A real deployment cycle, not a warm `docker restart`: graceful stop
+  // (SIGTERM + docker's grace), remove the container, start a NEW one from
+  // the same image against the same data volume — what an upgrade, reboot,
+  // or `compose down && up` does to a user's instance. Only when this suite
+  // owns the container (attach mode can't assume the instance is docker).
   ...(process.env.E2E_SELFHOST_DOCKER_URL
     ? {}
     : {
         restart: () =>
           Effect.promise(async () => {
-            await exec("docker", ["restart", selfhostDockerContainerName(SELFHOST_DOCKER_PORT)]);
-            await waitForHttp(`${SELFHOST_DOCKER_BASE_URL}/api/health`, { timeoutMs: 120_000 });
+            // Published by the globalsetup after it resolved/built the image.
+            const image = process.env.E2E_SELFHOST_DOCKER_RESOLVED_IMAGE;
+            if (!image) throw new Error("selfhost-docker: no resolved image — boot ran?");
+            await stopSelfhostContainer(SELFHOST_DOCKER_PORT);
+            await runSelfhostContainer({
+              image,
+              port: SELFHOST_DOCKER_PORT,
+              webBaseUrl: SELFHOST_DOCKER_BASE_URL,
+              admin: SELFHOST_ADMIN,
+            });
           }),
       }),
 });
