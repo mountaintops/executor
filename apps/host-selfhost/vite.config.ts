@@ -5,9 +5,9 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
-import { physical, rootRoute } from "@tanstack/virtual-file-routes";
-import { consoleRoutes } from "@executor-js/react/console-routes";
 import executorVitePlugin from "@executor-js/vite-plugin";
+
+import { routes } from "./tsr.routes";
 
 // Self-host web SPA. Mirrors @executor-js/app's vite plugin bundle, but points
 // the TanStack router codegen at THIS app's routes (web/routes) so we get the
@@ -136,14 +136,9 @@ export default defineConfig({
       autoCodeSplitting: true,
       routesDirectory: fileURLToPath(new URL("./web/routes", import.meta.url)),
       generatedRouteTree: fileURLToPath(new URL("./web/routeTree.gen.ts", import.meta.url)),
-      // Shared console routes come from @executor-js/react (see its
-      // console-routes.ts); this app owns its root (the Better Auth shell)
-      // and the self-host-specific routes under web/routes/app (admin,
-      // api-keys, invite join).
-      virtualRouteConfig: rootRoute("__root.tsx", [
-        ...consoleRoutes({ dir: "../../../../packages/react/src/routes" }),
-        physical("", "app"),
-      ]),
+      // The route tree definition lives in tsr.routes.ts (shared with
+      // packages/react's routes:gen so a CLI regen matches dev/build).
+      virtualRouteConfig: routes,
     }),
     ...react(),
   ],

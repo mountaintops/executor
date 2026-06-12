@@ -28,16 +28,23 @@ import { WorkOSClient } from "./workos";
 // callback flow we just untangled — we mirror lazily the first time an
 // unknown org is read. All other callers just do `getOrganization` and get
 // a self-healing lookup for free.
+//
+// URL slugs are OURS (WorkOS orgs have none): resolution also lazily mints a
+// slug for any org that predates them, so every resolved org is routable at
+// `/<slug>/…` without a separate backfill dependency.
 
 export const resolveOrganization = (organizationId: string) =>
   Effect.gen(function* () {
     const users = yield* UserStoreService;
     const existing = yield* users.use((s) => s.getOrganization(organizationId));
-    if (existing) return existing;
+    if (existing) return yield* users.use((s) => s.ensureOrganizationSlug(existing));
 
     const workos = yield* WorkOSClient;
     const fresh = yield* workos.getOrganization(organizationId);
-    return yield* users.use((s) => s.upsertOrganization({ id: fresh.id, name: fresh.name }));
+    const mirrored = yield* users.use((s) =>
+      s.upsertOrganization({ id: fresh.id, name: fresh.name }),
+    );
+    return yield* users.use((s) => s.ensureOrganizationSlug(mirrored));
   });
 
 // ---------------------------------------------------------------------------

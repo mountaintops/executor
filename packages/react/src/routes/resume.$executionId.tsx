@@ -81,7 +81,7 @@ const resumeLocalMcpExecution = Atom.fn<LocalMcpResumeInput>()((input) =>
   }),
 );
 
-export const Route = createFileRoute("/resume/$executionId")({
+export const Route = createFileRoute("/{-$orgSlug}/resume/$executionId")({
   validateSearch: SearchParams,
   component: RouteComponent,
 });

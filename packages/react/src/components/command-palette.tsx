@@ -94,7 +94,7 @@ export function CommandPalette() {
     (id: string) => {
       close();
       trackEvent("command_palette_navigated", { kind: "integration", plugin_key: id });
-      void navigate({ to: "/integrations/$namespace", params: { namespace: id } });
+      void navigate({ to: "/{-$orgSlug}/integrations/$namespace", params: { namespace: id } });
     },
     [close, navigate],
   );
@@ -105,7 +105,7 @@ export function CommandPalette() {
       trackEvent("command_palette_navigated", { kind: "add_integration", plugin_key: pluginKey });
       trackEvent("integration_add_started", { plugin_key: pluginKey, via: "command_palette" });
       void navigate({
-        to: "/integrations/add/$pluginKey",
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
       });
     },
@@ -124,7 +124,7 @@ export function CommandPalette() {
       const search: Record<string, string> = { preset: presetId };
       if (presetUrl) search.url = presetUrl;
       void navigate({
-        to: "/integrations/add/$pluginKey",
+        to: "/{-$orgSlug}/integrations/add/$pluginKey",
         params: { pluginKey },
         search,
       });

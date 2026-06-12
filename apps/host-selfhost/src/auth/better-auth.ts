@@ -206,6 +206,8 @@ export interface BetterAuthHandle {
   readonly auth: Auth;
   readonly organizationId: string;
   readonly organizationName: string;
+  /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
+  readonly organizationSlug: string;
   readonly handler: (request: Request) => Promise<Response>;
 }
 
@@ -259,5 +261,11 @@ export const buildBetterAuth = async (url: string, client: Client): Promise<Bett
   const { organizationId, organizationName } = await seedOrgAndAdmin(auth, client, config);
   orgRef.id = organizationId;
 
-  return { auth, organizationId, organizationName, handler: auth.handler };
+  return {
+    auth,
+    organizationId,
+    organizationName,
+    organizationSlug: config.orgSlug,
+    handler: auth.handler,
+  };
 };

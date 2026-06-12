@@ -17,7 +17,7 @@ import { useClientPlugins } from "@executor-js/sdk/client";
 // in-component routing for now.
 // ---------------------------------------------------------------------------
 
-export const Route = createFileRoute("/plugins/$pluginId/$")({
+export const Route = createFileRoute("/{-$orgSlug}/plugins/$pluginId/$")({
   component: PluginRouteComponent,
 });
 

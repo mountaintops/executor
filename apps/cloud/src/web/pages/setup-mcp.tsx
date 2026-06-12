@@ -21,7 +21,8 @@ import { useAuth } from "../auth";
 export const SetupMcpPage = () => {
   const navigate = useNavigate();
   const auth = useAuth();
-  const organizationId = auth.status === "authenticated" ? (auth.organization?.id ?? null) : null;
+  const organizationSlug =
+    auth.status === "authenticated" ? (auth.organization?.slug ?? null) : null;
   const [origin, setOrigin] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [elicitationMode, setElicitationMode] = useState<McpElicitationMode>("model");
@@ -35,7 +36,7 @@ export const SetupMcpPage = () => {
         origin,
         desktop: null,
         elicitationMode,
-        organizationId,
+        organizationSlug,
       })
     : "";
   const command = origin
@@ -44,7 +45,7 @@ export const SetupMcpPage = () => {
         isDev: false,
         origin,
         elicitationMode,
-        organizationId,
+        organizationSlug,
       })
     : "";
 
@@ -149,7 +150,7 @@ export const SetupMcpPage = () => {
             type="button"
             onClick={() => {
               trackEvent("setup_mcp_skipped");
-              void navigate({ to: "/" });
+              void navigate({ to: "/{-$orgSlug}" });
             }}
             className="text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -159,7 +160,7 @@ export const SetupMcpPage = () => {
             size="sm"
             onClick={() => {
               trackEvent("setup_mcp_completed");
-              void navigate({ to: "/" });
+              void navigate({ to: "/{-$orgSlug}" });
             }}
           >
             Continue to app

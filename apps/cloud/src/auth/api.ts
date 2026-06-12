@@ -14,6 +14,8 @@ const AuthUser = Schema.Struct({
 const AuthOrganization = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
+  slug: Schema.String,
 });
 
 const AuthMeResponse = Schema.Struct({
@@ -24,6 +26,7 @@ const AuthMeResponse = Schema.Struct({
 const AuthOrganizationSummary = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 const AuthOrganizationsResponse = Schema.Struct({
@@ -42,6 +45,7 @@ const CreateOrganizationBody = Schema.Struct({
 const CreateOrganizationResponse = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 // `state` is optional — some WorkOS-initiated redirects arrive at the
@@ -83,6 +87,7 @@ const AcceptInvitationBody = Schema.Struct({
 const AcceptInvitationResponse = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 const McpSessionExecutionParams = {

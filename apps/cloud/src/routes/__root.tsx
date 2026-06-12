@@ -15,6 +15,7 @@ import type { FrontendErrorReporter } from "@executor-js/react/api/error-reporti
 import { AnalyticsProvider, type AnalyticsClient } from "@executor-js/react/api/analytics";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
+import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
@@ -22,6 +23,7 @@ import type { AuthHint } from "@executor-js/react/multiplayer/auth-hint";
 import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
+import { ForeignOrgSlug } from "../web/components/foreign-org-slug";
 import { SupportOptions } from "../web/components/support-options";
 import { Shell } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
@@ -261,6 +263,7 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   // Null on client loader re-runs → undefined → the window-derived global,
   // which is the same origin, so the key never changes and nothing remounts.
   const connection = ssrOrigin ? ({ kind: "http", origin: ssrOrigin } as const) : undefined;
+  const activeSlug = auth.organization.slug;
 
   return (
     <AutumnProvider pathPrefix="/api/billing">
@@ -268,9 +271,17 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
         <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
             <ExecutorPluginsProvider plugins={clientPlugins}>
-              <OrganizationProvider organizationId={auth.organization.id}>
-                <Shell />
-                <Toaster />
+              <OrganizationProvider
+                organizationId={auth.organization.id}
+                organizationSlug={activeSlug}
+              >
+                <OrgSlugGate
+                  activeSlug={activeSlug}
+                  foreignSlug={(slug) => <ForeignOrgSlug slug={slug} />}
+                >
+                  <Shell />
+                  <Toaster />
+                </OrgSlugGate>
               </OrganizationProvider>
             </ExecutorPluginsProvider>
           </React.Suspense>

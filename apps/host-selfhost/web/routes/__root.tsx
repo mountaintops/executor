@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ExecutorProvider } from "@executor-js/react/api/provider";
 import { ExecutorPluginsProvider } from "@executor-js/sdk/client";
 import { OrganizationProvider } from "@executor-js/react/api/organization-context";
+import { OrgSlugGate } from "@executor-js/react/multiplayer/org-slug-gate";
 import { Toaster } from "@executor-js/react/components/sonner";
 import { AuthProvider, useAuth } from "@executor-js/react/multiplayer/auth-context";
 import { Shell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
@@ -67,14 +68,22 @@ function AuthGate({ children }: { children: ReactNode }) {
 
 function AuthenticatedApp() {
   const auth = useAuth();
-  const organizationId = auth.status === "authenticated" ? (auth.organization?.id ?? null) : null;
+  const organization = auth.status === "authenticated" ? (auth.organization ?? null) : null;
+
+  // Single-org instance: any URL slug other than the instance org's (or none)
+  // canonicalizes — no foreignSlug handler, there's nothing to switch to.
+  const gated = (
+    <>
+      <Shell onSignOut={signOut} navItems={selfHostNavItems} />
+      <Toaster />
+    </>
+  );
 
   return (
     <ExecutorProvider>
       <ExecutorPluginsProvider plugins={clientPlugins}>
-        <OrganizationProvider organizationId={organizationId}>
-          <Shell onSignOut={signOut} navItems={selfHostNavItems} />
-          <Toaster />
+        <OrganizationProvider organizationId={organization?.id ?? null}>
+          {organization ? <OrgSlugGate activeSlug={organization.slug}>{gated}</OrgSlugGate> : gated}
         </OrganizationProvider>
       </ExecutorPluginsProvider>
     </ExecutorProvider>

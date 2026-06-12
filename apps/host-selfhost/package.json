@@ -14,7 +14,8 @@
     "start": "bun run src/serve.ts",
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "routes:gen": "bun scripts/gen-routes.ts"
   },
   "dependencies": {
     "@better-auth/api-key": "^1.6.11",

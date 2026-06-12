@@ -25,7 +25,7 @@ import {
   isOverFreeOrganizationLimit,
   shouldApplyFreeOrganizationLimit,
 } from "../extensions/billing/plans";
-import { authorizeOrganization } from "./organization";
+import { authorizeOrganization, resolveOrganization } from "./organization";
 import type {
   McpSessionApprovalResult,
   McpSessionResumeApprovalResult,
@@ -262,7 +262,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               name: session.name,
               avatarUrl: session.avatarUrl,
             },
-            organization: org ? { id: org.id, name: org.name } : null,
+            organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
           };
         }),
       )
@@ -283,10 +283,12 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const session = yield* SessionContext;
 
           const memberships = yield* workos.listUserMemberships(session.accountId);
+          // Resolve through the mirror (not WorkOS directly) so each org's
+          // URL slug is minted/read — the switcher navigates to `/<slug>`.
           const organizations = yield* Effect.all(
             memberships.data.map((m) =>
-              workos.getOrganization(m.organizationId).pipe(
-                Effect.map((org) => ({ id: org.id, name: org.name })),
+              resolveOrganization(m.organizationId).pipe(
+                Effect.map((org) => ({ id: org.id, name: org.name, slug: org.slug })),
                 Effect.orElseSucceed(() => null),
               ),
             ),
@@ -354,7 +356,10 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           const org = yield* workos.createOrganization(name);
           yield* workos.createMembership(org.id, session.accountId, "admin");
-          yield* users.use((s) => s.upsertOrganization({ id: org.id, name: org.name }));
+          const mirrored = yield* users.use((s) =>
+            s.upsertOrganization({ id: org.id, name: org.name }),
+          );
+          const slugged = yield* users.use((s) => s.ensureOrganizationSlug(mirrored));
 
           // Try to attach the new org to the current session. This can fail
           // (or silently return a session still scoped to the old org) when
@@ -381,7 +386,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           }
 
           (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
-          return { id: org.id, name: org.name };
+          return { id: org.id, name: org.name, slug: slugged.slug };
         }),
       )
       .handle("pendingInvitations", () =>
@@ -452,7 +457,10 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           // Mirror the org locally so domain tables can FK against it.
           const org = yield* workos.getOrganization(invitation.organizationId);
-          yield* users.use((s) => s.upsertOrganization({ id: org.id, name: org.name }));
+          const mirrored = yield* users.use((s) =>
+            s.upsertOrganization({ id: org.id, name: org.name }),
+          );
+          const slugged = yield* users.use((s) => s.ensureOrganizationSlug(mirrored));
 
           // Attach the just-accepted org to the current session. Same shape
           // as createOrganization: refresh + verify; if we can't pin the
@@ -474,7 +482,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           }
 
           (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
-          return { id: org.id, name: org.name };
+          return { id: org.id, name: org.name, slug: slugged.slug };
         }),
       )
       .handle("getMcpPaused", ({ params }) =>

@@ -54,14 +54,16 @@ function OrganizationSwitcherItems(props: { activeOrganizationId: string | null 
   const organizations = useAtomValue(organizationsAtom);
   const doSwitchOrganization = useAtomSet(switchOrganization, { mode: "promiseExit" });
 
-  const handleSwitch = async (organizationId: string) => {
-    if (organizationId === props.activeOrganizationId) return;
+  const handleSwitch = async (organization: { id: string; slug: string }) => {
+    if (organization.id === props.activeOrganizationId) return;
     const exit = await doSwitchOrganization({
-      payload: { organizationId },
+      payload: { organizationId: organization.id },
       reactivityKeys: authWriteKeys,
     });
     trackEvent("org_switched", { success: Exit.isSuccess(exit) });
-    if (Exit.isSuccess(exit)) window.location.reload();
+    // Land on the new org's URL root — a plain reload would keep the OLD
+    // org's slug in the path and the slug gate would switch right back.
+    if (Exit.isSuccess(exit)) window.location.href = `/${organization.slug}`;
   };
 
   return AsyncResult.match(organizations, {
@@ -72,13 +74,13 @@ function OrganizationSwitcherItems(props: { activeOrganizationId: string | null 
         <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
       ) : (
         <>
-          {value.organizations.map((organization: { id: string; name: string }) => {
+          {value.organizations.map((organization: { id: string; name: string; slug: string }) => {
             const isActive = organization.id === props.activeOrganizationId;
             return (
               <DropdownMenuItem
                 key={organization.id}
                 disabled={isActive}
-                onClick={() => handleSwitch(organization.id)}
+                onClick={() => handleSwitch(organization)}
                 className="text-xs"
               >
                 <span className="min-w-0 flex-1 truncate">{organization.name}</span>
@@ -102,7 +104,11 @@ export function OrgMenuSlot() {
 
   const form = useCreateOrganizationForm({
     defaultName: suggestedOrganizationName,
-    onSuccess: () => window.location.reload(),
+    // Land on the new org's URL root — a reload would keep the old slug and
+    // the slug gate would switch the session right back.
+    onSuccess: (org) => {
+      window.location.href = `/${org.slug}`;
+    },
   });
 
   if (auth.status !== "authenticated") return null;

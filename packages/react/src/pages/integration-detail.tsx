@@ -291,7 +291,7 @@ export function IntegrationDetailPage(props: { namespace: string }) {
       setConfirmDelete(false);
       return;
     }
-    void navigate({ to: "/" });
+    void navigate({ to: "/{-$orgSlug}" });
   };
 
   const handleRefresh = async () => {

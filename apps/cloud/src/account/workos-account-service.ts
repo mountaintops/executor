@@ -174,7 +174,7 @@ export const workosAccountProvider: Layer.Layer<
               name: session.name,
               avatarUrl: session.avatarUrl,
             },
-            organization: org ? { id: org.id, name: org.name } : null,
+            organization: org ? { id: org.id, name: org.name, slug: org.slug } : null,
           };
         }),
 
