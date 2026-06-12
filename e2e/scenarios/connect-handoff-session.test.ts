@@ -24,49 +24,16 @@ const EMULATOR_BASE = "https://resend.emulators.dev";
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
-/** Resend subset spec pointed at the emulator, with an explicit apiKey
- *  template so the add-account modal renders a paste-a-token flow. */
-const resendSpec = {
-  openapi: "3.0.3",
-  info: { title: "Resend (emulated)", version: "1.0.0" },
-  paths: {
-    "/emails": {
-      post: {
-        operationId: "sendEmail",
-        tags: ["emails"],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: {
-                  from: { type: "string" },
-                  to: { type: "string" },
-                  subject: { type: "string" },
-                  html: { type: "string" },
-                },
-                required: ["from", "to", "subject"],
-              },
-            },
-          },
-        },
-        responses: { "200": { description: "sent" } },
-      },
-    },
-  },
-} as const;
+// The emulator serves its own OpenAPI document (bearer auth, base URL in
+// `servers`) — adding by URL with nothing else is exactly what an agent
+// does, and the platform derives the paste-a-token auth method from the
+// spec's security scheme.
+const EMULATOR_SPEC_URL = `${EMULATOR_BASE}/openapi.json`;
 
 const addSpecCode = (slug: string) => `
 const added = await tools.executor.openapi.addSpec({
-  spec: { kind: "blob", value: ${JSON.stringify(JSON.stringify(resendSpec))} },
+  spec: { kind: "url", url: ${JSON.stringify(EMULATOR_SPEC_URL)} },
   slug: ${JSON.stringify(slug)},
-  baseUrl: ${JSON.stringify(EMULATOR_BASE)},
-  authenticationTemplate: [{
-    type: "apiKey",
-    label: "API key",
-    headers: { Authorization: ["Bearer ", { type: "variable", name: "apiKey" }] },
-  }],
 });
 return added.ok ? { ok: true, slug: added.data.slug, toolCount: added.data.toolCount } : { ok: false, error: added.error };
 `;
@@ -153,7 +120,7 @@ scenario(
             const added = yield* chat.tool(
               "executor.execute · openapi.addSpec(resend)",
               executeJson(session, addSpecCode(integration)),
-              (result) => `${String(result.toolCount)} tool`,
+              (result) => `${String(result.toolCount)} tools`,
             );
             expect(added.ok, `addSpec succeeded: ${JSON.stringify(added)}`).toBe(true);
 
