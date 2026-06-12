@@ -10,7 +10,10 @@ import {
   McpSessionForbiddenError,
 } from "./api";
 import { NoOrganization } from "@executor-js/api/server";
+// Pure constants/codec module (no React) — safe in the backend graph.
+import { AUTH_HINT_COOKIE } from "@executor-js/react/multiplayer/auth-hint";
 import { SessionContext, SessionCookies } from "./middleware";
+import { safeReturnTo } from "./return-to";
 import { UserStoreService } from "./context";
 import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
@@ -36,6 +39,10 @@ const COOKIE_OPTIONS = {
 };
 
 const STATE_COOKIE = "wos-login-state";
+// Where the user was headed before login (set by /auth/login from its
+// validated returnTo query, read once by the callback). Same lifetime and
+// flags as the CSRF state it travels with.
+const RETURN_TO_COOKIE = "wos-login-return-to";
 const STATE_COOKIE_OPTIONS = {
   path: "/",
   httpOnly: true,
@@ -143,7 +150,7 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
   "cloudAuthPublic",
   (handlers) =>
     handlers
-      .handleRaw("login", () =>
+      .handleRaw("login", ({ query }) =>
         Effect.gen(function* () {
           const workos = yield* WorkOSClient;
           // Use the explicit public site URL — in dev, the request's Host
@@ -152,12 +159,23 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
           const origin = env.VITE_PUBLIC_SITE_URL ?? "";
           const state = randomState();
           const url = workos.getAuthorizationUrl(`${origin}${AUTH_PATHS.callback}`, state);
-          return setResponseCookie(
+          const returnTo = safeReturnTo(query.returnTo);
+          const withState = setResponseCookie(
             HttpServerResponse.redirect(url, { status: 302 }),
             STATE_COOKIE,
             state,
             RESPONSE_STATE_COOKIE_OPTIONS,
           );
+          // Raw value: HttpServerResponse.setCookieUnsafe URI-encodes it for
+          // the wire and `request.cookies` decodes it back on the callback.
+          return returnTo
+            ? setResponseCookie(
+                withState,
+                RETURN_TO_COOKIE,
+                returnTo,
+                RESPONSE_STATE_COOKIE_OPTIONS,
+              )
+            : withState;
         }),
       )
       .handleRaw("callback", ({ request, query }) =>
@@ -211,14 +229,21 @@ export const CloudAuthPublicHandlers = HttpApiBuilder.group(
             return HttpServerResponse.text("Failed to create session", { status: 500 });
           }
 
+          // Resume where the SSR gate interrupted them; the cookie value is
+          // browser-writable, so it gets the same validation as the query.
+          const returnTo = safeReturnTo(request.cookies[RETURN_TO_COOKIE]) ?? "/";
+
           return deleteResponseCookie(
-            setResponseCookie(
-              HttpServerResponse.redirect("/", { status: 302 }),
-              "wos-session",
-              sealedSession,
-              RESPONSE_COOKIE_OPTIONS,
+            deleteResponseCookie(
+              setResponseCookie(
+                HttpServerResponse.redirect(returnTo, { status: 302 }),
+                "wos-session",
+                sealedSession,
+                RESPONSE_COOKIE_OPTIONS,
+              ),
+              STATE_COOKIE,
             ),
-            STATE_COOKIE,
+            RETURN_TO_COOKIE,
           );
         }),
       ),
@@ -253,7 +278,13 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       )
       .handleRaw("logout", () =>
         Effect.succeed(
-          deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+          // The auth-hint travels with the session: leaving it behind would
+          // make the next page load optimistically paint the app shell for a
+          // signed-out browser.
+          deleteResponseCookie(
+            deleteResponseCookie(HttpServerResponse.redirect("/", { status: 302 }), "wos-session"),
+            AUTH_HINT_COOKIE,
+          ),
         ),
       )
       .handle("organizations", () =>
