@@ -8,8 +8,9 @@
 // the PR description.
 //
 // Usage: bun e2e/scripts/pr-media.ts <run-dir-or-artifact> [...more]
-//   run dir        e2e/runs/<target>/<scenario-slug> — picks session.mp4 or
-//                  terminal.cast and labels the gif from result.json
+//   run dir        e2e/runs/<target>/<scenario-slug> — picks film.mp4 (the
+//                  whole session), else session.mp4, else terminal.cast;
+//                  labels the gif from result.json
 //   session.mp4    browser recording (ffmpeg -> gif)
 //   terminal.cast  terminal recording (agg -> gif; brew install agg)
 //   *.png          run screenshot, uploaded as-is
@@ -48,10 +49,13 @@ const resolveArtifact = (input: string): Artifact => {
       slug: basename(path).replace(/\.[^.]+$/, ""),
     };
   }
-  const recording = ["session.mp4", "terminal.cast"]
+  // film.mp4 (scripts/film.ts) is the whole session — terminal chat AND the
+  // browser hop, cut in time order; the bare browser session.mp4 is only the
+  // hop, so it must never win when a film exists.
+  const recording = ["film.mp4", "session.mp4", "terminal.cast"]
     .map((name) => join(path, name))
     .find(existsSync);
-  if (!recording) throw new Error(`${input} has no session.mp4 or terminal.cast`);
+  if (!recording) throw new Error(`${input} has no film.mp4, session.mp4, or terminal.cast`);
   let label = basename(path);
   try {
     const result = JSON.parse(readFileSync(join(path, "result.json"), "utf8")) as {
