@@ -4,7 +4,7 @@
 // everywhere), per-step screenshots, and a failure screenshot. The scenario
 // drives `page` directly; assertions are vitest's job.
 import { execFile } from "node:child_process";
-import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -70,7 +70,20 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         // The session video's clock starts with the page; anchor it for the
         // run's focus timeline (scripts/film.ts cuts on these).
         markRecordingStart(dir, "browser");
-        return { browser, context, page, videoTmp, shots: { count: 0 } };
+        // Harvest distributed-trace ids: every app API request carries a W3C
+        // traceparent (Effect's HttpClient), and each id names one
+        // click→server→DB trace in whatever OTLP store the run exported to
+        // (motel locally). Written to traces.json so the runs viewer can
+        // link a recording to its traces.
+        const traceIds: { id: string; at: number; url: string }[] = [];
+        page.on("request", (request) => {
+          const traceparent = request.headers()["traceparent"];
+          const match = traceparent ? /^[0-9a-f]{2}-([0-9a-f]{32})-/.exec(traceparent) : null;
+          if (match?.[1]) {
+            traceIds.push({ id: match[1], at: Date.now(), url: request.url() });
+          }
+        });
+        return { browser, context, page, videoTmp, shots: { count: 0 }, traceIds };
       }),
       ({ page, context, shots }) =>
         Effect.promise(async () => {
@@ -95,8 +108,11 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
             throw error;
           }
         }),
-      ({ browser, context, page, videoTmp }) =>
+      ({ browser, context, page, videoTmp, traceIds }) =>
         Effect.promise(async () => {
+          if (traceIds.length > 0) {
+            writeFileSync(join(dir, "traces.json"), JSON.stringify(traceIds, null, 1));
+          }
           await context.tracing.stop({ path: join(dir, "trace.zip") }).catch(() => {});
           const video = page.video();
           await context.close(); // flushes the recording
