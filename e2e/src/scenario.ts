@@ -58,7 +58,7 @@ const contextFor = (target: TargetShape, dir: string): Context.Context<AllServic
   const has = target.capabilities.has.bind(target.capabilities);
   if (has("api")) context = Context.add(context, Api, makeApiSurface(target));
   if (has("browser")) context = Context.add(context, Browser, makeBrowserSurface(dir, target));
-  if (has("mcp-oauth")) context = Context.add(context, Mcp, makeMcpSurface(target));
+  if (has("mcp-oauth")) context = Context.add(context, Mcp, makeMcpSurface(target, dir));
   if (has("billing")) context = Context.add(context, Billing, true);
   if (hasOpenCode()) {
     context = Context.add(context, OpenCode, {
@@ -218,7 +218,11 @@ const extractScenarioSource = (filePath: string, name: string): string | undefin
         }
       }
       if (end === -1) return undefined; // unbalanced — bail to be safe
-      blocks.push({ start: index, end, mine: source.slice(index, end).includes(`"${name}"`) });
+      blocks.push({
+        start: index,
+        end,
+        mine: source.slice(index, end).includes(`"${name}"`),
+      });
       index = end;
     }
     if (!blocks.some((b) => b.mine)) return undefined;

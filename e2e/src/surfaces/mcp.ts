@@ -11,7 +11,82 @@ import { Effect } from "effect";
 
 import { createRuntime, type Runtime } from "@executor-js/mcporter";
 
+import { appendTraces } from "../trace-harvest";
 import type { Identity, Target } from "../target";
+
+// ---------------------------------------------------------------------------
+// Distributed traces for MCP calls. The web app's HttpClient sends a W3C
+// traceparent on its own; mcporter's plain fetch does not — so the agent/CLI
+// side of a session was invisible in the run's trace ledger. mcporter rides
+// the global fetch, so the surface wraps it once per process: every POST to
+// the target's MCP endpoint gets a freshly minted traceparent (the server
+// joins whatever arrives — worker and DO both parse the header), and the
+// request lands in traces.json with the JSON-RPC method as its label,
+// duration, status, and source: "terminal".
+// ---------------------------------------------------------------------------
+
+let traceFetchInstalled = false;
+let traceSink: { mcpUrl: string; runDir: string } | null = null;
+
+/** JSON-RPC body → a human label: tool name for tools/call, else method. */
+const rpcLabel = (body: unknown): string | undefined => {
+  if (typeof body !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(body) as {
+      method?: string;
+      params?: { name?: string };
+    };
+    if (!parsed.method) return undefined;
+    return parsed.method === "tools/call" && parsed.params?.name
+      ? `${parsed.params.name}()`
+      : parsed.method;
+  } catch {
+    return undefined;
+  }
+};
+
+const installTraceparentFetch = (mcpUrl: string, runDir: string): void => {
+  traceSink = { mcpUrl, runDir };
+  if (traceFetchInstalled) return;
+  traceFetchInstalled = true;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    const sink = traceSink;
+    if (!sink || method !== "POST" || !url.startsWith(sink.mcpUrl)) {
+      return original(input, init);
+    }
+    const traceId = randomBytes(16).toString("hex");
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : {}));
+    headers.set("traceparent", `00-${traceId}-${randomBytes(8).toString("hex")}-01`);
+    const at = Date.now();
+    const finish = (status?: number) =>
+      appendTraces(sink.runDir, [
+        {
+          id: traceId,
+          at,
+          url,
+          ms: Date.now() - at,
+          ...(status === undefined ? {} : { status }),
+          source: "terminal" as const,
+          label: rpcLabel(init?.body),
+        },
+      ]);
+    try {
+      const response = await original(input, { ...init, headers });
+      finish(response.status);
+      return response;
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- fetch adapter boundary
+    } catch (error) {
+      finish();
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- fetch adapter boundary
+      throw error;
+    }
+  };
+};
 
 export interface McpCallResult {
   readonly raw: unknown;
@@ -128,10 +203,11 @@ const mintBearerFlow = async (target: Target, email: string): Promise<string> =>
   return token.access_token;
 };
 
-export const makeMcpSurface = (target: Target): McpSurface => ({
+export const makeMcpSurface = (target: Target, runDir?: string): McpSurface => ({
   url: target.mcpUrl,
   mintBearer: (email) => Effect.promise(() => mintBearerFlow(target, email)),
   session: (identity) => {
+    if (runDir) installTraceparentFetch(target.mcpUrl, runDir);
     const serverName = target.name;
     let runtimePromise: Promise<Runtime> | undefined;
     let connected = false;

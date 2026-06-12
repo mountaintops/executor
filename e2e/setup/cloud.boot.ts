@@ -12,9 +12,7 @@ import { createEmulator } from "@executor-js/emulate";
 
 import { bootProcesses, waitForHttp } from "./boot";
 
-export const cloudDir = fileURLToPath(
-  new URL("../../apps/cloud/", import.meta.url),
-);
+export const cloudDir = fileURLToPath(new URL("../../apps/cloud/", import.meta.url));
 
 export interface CloudBootOptions {
   readonly cloudPort: number;
@@ -48,9 +46,7 @@ export interface CloudBooted {
   readonly autumnUrl: string;
 }
 
-export const bootCloud = async (
-  options: CloudBootOptions,
-): Promise<CloudBooted> => {
+export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted> => {
   // Fresh dev DB per boot — the WorkOS emulator mints org ids from a
   // per-process counter, so a persisted DB from a previous invocation
   // collides with the new boot's ids (identities land in polluted orgs /
@@ -81,8 +77,7 @@ export const bootCloud = async (
     WORKOS_CLIENT_ID: options.workosClientId,
     WORKOS_COOKIE_PASSWORD: options.cookiePassword,
     AUTUMN_SECRET_KEY: "am_test_emulate",
-    ENCRYPTION_KEY:
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     DATABASE_URL: `postgresql://postgres:postgres@127.0.0.1:${options.dbPort}/postgres`,
     EXECUTOR_DIRECT_DATABASE_URL: "true",
     CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
