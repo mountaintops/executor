@@ -884,7 +884,10 @@ const insertPlan = async (
 // briefly lock the file). POSIX renames never hit this — retry with a short
 // backoff instead of failing the whole migration.
 const renameWithRetry = async (source: string, target: string): Promise<void> => {
-  const delaysMs = [50, 100, 250, 500, 1000];
+  // ~8s total. 1.9s was not enough on Windows: libSQL's native handle and
+  // antivirus scans hold the freshly-written db past close() (observed as an
+  // EBUSY boot crash in the v1.5.8 publish smoke run).
+  const delaysMs = [50, 100, 250, 500, 1000, 2000, 4000];
   for (let attempt = 0; ; attempt++) {
     try {
       fs.renameSync(source, target);
