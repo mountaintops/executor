@@ -25,7 +25,7 @@ const github = await createEmulator({ service: "github", port: 4501 });
 // github.url, github.reset(), await github.close()
 ```
 
-`baseUrl` sets the *advertised* origin (redirects, form actions, spec
+`baseUrl` sets the _advertised_ origin (redirects, form actions, spec
 `servers`) when a proxy fronts the emulator — the bind stays on `port`.
 
 **Hosted, zero-setup** — every service runs on Cloudflare with Durable
@@ -47,16 +47,16 @@ Every running emulator self-describes. Start at `GET /_emulate/quickstart`
 (plain-text, written for agents) or `GET /_emulate/manifest` (machine-readable:
 surfaces, auth capabilities, per-operation spec coverage, connection snippets).
 
-| Endpoint | Use |
-| --- | --- |
-| `GET /_emulate/openapi` | A real OpenAPI document for the service — feed it straight to Executor's addSpec to register the emulator as an integration |
-| `POST /_emulate/credentials` | Mint a credential in the service's real shape: `{"type":"api-key"}`, bearer tokens, OAuth/OIDC clients, client-credentials apps |
-| `GET /_emulate/ledger` | Request ledger: matched operationId, sanitized headers/body, auth identity, response status, webhook deliveries. `DELETE` clears it |
-| `POST /_emulate/seed` | Add state via the service's seed schema (e.g. WorkOS `{"oauth":{"default_access_token_ttl_seconds":60}}` to compress token expiry) |
-| `POST /_emulate/reset` | Reset state + logs, replay seed |
-| `GET /_emulate/state` | Current store snapshot |
-| `GET /_emulate/coverage` | Which operations are implemented vs partial |
-| `GET /_emulate/connections` | Copyable SDK/env/curl snippets resolved against this instance |
+| Endpoint                     | Use                                                                                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /_emulate/openapi`      | A real OpenAPI document for the service — feed it straight to Executor's addSpec to register the emulator as an integration         |
+| `POST /_emulate/credentials` | Mint a credential in the service's real shape: `{"type":"api-key"}`, bearer tokens, OAuth/OIDC clients, client-credentials apps     |
+| `GET /_emulate/ledger`       | Request ledger: matched operationId, sanitized headers/body, auth identity, response status, webhook deliveries. `DELETE` clears it |
+| `POST /_emulate/seed`        | Add state via the service's seed schema (e.g. WorkOS `{"oauth":{"default_access_token_ttl_seconds":60}}` to compress token expiry)  |
+| `POST /_emulate/reset`       | Reset state + logs, replay seed                                                                                                     |
+| `GET /_emulate/state`        | Current store snapshot                                                                                                              |
+| `GET /_emulate/coverage`     | Which operations are implemented vs partial                                                                                         |
+| `GET /_emulate/connections`  | Copyable SDK/env/curl snippets resolved against this instance                                                                       |
 
 ## Recipes
 

@@ -1,29 +1,11 @@
 # AGENTS.md
 
-## Fresh Checkout / Worktree Setup
-
-Run `bun run bootstrap` first in any fresh checkout or worktree. It is
-idempotent: runs `bun install` (whose prepare hook builds the internal
-packages dev servers fail without) and installs Playwright chromium.
-Skipping it is why fresh worktrees die with "Failed to resolve entry for
-package '@executor-js/vite-plugin'". The `vendor/` submodules are NOT
-needed — nothing imports from `vendor/` at runtime; those forks are consumed
-from npm (see `vendor/README.md`). `bun run bootstrap --forks` inits them
-only when you're deliberately developing a fork.
-
-## Environment Gotchas (learned the hard way)
-
-- The shell is fish, and the working directory resets between Bash calls. Use
-  absolute paths rooted at THIS worktree (check `pwd`), never
-  `/Users/rhys/src/executor` from memory, and don't rely on a prior `cd`.
-- Don't write probe scripts to `/tmp` — they can't resolve workspace packages
-  (`effect`, `playwright`, ...). Put scratch scripts under the repo root
-  (`scratch/` is gitignored) so bun resolves the workspace.
-- `bun.lock` conflicts on rebase/merge: take either side, then re-run
-  `bun install` to regenerate it — never hand-merge the lockfile.
-- e2e dev-server ports are derived per checkout (`cd e2e && bun run ports`).
-  If a boot reports a squatted port, an old dev server leaked — kill it by
-  PID from the error message; don't move your own ports to dodge it.
+This file is principles — the contracts that stay true while implementations
+churn. For how to actually run, boot, share, or navigate things today
+(fresh-worktree setup, dev servers, ports, environment gotchas), see
+[RUNNING.md](RUNNING.md) (which may lag reality; it says so itself). For
+writing e2e scenarios, see [e2e/AGENTS.md](e2e/AGENTS.md). Run
+`bun run bootstrap` first in any fresh checkout or worktree.
 
 ## Task Completion Requirements
 
@@ -36,28 +18,35 @@ only when you're deliberately developing a fork.
 - For broad or merge-ready changes, the full gates are `bun run format:check`,
   `bun run lint`, `bun run typecheck`, and `bun run test`.
 
-## Attribution
+## Handing Back Work: Evidence, Not Assertions
 
-Do not add any AI assistant, Claude, Anthropic, or Co-Authored-By
-attribution/trailers to commits, commit messages, PRs, or generated files.
+"Done" is something the user can open, not a claim. When work changes what a
+user sees or touches, the handoff has three parts, delivered unprompted:
 
-Pull request titles and descriptions are going to a public GitHub repo, so
-avoid using specific names or internal info unless explicitly stated to.
+1. **Watch it** — an e2e scenario covers the change, and the handoff links
+   directly to the specific run(s) that prove it, with one line each on what
+   to look at. Never hand back a bare wall of green results: the user's
+   question is "show me the new thing working," not "is everything healthy?"
+2. **Touch it** — leave the session's dev server running and reachable over
+   the user's tailnet, with credentials, so they can take over and poke at
+   it. The instance you already booted for e2e IS this — leave it up rather
+   than standing up something separate.
+3. **What to try** — name the paths worth exercising by hand, especially
+   ones no scenario pins yet. Honesty about coverage gaps is part of the
+   handoff. A human driving a real browser from another device reaches
+   states the test harness structurally cannot; invite that.
 
-## Show Changes in PR Descriptions
+The same machinery runs in reverse: you can seed an environment INTO a
+state — reproduce a bug live, stage data for the user to take over, set up
+a walkthrough — and hand across the link. "Here's the broken state, live"
+beats a paragraph describing it.
 
-When a change is user-visible and an e2e scenario covers it, embed the run's
-recording in the PR description — reviewers should see the change, not just
-read about it.
+If no scenario covers the change yet, that is the cue to write one. When a
+change is user-visible, embed the run's recording in the PR description —
+reviewers should see the change, not just read about it.
 
-```
-bun e2e/scripts/pr-media.ts e2e/runs/<target>/<scenario-slug>
-```
-
-converts the run's recording (browser `session.mp4` or `terminal.cast`) to a
-gif, uploads it to the `e2e-media` branch, and prints PR-ready markdown to
-paste into the body. Run screenshots (`*.png`) can be passed directly too. If
-no scenario covers the change yet, that is usually the cue to write one.
+Don't memorize the mechanics (ports, viewer, sharing commands) — discover
+them from RUNNING.md and the code; they change.
 
 ## Service Emulators
 
@@ -65,13 +54,20 @@ When a test or demo needs an upstream API, OAuth/OIDC provider, or webhook
 source, use the `@executor-js/emulate` emulators (GitHub, Google, Stripe,
 Resend, WorkOS, and a dozen more) instead of writing a stub. They are
 wire-level and stateful — real SDKs run against them unmodified — and each
-one serves a full OpenAPI spec (`/_emulate/openapi`, ready for addSpec),
-mints real-shaped credentials (`POST /_emulate/credentials`), runs working
-OAuth flows, and records every call in a request ledger
-(`/_emulate/ledger`) you can assert against. Hosted instances exist at
-`https://<service>.emulators.dev` with zero setup. See the `emulate` skill
+serves a full OpenAPI spec ready for addSpec, mints real-shaped credentials,
+runs working OAuth flows, and records every call in a request ledger you can
+assert against. Hosted instances exist at `https://<service>.emulators.dev`
+with zero setup. See the `emulate` skill
 (`.claude/skills/emulate/SKILL.md`) for the control-plane reference and
 recipes.
+
+## Attribution
+
+Do not add any AI assistant, Claude, Anthropic, or Co-Authored-By
+attribution/trailers to commits, commit messages, PRs, or generated files.
+
+Pull request titles and descriptions are going to a public GitHub repo, so
+avoid using specific names or internal info unless explicitly stated to.
 
 ## Collaboration Notes
 
@@ -116,4 +112,6 @@ before using it.
 
 ## Other
 
-Please make note of mistakes you make in MISTAKES.md. If you find you wish you had more context or tools, write that down in DESIRES.md. If you learn anything about your env write that down in LEARNINGS.md.
+Please make note of mistakes you make in MISTAKES.md. If you find you wish you
+had more context or tools, write that down in DESIRES.md. If you learn anything
+about your env write that down in LEARNINGS.md.

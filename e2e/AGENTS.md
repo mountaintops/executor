@@ -101,6 +101,10 @@ Each run writes `runs/<target>/<slug>/result.json` plus any browser artifacts
 (trace.zip / session.mp4 / screenshots). `bun run serve` hosts the scenario ×
 target matrix; a run page links the trace into Playwright's trace viewer.
 
+When handing results to the user, follow the evidence contract in the root
+[AGENTS.md](../AGENTS.md) (direct run links + a live instance + what to try);
+[RUNNING.md](../RUNNING.md) has the current sharing/demo mechanics.
+
 ## Discovering endpoints
 
 - The full OpenAPI spec: `curl http://127.0.0.1:<cloud port>/api/openapi.json`
