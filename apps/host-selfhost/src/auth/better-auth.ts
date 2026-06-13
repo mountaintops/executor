@@ -93,7 +93,18 @@ const makeAuthOptions = (url: string, getOrganizationId: () => string, gate?: Si
       admin(),
       apiKey({ enableSessionForAPIKeys: true, rateLimit: { enabled: false } }),
       bearer(),
-      mcp({ loginPage: "/login" }),
+      // `consentPage` makes the MCP authorize flow redirect to a human approval
+      // screen instead of auto-issuing a code — but ONLY when the request
+      // carries `prompt=consent`. MCP clients don't send that, so the self-host
+      // serving layer injects it on every authorize (see resolveAuthProviders'
+      // force-mcp-consent shim); together they force an approval step for every
+      // connecting client. The page itself is the SPA route `/mcp-consent`.
+      // `loginPage` in oidcConfig is required by the type but the mcp() plugin
+      // overrides it with the top-level one; `consentPage` is what we're after.
+      mcp({
+        loginPage: "/login",
+        oidcConfig: { loginPage: "/login", consentPage: "/mcp-consent" },
+      }),
     ],
     databaseHooks: {
       session: {

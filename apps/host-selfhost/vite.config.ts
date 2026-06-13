@@ -60,20 +60,26 @@ function executorApiPlugin(): Plugin {
         // serve.ts) — otherwise this org-pinned path isn't recognized as an MCP
         // path and falls through to the SPA as a 404. Mirrors ./src/mcp/org-path.
         const devOrigin = `http://${req.headers.host ?? `localhost:${DEV_PORT}`}`;
-        const rewrittenPath = stripMcpOrgSegment(new URL(rawUrl, devOrigin).pathname);
-        if (rewrittenPath !== null) {
+        const pathname = stripMcpOrgSegment(new URL(rawUrl, devOrigin).pathname) ?? "";
+        if (pathname !== "") {
           const original = new URL(rawUrl, devOrigin);
-          rawUrl = `${rewrittenPath}${original.search}`;
+          rawUrl = `${pathname}${original.search}`;
         }
+        // Match on PATHNAME, not a raw-URL prefix: `/mcp` must NOT swallow the
+        // SPA route `/mcp-consent` (nor its source module `/mcp-consent.tsx`),
+        // or the dev server misroutes them to the API handler and they 404.
+        const path = new URL(rawUrl, devOrigin).pathname;
         const handled =
-          rawUrl === "/api" ||
-          rawUrl.startsWith("/api/") ||
-          rawUrl.startsWith("/mcp") ||
-          rawUrl.startsWith("/docs") ||
+          path === "/api" ||
+          path.startsWith("/api/") ||
+          path === "/mcp" ||
+          path.startsWith("/mcp/") ||
+          path === "/docs" ||
+          path.startsWith("/docs/") ||
           // RFC 9728 / RFC 8414 OAuth discovery the MCP client fetches before
           // auth. Served by the Effect router in prod; without this the SPA
           // index.html fallback answers 200-with-HTML and breaks discovery.
-          rawUrl.startsWith("/.well-known/");
+          path.startsWith("/.well-known/");
         if (!handled) return next();
 
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Vite dev middleware must convert handler failures into HTTP 500 responses
