@@ -134,8 +134,7 @@ bun run test:e2e   # full-stack e2e: boots the cloud and self-host apps and driv
 ```
 
 The browser e2e scenarios need Playwright's Chromium once per machine:
-`bunx playwright install chromium`. The git submodules under `vendor/` are
-optional — see [vendor/README.md](vendor/README.md).
+`bunx playwright install chromium`.
 
 ## Community
 

@@ -15,11 +15,13 @@ artifacts dev servers fail without) plus Playwright chromium. A fresh
 worktree that skips it dies with "Failed to resolve entry for package
 '@executor-js/vite-plugin'".
 
-The `vendor/` submodules (emulate, mcporter) are NOT required — nothing
-imports from `vendor/` at runtime; those packages come from npm
-(`@executor-js/emulate`, `@executor-js/mcporter`). `bun run bootstrap
---forks` inits them only when deliberately developing a fork (see
-`vendor/README.md`).
+Our two upstream forks — `@executor-js/emulate` (service emulators) and
+`@executor-js/mcporter` (headless MCP client) — are consumed purely as
+published npm packages; nothing in this repo references them by path. There
+are no `vendor/` submodules. Each fork is its own standalone repo
+(`github.com/UsefulSoftwareCo/emulate`, `github.com/UsefulSoftwareCo/mcporter`):
+develop on its `main`, publish a bump, then bump the dependency here. The
+`emulate` skill covers the emulator publish/deploy loop.
 
 ## Dev servers
 
