@@ -11,6 +11,7 @@ import { Shell, defaultShellNavItems } from "@executor-js/react/multiplayer/shel
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 
 import { authClient } from "../auth-client";
+import { McpConsentPage } from "../mcp-consent";
 import { LoginPage } from "../login";
 import { SetupPage } from "../setup";
 import { fetchNeedsSetup } from "../setup-status";
@@ -104,6 +105,21 @@ function RootComponent() {
         <Outlet />
         <Toaster />
       </>
+    );
+  }
+
+  // The MCP OAuth approval screen: chromeless (no shell) but inside the auth
+  // gate — the user is already signed in (Better Auth's authorize requires a
+  // session before redirecting here). Rendered directly (static import), not as
+  // a lazy route, so it can't hit Vite's dynamic-import dep flake.
+  if (pathname === "/mcp-consent") {
+    return (
+      <AuthProvider>
+        <AuthGate>
+          <McpConsentPage />
+          <Toaster />
+        </AuthGate>
+      </AuthProvider>
     );
   }
 
