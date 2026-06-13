@@ -44,16 +44,24 @@ const SIGNUP_PATH = "/sign-up/email";
 // FK-dependent reads at boot and WAL is already a file-level mode), and the
 // shared file stays consistent because writes go through SQLite's file lock.
 //
-// NEVER call .destroy() on the resulting Kysely instance during normal
-// operation — SelfHostDb owns the file lifecycle and closes its client at
-// shutdown; the dialect's connection is GC'd with the auth instance.
+// We build exactly ONE auth instance, held for the process lifetime. An earlier
+// design built a throwaway "bootstrap" instance to run migrations + seed before
+// the org id was known, then discarded it — but its LibsqlDialect connection
+// (a DIFFERENT native libSQL build than SelfHostDb's) was GC-closed mid-boot,
+// and that close unlinked the shared `-wal` out from under SelfHostDb's
+// still-open connection. Every executor write then landed in a deleted WAL
+// inode and vanished on the next restart (the "reconnected account, zero tools"
+// data-loss bug). Keeping one long-lived auth connection — with the org id
+// late-bound the same way the signup gate's `getAuth` already is — removes the
+// discarded connection entirely. NEVER call .destroy() during normal operation;
+// SelfHostDb owns the file lifecycle and closes its client at shutdown.
 //
 // `satisfies BetterAuthOptions` (not a return annotation) keeps the literal
 // plugin tuple so `betterAuth` infers the plugin-augmented `auth.api` and
 // session/user shapes (activeOrganizationId, role, createUser, ...).
 // ---------------------------------------------------------------------------
 
-const makeAuthOptions = (url: string, organizationId: string, gate?: SignupGate) => {
+const makeAuthOptions = (url: string, getOrganizationId: () => string, gate?: SignupGate) => {
   const config = loadConfig();
   // Always resolved (generated + persisted when no env is set); this guards only
   // an explicitly-set env secret that is too weak.
@@ -91,9 +99,12 @@ const makeAuthOptions = (url: string, organizationId: string, gate?: SignupGate)
       session: {
         create: {
           // Single-org instance: pin every session to the one organization, so
-          // every authenticated user resolves to the org scope.
+          // every authenticated user resolves to the org scope. The org id is
+          // read late (the seed resolves it AFTER this instance is built — see
+          // buildBetterAuth); no session is created during the seed, so the
+          // empty initial value is never observed.
           before: async (session: Record<string, unknown>) => ({
-            data: { ...session, activeOrganizationId: organizationId },
+            data: { ...session, activeOrganizationId: getOrganizationId() },
           }),
         },
       },
@@ -186,8 +197,8 @@ const orgHasNoMembers = async (gate: SignupGate): Promise<boolean> => {
   return (await countOrgMembers(auth, gate.organizationId)) === 0;
 };
 
-const createAuthInstance = (url: string, organizationId: string, gate?: SignupGate) =>
-  betterAuth(makeAuthOptions(url, organizationId, gate));
+const createAuthInstance = (url: string, getOrganizationId: () => string, gate?: SignupGate) =>
+  betterAuth(makeAuthOptions(url, getOrganizationId, gate));
 
 export type Auth = ReturnType<typeof createAuthInstance>;
 
@@ -203,9 +214,19 @@ export class BetterAuth extends Context.Service<BetterAuth, BetterAuthHandle>()(
 ) {}
 
 /**
- * Build the Better Auth instance: migrate, seed the org+admin, then rebuild
- * with the resolved org id pinned into the session hook. runMigrations and the
- * seed are idempotent, so this is safe on every boot.
+ * Build the single Better Auth instance: migrate, seed the org+admin, and pin
+ * the resolved org id into the (late-bound) session hook and signup gate.
+ * runMigrations and the seed are idempotent, so this is safe on every boot.
+ *
+ * One instance, not two: the org id the session-pin and gate need isn't known
+ * until the seed creates the org, but both read it lazily (a ref, like the
+ * gate's `getAuth`), so there's no need for a throwaway bootstrap instance —
+ * and so no second libSQL connection to be GC-closed mid-boot and unlink the
+ * shared WAL (see the header comment; that was the self-host data-loss bug).
+ *
+ * The gate is active during the seed, but its hooks only act on the
+ * `/sign-up/email` path — the seed's admin `createUser`/`createOrganization`
+ * pass straight through, exactly as the old gate-free bootstrap instance did.
  *
  * `url` is the SAME libSQL `file:` URL SelfHostDb opened; `client` is
  * SelfHostDb's drizzle connection to that file, used by the seed for its two
@@ -216,19 +237,27 @@ export class BetterAuth extends Context.Service<BetterAuth, BetterAuthHandle>()(
 export const buildBetterAuth = async (url: string, client: Client): Promise<BetterAuthHandle> => {
   const config = loadConfig();
 
-  // Phase 1: bootstrap instance (placeholder org, NO signup gate), create
-  // tables, seed. `runMigrations()` flows through the LibsqlDialect and is
-  // idempotent; the gate-free instance lets the seed's `createUser` through.
-  const bootstrap = createAuthInstance(url, "");
-  await (await bootstrap.$context).runMigrations();
-  await ensureInviteCodeTable(client);
-  const { organizationId, organizationName } = await seedOrgAndAdmin(bootstrap, client, config);
-
-  // Phase 2: the live instance — real org id (session pin) + the signup gate.
-  // `getAuth` resolves to this very instance, so the gate's `after` hook can
-  // call `auth.api.addMember` once a code is redeemed.
+  // The org id is resolved by the seed below, AFTER this instance is built; the
+  // session-pin hook and the gate read it through these late-bound accessors
+  // (no session is created during the seed, so the empty initial id is never
+  // observed). `getAuth` resolves to this very instance, so the gate's `after`
+  // hook can call `auth.api.addMember` once a code is redeemed.
   let auth: Auth | null = null;
-  const gate: SignupGate = { client, organizationId, getAuth: () => auth };
-  auth = createAuthInstance(url, organizationId, gate);
+  const orgRef = { id: "" };
+  const gate: SignupGate = {
+    client,
+    get organizationId() {
+      return orgRef.id;
+    },
+    getAuth: () => auth,
+  };
+
+  auth = createAuthInstance(url, () => orgRef.id, gate);
+  // `runMigrations()` flows through the LibsqlDialect and is idempotent.
+  await (await auth.$context).runMigrations();
+  await ensureInviteCodeTable(client);
+  const { organizationId, organizationName } = await seedOrgAndAdmin(auth, client, config);
+  orgRef.id = organizationId;
+
   return { auth, organizationId, organizationName, handler: auth.handler };
 };
