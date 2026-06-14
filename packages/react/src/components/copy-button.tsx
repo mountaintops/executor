@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Copy, Check } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "./button";
 import { cn } from "../lib/utils";
 import { copyToClipboard } from "../lib/clipboard";
@@ -20,7 +21,10 @@ function CopyButton({
 
   const handleCopy = () => {
     void copyToClipboard(value).then((ok) => {
-      if (!ok) return;
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
       onCopy?.();
       setTimeout(() => setCopied(false), 1500);

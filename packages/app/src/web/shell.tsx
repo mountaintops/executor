@@ -11,6 +11,7 @@ import {
   toolsAllAtom,
 } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
+import { toast } from "@executor-js/react/components/sonner";
 import { copyToClipboard } from "@executor-js/react/lib/clipboard";
 import { integrationPresetIconUrl } from "@executor-js/react/components/integration-favicon";
 import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
@@ -136,7 +137,10 @@ function UpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
 
   const handleCopy = useCallback(() => {
     void copyToClipboard(command).then((ok) => {
-      if (!ok) return;
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });

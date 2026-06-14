@@ -146,3 +146,55 @@ scenario(
       );
   }),
 );
+
+scenario(
+  "API keys · a copy that can't reach the clipboard surfaces an error toast",
+  {},
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const browser = yield* Browser;
+    const { client: apiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* apiClient(AccountHttpApi, identity);
+
+    const keyName = `copy-fail-${randomBytes(3).toString("hex")}`;
+
+    yield* browser
+      .session(identity, async ({ page, step }) => {
+        // Simulate a context where the copy genuinely can't happen: no
+        // navigator.clipboard (non-secure origin) AND execCommand("copy")
+        // refuses (some browsers/extensions block it). The copy then truly
+        // fails, and the button must say so rather than silently doing nothing.
+        await page.addInitScript(() => {
+          Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            get: () => undefined,
+          });
+          document.execCommand = (command) => String(command).toLowerCase() !== "copy";
+        });
+
+        await step("Create a new key", async () => {
+          await page.goto("/api-keys", { waitUntil: "networkidle" });
+          await page.getByRole("button", { name: "New key" }).click();
+          const dialog = page.getByRole("dialog");
+          await dialog.getByLabel("Name").fill(keyName);
+          await dialog.getByRole("button", { name: "Create key" }).click();
+          await dialog.getByText("It is only shown once").waitFor();
+        });
+
+        await step("A failed copy tells the user instead of failing silently", async () => {
+          await page.getByRole("dialog").getByRole("button", { name: "Copy" }).first().click();
+          await page.getByText("Failed to copy to clipboard").waitFor();
+        });
+      })
+      .pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            const list = yield* client.account.listApiKeys();
+            const mine = list.apiKeys.find((key) => key.name === keyName);
+            if (mine) yield* client.account.revokeApiKey({ params: { apiKeyId: mine.id } });
+          }).pipe(Effect.ignore),
+        ),
+      );
+  }),
+);

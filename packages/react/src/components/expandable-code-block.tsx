@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type CSSProperties } from "react";
 import { dualThemeOptions, getHighlighter, type ShikiThemeProp } from "../lib/shiki";
+import { toast } from "sonner";
 import { cn } from "../lib/utils";
 import { copyToClipboard } from "../lib/clipboard";
 import { Button } from "./button";
@@ -360,7 +361,10 @@ export function ExpandableCodeBlock(props: {
 
   const handleCopy = useCallback(() => {
     void copyToClipboard(displayCode).then((ok) => {
-      if (!ok) return;
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
