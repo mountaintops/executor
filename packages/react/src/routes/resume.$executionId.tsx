@@ -5,11 +5,15 @@ import * as Atom from "effect/unstable/reactivity/Atom";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ResumeApprovalPage, ResumeApprovalPageView } from "../pages/resume-approval";
+import { getExecutorServerAuthorizationHeader } from "../api/server-connection";
 import type { ElicitationAction } from "../components/elicitation-approval";
 
 const SearchParams = Schema.toStandardSchemaV1(
   Schema.Struct({
     mcp_session_id: Schema.optional(Schema.String),
+    // Single-use token minted server-side when the approval URL is issued; the
+    // resume POST must carry it back so a leaked URL can't forge approvals.
+    approval_token: Schema.optional(Schema.String),
   }),
 );
 const LocalMcpResumeCompleted = Schema.Struct({
@@ -45,10 +49,16 @@ const mcpPausedExecutionAtom = Atom.family(
   (key: { readonly mcpSessionId: string; readonly executionId: string }) =>
     Atom.make(
       Effect.gen(function* () {
+        // `/api/mcp-sessions/*` is bearer-gated. Attach the bearer (standalone
+        // web reads it from localStorage; desktop injects it at the session
+        // layer, so this is null and we send none) — otherwise this 401s on the
+        // single-user local server and the page shows "unavailable".
+        const authorization = getExecutorServerAuthorizationHeader();
         const response = yield* Effect.tryPromise({
           try: () =>
             fetch(
               `/api/mcp-sessions/${encodeURIComponent(key.mcpSessionId)}/executions/${encodeURIComponent(key.executionId)}`,
+              authorization ? { headers: { authorization } } : undefined,
             ),
           catch: () => new LocalMcpResumeError({ message: "Failed to load the paused execution." }),
         });
@@ -75,19 +85,33 @@ const mcpPausedExecutionAtom = Atom.family(
 type LocalMcpResumeInput = {
   readonly mcpSessionId: string;
   readonly executionId: string;
+  readonly approvalToken?: string;
   readonly action: ElicitationAction;
   readonly content?: Record<string, unknown>;
 };
 
 const resumeLocalMcpExecution = Atom.fn<LocalMcpResumeInput>()((input) =>
   Effect.gen(function* () {
+    const query = input.approvalToken
+      ? `?approval_token=${encodeURIComponent(input.approvalToken)}`
+      : "";
+    // `/api/mcp-sessions/*` is bearer-gated like the rest of /api. Attach the
+    // bearer the same way the typed client does (standalone web reads it from
+    // localStorage; on desktop the connection carries no auth and the main
+    // process injects the header, so this is null and we send none). The
+    // per-approval token is an additional single-use check, not a replacement
+    // for the bearer.
+    const authorization = getExecutorServerAuthorizationHeader();
     const response = yield* Effect.tryPromise({
       try: () =>
         fetch(
-          `/api/mcp-sessions/${encodeURIComponent(input.mcpSessionId)}/executions/${encodeURIComponent(input.executionId)}/resume`,
+          `/api/mcp-sessions/${encodeURIComponent(input.mcpSessionId)}/executions/${encodeURIComponent(input.executionId)}/resume${query}`,
           {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: {
+              "content-type": "application/json",
+              ...(authorization ? { authorization } : {}),
+            },
             body: JSON.stringify(
               input.action === "accept"
                 ? { action: input.action, content: input.content ?? {} }
@@ -129,22 +153,38 @@ export const Route = createFileRoute("/{-$orgSlug}/resume/$executionId")({
 
 function RouteComponent() {
   const { executionId } = Route.useParams();
-  const { mcp_session_id: mcpSessionId } = Route.useSearch();
+  const { mcp_session_id: mcpSessionId, approval_token: approvalToken } = Route.useSearch();
   if (mcpSessionId) {
-    return <LocalMcpResumeApproval executionId={executionId} mcpSessionId={mcpSessionId} />;
+    return (
+      <LocalMcpResumeApproval
+        executionId={executionId}
+        mcpSessionId={mcpSessionId}
+        approvalToken={approvalToken}
+      />
+    );
   }
   return <ResumeApprovalPage executionId={executionId} />;
 }
 
-function LocalMcpResumeApproval(props: { executionId: string; mcpSessionId: string }) {
+function LocalMcpResumeApproval(props: {
+  executionId: string;
+  mcpSessionId: string;
+  approvalToken?: string;
+}) {
   const paused = useAtomValue(
     mcpPausedExecutionAtom({ mcpSessionId: props.mcpSessionId, executionId: props.executionId }),
   );
   const doResume = useAtomSet(resumeLocalMcpExecution, { mode: "promiseExit" });
   const resume = useCallback(
     (executionId: string, action: ElicitationAction, content?: Record<string, unknown>) =>
-      doResume({ mcpSessionId: props.mcpSessionId, executionId, action, content }),
-    [doResume, props.mcpSessionId],
+      doResume({
+        mcpSessionId: props.mcpSessionId,
+        executionId,
+        approvalToken: props.approvalToken,
+        action,
+        content,
+      }),
+    [doResume, props.mcpSessionId, props.approvalToken],
   );
 
   return (

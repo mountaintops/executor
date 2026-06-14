@@ -56,6 +56,18 @@ export default defineConfig({
         fileParallelism: false,
         testTimeout: 300_000,
       }),
+      // The single-user local app. Each scenario launches its OWN `executor
+      // web` via the CLI on a throwaway data dir + an OS-assigned port, so
+      // there is no shared instance and scenarios are independent — file
+      // parallelism is ON. No globalSetup (nothing shared to boot). Only
+      // local/** scenarios. Not part of the default `npm run test` chain; run
+      // with `vitest run --project local`.
+      project("local", {
+        include: ["local/**/*.test.ts"],
+        globalSetup: [],
+        fileParallelism: true,
+        testTimeout: 180_000,
+      }),
     ],
   },
 });

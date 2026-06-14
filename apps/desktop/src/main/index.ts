@@ -37,12 +37,11 @@ import { announceBackup, confirmResetState, resetExecutorState } from "./reset-s
 import {
   getServerProfiles,
   getServerSettings,
-  regeneratePassword,
+  rotateServerToken,
   setServerProfiles,
   updateServerSettings,
 } from "./settings";
 import {
-  SERVER_SETTINGS_USERNAME,
   type DesktopServerConnection,
   type DesktopServerSettings,
 } from "../shared/server-settings";
@@ -100,15 +99,30 @@ const ensureSingleInstance = () => {
   return true;
 };
 
-const installBasicAuthHeader = (origin: string, password: string | null) => {
+const installBearerAuthHeader = (origin: string, token: string | null) => {
   authHeaderUnsubscribe?.();
   authHeaderUnsubscribe = null;
-  if (!password) return;
-  const credentials = Buffer.from(`${SERVER_SETTINGS_USERNAME}:${password}`).toString("base64");
-  const headerValue = `Basic ${credentials}`;
+  if (!token) return;
+  const headerValue = `Bearer ${token}`;
   session.defaultSession.webRequest.onBeforeSendHeaders(
     { urls: [`${origin}/*`] },
     (details, callback) => {
+      // Scope the bearer to the app's OWN renderer. OAuth popups run in this same
+      // session but load third-party provider pages; auto-attaching the bearer to
+      // any request they make to the sidecar would make it an ambient credential
+      // (a CSRF vector) for untrusted content — the very thing the bearer model
+      // exists to avoid. The popup only ever needs the bearer-exempt
+      // /oauth/callback and hands its result back via same-origin browser
+      // channels (localStorage/postMessage), so withholding the bearer from any
+      // non-app webContents is safe. Requests with no webContentsId (main
+      // process / network service) still get it.
+      const fromOtherWebContents =
+        details.webContentsId !== undefined &&
+        (mainWindow === null || details.webContentsId !== mainWindow.webContents.id);
+      if (fromOtherWebContents) {
+        callback({ requestHeaders: details.requestHeaders });
+        return;
+      }
       callback({
         requestHeaders: {
           ...details.requestHeaders,
@@ -175,7 +189,7 @@ const createWindow = async (conn: SidecarConnection) => {
     defaultHeight: 800,
   });
 
-  installBasicAuthHeader(conn.baseUrl, conn.authPassword);
+  installBearerAuthHeader(conn.baseUrl, conn.authToken);
 
   const linuxIcon = resolveLinuxIcon();
 
@@ -226,7 +240,7 @@ const createWindow = async (conn: SidecarConnection) => {
             // No preload, no nodeIntegration — popup loads third-party
             // OAuth provider pages, then a final navigation back to
             // 127.0.0.1:<port>/oauth/callback which the session-level
-            // Basic auth header injection (installBasicAuthHeader)
+            // bearer header injection (installBearerAuthHeader)
             // catches automatically. The popup never needs the
             // executor IPC bridge.
             contextIsolation: true,
@@ -285,43 +299,43 @@ const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
     throw new Error("Sidecar failed to restart — see Settings");
   }
   connection = next;
-  installBasicAuthHeader(next.baseUrl, next.authPassword);
+  installBearerAuthHeader(next.baseUrl, next.authToken);
   const window = liveMainWindow();
   if (window) await window.loadURL(next.baseUrl);
   return toDesktopServerConnection(next);
 };
 
+// The renderer's connection carries NO auth: the main process injects the
+// bearer header at the session layer (installBearerAuthHeader), so the token
+// never crosses the IPC boundary.
 const toDesktopServerConnection = (conn: SidecarConnection): DesktopServerConnection => ({
   kind: "desktop-sidecar",
   key: "desktop-sidecar",
   origin: conn.baseUrl,
   apiBaseUrl: `${conn.baseUrl.replace(/\/+$/, "")}/api`,
   displayName: "Desktop sidecar",
-  ...(conn.authPassword
-    ? {
-        auth: {
-          kind: "basic" as const,
-          username: SERVER_SETTINGS_USERNAME,
-          password: conn.authPassword,
-        },
-      }
-    : {}),
 });
 
 const registerIpcHandlers = () => {
   ipcMain.handle("executor:server:connection", (): DesktopServerConnection | null =>
     connection ? toDesktopServerConnection(connection) : null,
   );
+  // The bearer token, exposed only for the "Connect an agent" install command
+  // (an external agent needs it in plaintext). The renderer's own requests
+  // never use it — the header is injected at the session layer.
+  ipcMain.handle("executor:server:auth-token", (): string | null => connection?.authToken ?? null);
   ipcMain.handle("executor:settings:get", (): DesktopServerSettings => getServerSettings());
   ipcMain.handle(
     "executor:settings:update",
     (_evt, patch: Partial<DesktopServerSettings>): DesktopServerSettings =>
       updateServerSettings(patch),
   );
-  ipcMain.handle(
-    "executor:settings:regenerate-password",
-    (): DesktopServerSettings => regeneratePassword(),
-  );
+  // Rotate the bearer token (auth.json) and restart the sidecar so it loads the
+  // new token; the webview header is re-injected by restartSidecarAndReload.
+  ipcMain.handle("executor:server:rotate-token", (): Promise<DesktopServerConnection> => {
+    rotateServerToken();
+    return restartSidecarAndReload();
+  });
   ipcMain.handle("executor:server-profiles:get", (): string | null => getServerProfiles());
   ipcMain.handle("executor:server-profiles:set", (_evt, value: unknown): void => {
     if (typeof value !== "string") return;

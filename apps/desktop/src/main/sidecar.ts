@@ -5,14 +5,14 @@
  * In prod: spawns the Bun-compiled `executor-sidecar` binary shipped under
  *          `process.resourcesPath/sidecar/`.
  *
- * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_PASSWORD
+ * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_TOKEN
  * via env, calls `startServer()` from `@executor-js/local`, and announces a
  * single sentinel line on stdout (`EXECUTOR_READY:<port>`) so this controller
  * can resolve the connection promise.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { app } from "electron";
@@ -23,6 +23,7 @@ import {
   parseExecutorLocalServerManifest,
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
+import { loadOrMintLocalAuthToken } from "@executor-js/local";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
@@ -66,7 +67,7 @@ export interface SidecarConnection {
   readonly hostname: string;
   readonly port: number;
   readonly username: string;
-  readonly authPassword: string | null;
+  readonly authToken: string;
   readonly child: ChildProcess;
 }
 
@@ -171,7 +172,7 @@ const writeSidecarManifest = (input: {
   readonly dataDir: string;
   readonly scopeDir: string;
   readonly baseUrl: string;
-  readonly authPassword: string | null;
+  readonly authToken: string;
   readonly childPid: number;
 }) => {
   const connection = normalizeExecutorServerConnection({
@@ -179,18 +180,11 @@ const writeSidecarManifest = (input: {
     key: "desktop-sidecar",
     origin: input.baseUrl,
     displayName: "Desktop sidecar",
-    ...(input.authPassword
-      ? {
-          auth: {
-            kind: "basic" as const,
-            username: SERVER_SETTINGS_USERNAME,
-            password: input.authPassword,
-          },
-        }
-      : {}),
+    auth: { kind: "bearer" as const, token: input.authToken },
   });
+  const manifestPath = localServerManifestPath(input.dataDir);
   writeFileSync(
-    localServerManifestPath(input.dataDir),
+    manifestPath,
     serializeExecutorLocalServerManifest({
       version: 1,
       kind: "desktop-sidecar",
@@ -205,7 +199,11 @@ const writeSidecarManifest = (input: {
         executablePath: process.execPath || null,
       },
     }),
+    { mode: 0o600 },
   );
+  // The manifest embeds the bearer token; keep it owner-only even if a looser
+  // file already existed (writeFileSync's mode does not re-apply on overwrite).
+  chmodSync(manifestPath, 0o600);
   sidecarManifestPathByPid.set(input.childPid, input.dataDir);
 };
 
@@ -255,7 +253,10 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   const dataDir = scopeDir;
   mkdirSync(dataDir, { recursive: true });
 
-  const effectivePassword = settings.requireAuth ? settings.password : null;
+  // The stable bearer token from auth.json (shared with the CLI). The main
+  // process holds it so it can inject the header into the webview; the child
+  // validates against the same value. Always present — auth is unconditional.
+  const authToken = loadOrMintLocalAuthToken(dataDir);
   const releaseStartupLock = acquireLocalServerStartLock(dataDir);
   let startupLockReleased = false;
   const releaseLock = () => {
@@ -286,10 +287,9 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         EXECUTOR_HOST: hostname,
         EXECUTOR_WEB_BASE_URL: webBaseUrl,
         PORT: String(settings.port),
-        // Only export the password env var when auth is enabled — the sidecar
-        // treats an empty password as "no auth required". Matches the CLI's
-        // `executor web` default.
-        ...(effectivePassword ? { EXECUTOR_AUTH_PASSWORD: effectivePassword } : {}),
+        // The bearer token the child validates and the main process injects into
+        // the webview. Always set — auth is unconditional.
+        EXECUTOR_AUTH_TOKEN: authToken,
         EXECUTOR_CLIENT_DIR: clientDir,
         EXECUTOR_SCOPE_DIR: scopeDir,
         EXECUTOR_DATA_DIR: dataDir,
@@ -342,7 +342,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
           dataDir,
           scopeDir,
           baseUrl,
-          authPassword: effectivePassword,
+          authToken,
           childPid: child.pid,
         });
         releaseLock();
@@ -351,7 +351,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
           hostname,
           port,
           username: SERVER_SETTINGS_USERNAME,
-          authPassword: effectivePassword,
+          authToken,
           child,
         });
       }

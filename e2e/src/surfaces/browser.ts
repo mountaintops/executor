@@ -44,6 +44,11 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         const videoTmp = join(dir, ".video-tmp");
         mkdirSync(videoTmp, { recursive: true });
 
+        // Watchable mode (E2E_FILM / E2E_DESK): slow each Playwright action so
+        // the recording is readable instead of flickering through states at
+        // machine speed. Off by default — normal CI runs stay fast.
+        const watchable = process.env.E2E_FILM === "1" || process.env.E2E_DESK === "1";
+        const slowMo = watchable ? 400 : undefined;
         // On the desk (E2E_DESK), the browser is a real headed window on the
         // virtual display — the desk's single screen recording films it next
         // to the chat terminal, exactly like a developer tabbing over.
@@ -52,8 +57,11 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
             ? {
                 headless: false,
                 args: ["--window-position=300,40", "--window-size=1100,830"],
+                slowMo,
               }
-            : {},
+            : slowMo
+              ? { slowMo }
+              : {},
         );
         const context = await browser.newContext({
           colorScheme: "dark",

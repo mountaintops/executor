@@ -237,6 +237,9 @@ const approveInBrowserThenResume = async (
 ) => {
   const sessionId = approval.url.searchParams.get("mcp_session_id");
   expect(sessionId).not.toBeNull();
+  // The approval URL carries a single-use token the resume POST must echo back.
+  const approvalToken = approval.url.searchParams.get("approval_token");
+  expect(approvalToken).not.toBeNull();
 
   const resume = client.callTool({
     name: "resume",
@@ -245,7 +248,7 @@ const approveInBrowserThenResume = async (
 
   const approvalResponse = await fetch(
     new URL(
-      `/api/mcp-sessions/${encodeURIComponent(sessionId!)}/executions/${encodeURIComponent(approval.executionId)}/resume`,
+      `/api/mcp-sessions/${encodeURIComponent(sessionId!)}/executions/${encodeURIComponent(approval.executionId)}/resume?approval_token=${encodeURIComponent(approvalToken!)}`,
       TEST_BASE_URL,
     ),
     {

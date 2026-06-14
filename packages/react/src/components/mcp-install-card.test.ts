@@ -36,10 +36,10 @@ describe("MCP install command rendering", () => {
         mode: "http",
         isDev: false,
         origin: "http://127.0.0.1:4789",
-        authorizationHeader: "Basic abc123",
+        authorizationHeader: "Bearer abc123",
       }),
     ).toBe(
-      "npx add-mcp http://127.0.0.1:4789/mcp --transport http --name executor --header 'Authorization: Basic abc123'",
+      "npx add-mcp http://127.0.0.1:4789/mcp --transport http --name executor --header 'Authorization: Bearer abc123'",
     );
   });
 
