@@ -8,18 +8,19 @@
 //
 // Each probe has a paired control: the same request authenticated as the same
 // user through the front door succeeds, so a refusal can never be explained
-// by a wrong path or a malformed request — only by the credential. Refusals
-// are pinned to "never 2xx" rather than one exact status: the guarantee under
-// test is "does not authenticate", and the refusal rendering differs per plane
-// in the e2e harness today. Real WorkOS answers /api_keys/validations for a
-// non-key value with 200 { api_key: null }, which the cloud gate renders as a
-// clean 401 invalid_api_key (confirmed against api.workos.com dev). The e2e
-// WorkOS emulator instead 404s that lookup, which the SDK throws and the gate
-// renders as 503 api_key_validation_unavailable — a harness infidelity, fixed
-// in vendor/emulate (200 { api_key: null }) and pending an @executor-js/emulate
-// republish + dep bump, after which this can tighten to assert 401. Selfhost's
-// account plane separately renders some unauthenticated rejections as 500. In
-// every case the bearer authenticates nothing — which is the actual guarantee.
+// by a wrong path or a malformed request — only by the credential. The
+// universal guarantee under test is "does not authenticate" — pinned as
+// "never 2xx", since the refusal *rendering* differs per plane (selfhost's
+// account plane renders some unauthenticated rejections as 500).
+//
+// On cloud we additionally pin the exact status: a replayed bearer must come
+// back 401 invalid_api_key, NOT 503. The cloud REST gate validates any bearer
+// as an api key via WorkOS /api_keys/validations; real WorkOS answers a
+// non-key value with 200 { api_key: null } (confirmed against api.workos.com
+// dev), which the gate renders as a clean 401. A 503 would mean the validator
+// *threw* — the failure mode of the old WorkOS emulator, which 404'd that
+// lookup. Asserting 401 here is the end-to-end proof that the emulator
+// (@executor-js/emulate ≥ 0.7.1) now mirrors the real wire.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -102,7 +103,12 @@ scenario(
 
     // Every refusal is judged against a per-probe control, and breaches are
     // collected so a failure names every plane the bearer opened at once.
+    const isCloud = target.name === "cloud";
     const breached: Array<{ probe: string; status: number; body: string }> = [];
+    // Cloud only: a refusal that is not a clean 401 (e.g. a 503 validation
+    // outage) means the WorkOS api-key validator threw instead of answering
+    // 200 { api_key: null } — the old emulator's 404 behaviour.
+    const misrendered: Array<{ probe: string; status: number }> = [];
     for (const probe of PROTECTED_API_PROBES) {
       // Control: the same request as the same user through the front door.
       const asUser = yield* Effect.promise(() =>
@@ -123,8 +129,14 @@ scenario(
       const body = yield* Effect.promise(() => asMcpBearer.text());
       if (asMcpBearer.status < 400) {
         breached.push({ probe: probe.label, status: asMcpBearer.status, body: body.slice(0, 200) });
+      } else if (isCloud && asMcpBearer.status !== 401) {
+        misrendered.push({ probe: probe.label, status: asMcpBearer.status });
       }
     }
     expect(breached, "no REST plane accepted the MCP bearer").toEqual([]);
+    expect(
+      misrendered,
+      "cloud rejects the MCP bearer as a clean 401 invalid_api_key, not a 503 validation outage",
+    ).toEqual([]);
   }),
 );
