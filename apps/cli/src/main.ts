@@ -2,6 +2,7 @@
 // before any import (e.g. `@executor-js/local` → libSQL) eagerly loads them.
 import "./native-bindings";
 
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -47,7 +48,6 @@ import * as Cause from "effect/Cause";
 
 import { ExecutorApi } from "@executor-js/api";
 import {
-  DEFAULT_EXECUTOR_SERVER_USERNAME,
   getExecutorServerAuthorizationHeader,
   normalizeExecutorServerConnection,
   type ExecutorLocalServerKind,
@@ -55,7 +55,13 @@ import {
   type ExecutorServerConnection,
   type ExecutorServerConnectionInput,
 } from "@executor-js/sdk/shared";
-import { startServer, runMcpStdioServer, getExecutor } from "@executor-js/local";
+import {
+  startServer,
+  runMcpStdioServer,
+  getExecutor,
+  rotateLocalAuthToken,
+  localAuthTokenPath,
+} from "@executor-js/local";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { fetchIntegrations } from "./integrations";
 import {
@@ -158,8 +164,8 @@ const waitForShutdownSignal = () =>
 // Background server management
 // ---------------------------------------------------------------------------
 
-const isServerReachable = (baseUrl: string, authorization?: string): Effect.Effect<boolean> =>
-  isExecutorServerReachable({ baseUrl, authorization });
+const isServerReachable = (baseUrl: string): Effect.Effect<boolean> =>
+  isExecutorServerReachable({ baseUrl });
 
 const readActiveLocalServerManifest = (): Effect.Effect<
   ExecutorLocalServerManifest | null,
@@ -175,8 +181,7 @@ const readActiveLocalServerManifest = (): Effect.Effect<
       return null;
     }
 
-    const authorization = getExecutorServerAuthorizationHeader(manifest.connection) ?? undefined;
-    if (yield* isServerReachable(manifest.connection.origin, authorization)) {
+    if (yield* isServerReachable(manifest.connection.origin)) {
       return manifest;
     }
 
@@ -237,21 +242,6 @@ const parseExecutorServerConnection = (baseUrl: string) =>
 
 const daemonBaseUrl = (hostname: string, port: number): string =>
   `http://${canonicalDaemonHost(hostname)}:${port}`;
-
-const serverAuthFromInputs = (input: {
-  readonly authToken: string | undefined;
-  readonly authPassword: string | undefined;
-}): ExecutorServerConnection["auth"] | undefined => {
-  if (input.authPassword) {
-    return {
-      kind: "basic",
-      username: DEFAULT_EXECUTOR_SERVER_USERNAME,
-      password: input.authPassword,
-    };
-  }
-  if (input.authToken) return { kind: "bearer", token: input.authToken };
-  return undefined;
-};
 
 const makeLocalServerManifest = (input: {
   readonly kind: ExecutorLocalServerKind;
@@ -561,8 +551,7 @@ const resolveExecutorServerConnection = (
     if (decision.kind === "use-active") return requested;
 
     if (!canAutoStartCliServerConnection(requested)) {
-      const authorization = getExecutorServerAuthorizationHeader(requested) ?? undefined;
-      if (yield* isServerReachable(requested.origin, authorization)) {
+      if (yield* isServerReachable(requested.origin)) {
         return requested;
       }
       return yield* Effect.fail(
@@ -570,14 +559,24 @@ const resolveExecutorServerConnection = (
           [
             `Executor server is not reachable at ${requested.origin}.`,
             "For hosted Executor, set EXECUTOR_API_KEY to a bearer API key.",
-            "For password-protected local or desktop servers, set EXECUTOR_AUTH_PASSWORD.",
-            "For unauthenticated local Executor, use an http://localhost or http://127.0.0.1 server URL.",
+            "For local or desktop servers, set EXECUTOR_AUTH_TOKEN to the server's bearer token.",
           ].join("\n"),
         ),
       );
     }
 
     const daemonUrl = yield* ensureDaemon(requested.origin);
+    // The daemon we just ensured published a manifest carrying its bearer token
+    // (minted into auth.json). Prefer that authed connection — otherwise the
+    // next API call hits the now-gated server with no credential and 401s.
+    const started = yield* readActiveLocalServerManifest().pipe(Effect.orElseSucceed(() => null));
+    const daemonOrigin = normalizeExecutorServerConnection({ origin: daemonUrl }).origin;
+    const startedOrigin = started
+      ? normalizeExecutorServerConnection({ origin: started.connection.origin }).origin
+      : null;
+    if (started && startedOrigin === daemonOrigin) {
+      return started.connection;
+    }
     return normalizeExecutorServerConnection({
       ...requested,
       origin: daemonUrl,
@@ -799,7 +798,6 @@ const runForegroundSession = (input: {
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
   authToken: string | undefined;
-  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
     const displayHost =
@@ -821,7 +819,6 @@ const runForegroundSession = (input: {
             hostname: input.hostname,
             allowedHosts: input.allowedHosts,
             authToken: input.authToken,
-            authPassword: input.authPassword,
             embeddedWebUI,
           }),
         );
@@ -832,7 +829,7 @@ const runForegroundSession = (input: {
             kind: "http",
             origin: baseUrl,
             displayName: "CLI web",
-            auth: serverAuthFromInputs(input),
+            auth: { kind: "bearer", token: server.authToken },
           }),
         });
       } finally {
@@ -845,6 +842,7 @@ const runForegroundSession = (input: {
 
       try {
         console.log(`Executor is ready.`);
+        console.log(`Open:    ${baseUrl}/?_token=${server.authToken}`);
         console.log(`Web:     ${baseUrl}`);
         console.log(`MCP:     ${baseUrl}/mcp`);
         console.log(`OpenAPI: ${baseUrl}/api/docs`);
@@ -853,12 +851,7 @@ const runForegroundSession = (input: {
             `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
           );
           if (input.allowedHosts.length > 0) {
-            console.log(`   Extra allowed Host headers: ${input.allowedHosts.join(", ")}`);
-          }
-          if (input.authPassword) {
-            console.log("   Basic authentication is enabled.");
-          } else if (input.authToken) {
-            console.log("   Token authentication is enabled.");
+            console.log(`   Extra CORS origins: ${input.allowedHosts.join(", ")}`);
           }
         }
         console.log(`\nPress Ctrl+C to stop.`);
@@ -878,7 +871,6 @@ const runDaemonSession = (input: {
   hostname: string;
   allowedHosts: ReadonlyArray<string>;
   authToken: string | undefined;
-  authPassword: string | undefined;
 }) =>
   Effect.gen(function* () {
     const daemonHost = canonicalDaemonHost(input.hostname);
@@ -920,7 +912,6 @@ const runDaemonSession = (input: {
             hostname: input.hostname,
             allowedHosts: input.allowedHosts,
             authToken: input.authToken,
-            authPassword: input.authPassword,
             embeddedWebUI,
           }),
         );
@@ -934,7 +925,7 @@ const runDaemonSession = (input: {
             kind: "http",
             origin: daemonUrl,
             displayName: "CLI daemon",
-            auth: serverAuthFromInputs(input),
+            auth: { kind: "bearer", token: server.authToken },
           }),
         });
       } finally {
@@ -962,11 +953,6 @@ const runDaemonSession = (input: {
         });
 
         console.log(`Daemon ready on http://${daemonHost}:${daemonPort}`);
-        if (input.authPassword) {
-          console.log("Basic authentication is enabled.");
-        } else if (input.authToken) {
-          console.log("Token authentication is enabled.");
-        }
 
         yield* waitForShutdownSignal();
       } finally {
@@ -1092,6 +1078,7 @@ const runStdioMcpSession = (input: { readonly elicitationMode: "browser" | "mode
           kind: "http",
           origin: web.baseUrl,
           displayName: "CLI MCP",
+          auth: { kind: "bearer", token: web.server.authToken },
         }),
       });
     } finally {
@@ -1915,12 +1902,31 @@ const serverRemoveCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Remove an Executor server profile"));
 
+const serverRotateTokenCommand = Command.make("rotate-token", {}, () =>
+  Effect.gen(function* () {
+    const token = rotateLocalAuthToken();
+    console.log("Rotated the local server bearer token.");
+    console.log(`Stored in ${localAuthTokenPath()}`);
+
+    const manifest = yield* readLocalServerManifest();
+    if (manifest && isPidAlive(manifest.pid)) {
+      console.log(
+        `\n⚠  A local server is running at ${manifest.connection.origin} (pid ${manifest.pid}).`,
+      );
+      console.log("   Restart it to apply the new token.");
+    }
+    console.log(`\nNew token: ${token}`);
+    console.log("Re-run your MCP client connect command with the new token.");
+  }),
+).pipe(Command.withDescription("Rotate the local server's bearer token (auth.json)"));
+
 const serverCommand = Command.make("server").pipe(
   Command.withSubcommands([
     serverAddCommand,
     serverListCommand,
     serverUseCommand,
     serverRemoveCommand,
+    serverRotateTokenCommand,
   ] as const),
   Command.withDescription("Manage named Executor server profiles"),
 );
@@ -1936,18 +1942,19 @@ const webCommand = Command.make(
       .pipe(Options.atLeast(0))
       .pipe(
         Options.withDescription(
-          "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
+          "Grant an extra origin cross-origin (CORS) access (repeatable). Not needed to reach the server from another host — the bearer token is the gate; localhost is always allowed.",
         ),
       ),
     authToken: Options.string("auth-token")
       .pipe(Options.optional)
-      .pipe(Options.withDescription("Bearer token required for requests.")),
-    authPassword: Options.string("auth-password")
-      .pipe(Options.optional)
-      .pipe(Options.withDescription("Basic auth password required for requests.")),
+      .pipe(
+        Options.withDescription(
+          "Override the bearer token. Defaults to the stable token in auth.json.",
+        ),
+      ),
     scope,
   },
-  ({ port, scope, hostname, allowedHost, authToken, authPassword }) =>
+  ({ port, scope, hostname, allowedHost, authToken }) =>
     Effect.gen(function* () {
       applyScope(scope);
       yield* runForegroundSession({
@@ -1955,7 +1962,6 @@ const webCommand = Command.make(
         hostname,
         allowedHosts: allowedHost,
         authToken: Option.getOrUndefined(authToken),
-        authPassword: Option.getOrUndefined(authPassword),
       });
     }),
 ).pipe(Command.withDescription("Start a foreground web session"));
@@ -1971,15 +1977,16 @@ const daemonRunCommand = Command.make(
       .pipe(Options.atLeast(0))
       .pipe(
         Options.withDescription(
-          "Additional hostname permitted in the Host header (repeatable). localhost/127.0.0.1 are always allowed.",
+          "Grant an extra origin cross-origin (CORS) access (repeatable). Not needed to reach the server from another host — the bearer token is the gate; localhost is always allowed.",
         ),
       ),
     authToken: Options.string("auth-token")
       .pipe(Options.optional)
-      .pipe(Options.withDescription("Bearer token required for requests.")),
-    authPassword: Options.string("auth-password")
-      .pipe(Options.optional)
-      .pipe(Options.withDescription("Basic auth password required for requests.")),
+      .pipe(
+        Options.withDescription(
+          "Override the bearer token. Defaults to the stable token in auth.json.",
+        ),
+      ),
     foreground: Options.boolean("foreground")
       .pipe(Options.withDefault(false))
       .pipe(
@@ -1989,7 +1996,7 @@ const daemonRunCommand = Command.make(
       ),
     scope,
   },
-  ({ port, scope, hostname, allowedHost, authToken, authPassword, foreground }) =>
+  ({ port, scope, hostname, allowedHost, authToken, foreground }) =>
     Effect.gen(function* () {
       applyScope(scope);
       if (foreground) {
@@ -1998,7 +2005,6 @@ const daemonRunCommand = Command.make(
           hostname,
           allowedHosts: allowedHost,
           authToken: Option.getOrUndefined(authToken),
-          authPassword: Option.getOrUndefined(authPassword),
         });
       } else {
         yield* runBackgroundDaemonStart({ port, hostname, allowedHosts: allowedHost });
@@ -2114,6 +2120,48 @@ const mcpCommand = Command.make(
 // Root command
 // ---------------------------------------------------------------------------
 
+/**
+ * Open a URL in the user's default browser. Best-effort: if the platform opener
+ * isn't found (e.g. headless Linux without xdg-open) we swallow the error — the
+ * URL is always printed first, so the user can copy it manually.
+ */
+const openInBrowser = (url: string): Effect.Effect<void> =>
+  Effect.sync(() => {
+    const [cmd, args]: readonly [string, ReadonlyArray<string>] =
+      process.platform === "darwin"
+        ? ["open", [url]]
+        : process.platform === "win32"
+          ? ["cmd", ["/c", "start", "", url]]
+          : ["xdg-open", [url]];
+    // best-effort: ignore failures (e.g. no opener on headless Linux). The URL
+    // was printed above for manual open; execFile's callback absorbs the error,
+    // so there's no unhandled 'error' event to crash the CLI.
+    execFile(cmd, [...args], () => {});
+  });
+
+/**
+ * `executor open` — the friendly way back in. Reads the running local server's
+ * manifest and opens the browser straight to its `?_token=` URL, so the user
+ * never has to copy a bearer token out of a terminal or auth.json by hand.
+ */
+const openCommand = Command.make("open", {}, () =>
+  Effect.gen(function* () {
+    const manifest = yield* readLocalServerManifest();
+    if (!manifest || !isPidAlive(manifest.pid)) {
+      console.log("No local Executor server is running.");
+      console.log(`Start one with:  ${cliPrefix} web`);
+      return;
+    }
+    const { origin, auth } = manifest.connection;
+    const token = auth?.kind === "bearer" ? auth.token : undefined;
+    const url = token ? `${origin}/?_token=${token}` : origin;
+    console.log(`Opening ${url}`);
+    yield* openInBrowser(url);
+  }),
+).pipe(
+  Command.withDescription("Open the running Executor web app in your browser, already signed in"),
+);
+
 const root = Command.make("executor").pipe(
   Command.withSubcommands([
     callCommand,
@@ -2123,6 +2171,7 @@ const root = Command.make("executor").pipe(
     webCommand,
     daemonCommand,
     mcpCommand,
+    openCommand,
   ] as const),
   Command.withDescription("Executor local CLI"),
 );

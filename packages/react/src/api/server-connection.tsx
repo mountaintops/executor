@@ -2,7 +2,6 @@ import * as React from "react";
 import { isValidOrgSlug } from "@executor-js/api";
 import {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
-  DEFAULT_EXECUTOR_SERVER_USERNAME,
   getExecutorServerAuthorizationHeader as getAuthorizationHeaderForConnection,
   normalizeExecutorServerConnection,
   originFromApiBaseUrl,
@@ -12,7 +11,6 @@ import {
 
 export {
   DEFAULT_EXECUTOR_SERVER_ORIGIN,
-  DEFAULT_EXECUTOR_SERVER_USERNAME,
   apiBaseUrlForServerOrigin,
   normalizeExecutorServerConnection,
   normalizeExecutorServerOrigin,
@@ -26,10 +24,15 @@ export {
 interface ExecutorWindowBridge {
   readonly serverConnection?: ExecutorServerConnectionInput;
   readonly getServerConnection?: () => Promise<ExecutorServerConnectionInput | null>;
+  /**
+   * The desktop bearer token, fetched on demand for the "Connect an agent"
+   * install command (an external agent needs it in plaintext). The renderer's
+   * own requests don't use it — the desktop main process injects the header at
+   * the session layer.
+   */
+  readonly getServerAuthToken?: () => Promise<string | null>;
   readonly getServerProfiles?: () => Promise<string | null>;
   readonly setServerProfiles?: (value: string) => Promise<void>;
-  readonly baseUrl?: string;
-  readonly authPassword?: string;
 }
 
 declare global {
@@ -45,24 +48,6 @@ export const resolveBrowserExecutorServerConnection = (input: {
   const configured = input.bridge?.serverConnection;
   if (configured) {
     return normalizeExecutorServerConnection(configured);
-  }
-
-  const legacyBaseUrl = input.bridge?.baseUrl;
-  if (legacyBaseUrl) {
-    return normalizeExecutorServerConnection({
-      kind: "desktop-sidecar",
-      origin: legacyBaseUrl,
-      displayName: "Desktop sidecar",
-      ...(input.bridge?.authPassword
-        ? {
-            auth: {
-              kind: "basic",
-              username: DEFAULT_EXECUTOR_SERVER_USERNAME,
-              password: input.bridge.authPassword,
-            },
-          }
-        : {}),
-    });
   }
 
   return normalizeExecutorServerConnection({

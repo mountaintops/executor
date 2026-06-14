@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { trackEvent } from "../api/analytics";
 import CursorIcon from "@lobehub/icons/es/Cursor/components/Mono";
 import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
@@ -70,15 +70,6 @@ export const buildMcpHttpEndpoint = (input: {
   return url.toString();
 };
 
-const buildBasicAuthHeader = (password: string): string => {
-  // Renderer-only: every browser/Electron renderer has btoa. SSR doesn't
-  // render this card, so we don't need a Node fallback here.
-  if (typeof globalThis.btoa !== "function") {
-    return `Authorization: Basic executor:${password}`;
-  }
-  return `Authorization: Basic ${globalThis.btoa(`executor:${password}`)}`;
-};
-
 export const buildMcpInstallCommand = (input: {
   readonly mode: TransportMode;
   readonly isDev: boolean;
@@ -86,8 +77,6 @@ export const buildMcpInstallCommand = (input: {
   readonly scopeDir?: string;
   readonly desktop?: {
     readonly port: number;
-    readonly requireAuth: boolean;
-    readonly password: string;
   } | null;
   readonly authorizationHeader?: string | null;
   readonly elicitationMode?: McpElicitationMode;
@@ -104,8 +93,6 @@ export const buildMcpInstallCommand = (input: {
     const headerFlags: string[] = [];
     if (input.authorizationHeader) {
       headerFlags.push(`--header ${shellQuoteWord(`Authorization: ${input.authorizationHeader}`)}`);
-    } else if (input.desktop?.requireAuth && input.desktop.password) {
-      headerFlags.push(`--header ${shellQuoteWord(buildBasicAuthHeader(input.desktop.password))}`);
     }
     const parts = [
       `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
@@ -141,7 +128,32 @@ export function McpInstallCard(props: { className?: string }) {
     isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
 
   const elicitationMode = mode === "stdio" ? "model" : httpElicitationMode;
-  const authorizationHeader = getExecutorServerAuthorizationHeader(serverConnection);
+
+  // The desktop renderer's connection carries no auth (the main process injects
+  // the bearer at the session layer). For the install command — which an
+  // EXTERNAL agent runs and therefore needs the token in plaintext — fetch it
+  // on demand from the bridge.
+  const [desktopAuthToken, setDesktopAuthToken] = useState<string | null>(null);
+  useEffect(() => {
+    if (serverConnection.kind !== "desktop-sidecar") {
+      setDesktopAuthToken(null);
+      return;
+    }
+    let cancelled = false;
+    void globalThis.window?.executor?.getServerAuthToken?.().then(
+      (token) => {
+        if (!cancelled) setDesktopAuthToken(token);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [serverConnection.kind]);
+
+  const authorizationHeader =
+    getExecutorServerAuthorizationHeader(serverConnection) ??
+    (desktopAuthToken ? `Bearer ${desktopAuthToken}` : null);
 
   const command = buildMcpInstallCommand({
     mode,

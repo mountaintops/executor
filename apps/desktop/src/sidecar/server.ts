@@ -67,13 +67,16 @@ import { startServer } from "@executor-js/local";
 
 const requestedPort = parseInt(process.env.EXECUTOR_PORT ?? "0", 10);
 const hostname = process.env.EXECUTOR_HOST ?? "127.0.0.1";
-const authPassword = process.env.EXECUTOR_AUTH_PASSWORD;
+// The main process mints/loads the bearer token and threads it in so it can
+// inject the same token into the webview. Falls back to the auth.json token
+// when absent (e.g. the sidecar booted standalone).
+const authToken = process.env.EXECUTOR_AUTH_TOKEN;
 const clientDir = process.env.EXECUTOR_CLIENT_DIR;
 
 const server = await startServer({
   port: requestedPort,
   hostname,
-  ...(authPassword ? { authPassword } : {}),
+  ...(authToken ? { authToken } : {}),
   clientDir,
 });
 

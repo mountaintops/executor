@@ -5,6 +5,7 @@ import type { Target } from "../src/target";
 import { cloudTarget } from "./cloud";
 import { cloudflareTarget } from "./cloudflare";
 import { desktopTarget } from "./desktop";
+import { localTarget } from "./local";
 import { selfhostTarget } from "./selfhost";
 import { selfhostDockerTarget } from "./selfhost-docker";
 
@@ -14,6 +15,7 @@ const factories: Record<string, () => Target> = {
   "selfhost-docker": selfhostDockerTarget,
   cloudflare: cloudflareTarget,
   desktop: desktopTarget,
+  local: localTarget,
 };
 
 let current: Target | undefined;

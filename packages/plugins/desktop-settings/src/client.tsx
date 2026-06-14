@@ -26,8 +26,6 @@ import { defineClientPlugin } from "@executor-js/sdk/client";
 
 interface DesktopServerSettings {
   readonly port: number;
-  readonly requireAuth: boolean;
-  readonly password: string;
 }
 
 interface DesktopServerConnection {
@@ -36,20 +34,17 @@ interface DesktopServerConnection {
   readonly origin: string;
   readonly apiBaseUrl: string;
   readonly displayName: string;
-  readonly auth?: {
-    readonly kind: "basic";
-    readonly username: string;
-    readonly password: string;
-  };
 }
 
 interface ExecutorBridge {
   readonly getServerConnection: () => Promise<DesktopServerConnection | null>;
+  // The bearer token, fetched on demand to display the CLI/MCP connect command.
+  readonly getServerAuthToken?: () => Promise<string | null>;
   readonly getSettings: () => Promise<DesktopServerSettings>;
   readonly updateSettings: (
     patch: Partial<DesktopServerSettings>,
   ) => Promise<DesktopServerSettings>;
-  readonly regeneratePassword: () => Promise<DesktopServerSettings>;
+  readonly rotateToken: () => Promise<DesktopServerConnection>;
   readonly restartServer: () => Promise<DesktopServerConnection>;
   // Optional: present in desktop builds that ship the diagnostics export.
   readonly exportDiagnostics?: () => Promise<string>;
@@ -86,18 +81,22 @@ function SettingsPage() {
   const [connection, setConnection] = useState<DesktopServerConnection | null>(null);
   const [settings, setSettings] = useState<DesktopServerSettings | null>(null);
   const [draft, setDraft] = useState<DesktopServerSettings | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "saving" | "restarting" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!bridge) return;
-    void Promise.all([bridge.getSettings(), bridge.getServerConnection()]).then(
-      ([nextSettings, nextConnection]) => {
-        setSettings(nextSettings);
-        setDraft(nextSettings);
-        setConnection(nextConnection);
-      },
-    );
+    void Promise.all([
+      bridge.getSettings(),
+      bridge.getServerConnection(),
+      bridge.getServerAuthToken?.() ?? Promise.resolve(null),
+    ]).then(([nextSettings, nextConnection, nextToken]) => {
+      setSettings(nextSettings);
+      setDraft(nextSettings);
+      setConnection(nextConnection);
+      setAuthToken(nextToken);
+    });
   }, [bridge]);
 
   const restartAndRefreshConnection = useCallback(async () => {
@@ -152,22 +151,20 @@ function SettingsPage() {
     }
   }, [bridge]);
 
-  const regenerate = useCallback(async () => {
+  const rotate = useCallback(async () => {
     if (!bridge) return;
-    setStatus("saving");
-    let next: DesktopServerSettings;
+    setStatus("restarting");
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: renderer ↔ Electron IPC
     try {
-      next = await bridge.regeneratePassword();
+      setConnection(await bridge.rotateToken());
+      setAuthToken((await bridge.getServerAuthToken?.()) ?? null);
     } catch (err) {
       setError(describeIpcError(err));
       setStatus("error");
       return;
     }
-    setSettings(next);
-    setDraft(next);
-    await restartAndRefreshConnection();
-  }, [bridge, restartAndRefreshConnection]);
+    setStatus("idle");
+  }, [bridge]);
 
   if (!bridge) {
     return (
@@ -184,20 +181,13 @@ function SettingsPage() {
     return <div style={{ maxWidth: 560, margin: "3rem auto", padding: "1.5rem" }}>Loading…</div>;
   }
 
-  const dirty =
-    draft.port !== settings.port ||
-    draft.requireAuth !== settings.requireAuth ||
-    draft.password !== settings.password;
+  const dirty = draft.port !== settings.port;
 
-  const authLabel =
-    connection.auth?.kind === "basic"
-      ? `Basic auth as ${connection.auth.username}`
-      : "No HTTP auth";
+  const authLabel = "Bearer token";
   const cliProfileCommand = `executor server add desktop ${connection.origin} --default`;
-  const cliUseCommand =
-    connection.auth?.kind === "basic"
-      ? `EXECUTOR_AUTH_PASSWORD=${connection.auth.password} executor tools sources --server desktop`
-      : "executor tools sources --server desktop";
+  const cliUseCommand = authToken
+    ? `EXECUTOR_AUTH_TOKEN=${authToken} executor tools sources --server desktop`
+    : "executor tools sources --server desktop";
 
   return (
     <div style={{ maxWidth: 760, margin: "2rem auto", padding: "1.5rem" }}>
@@ -273,77 +263,54 @@ function SettingsPage() {
           </span>
         </label>
 
-        <label style={{ display: "flex", alignItems: "flex-start", gap: "0.6rem" }}>
-          {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-          <input
-            type="checkbox"
-            checked={!draft.requireAuth}
-            onChange={(e) => setDraft({ ...draft, requireAuth: !e.target.checked })}
-            style={{ marginTop: "0.25rem" }}
-          />
-          <span style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Use without a password</span>
-            <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              Disables HTTP Basic auth on the sidecar. Any process running as you on this machine
-              can hit <code>/api</code> directly.
-            </span>
-          </span>
-        </label>
-
-        {draft.requireAuth && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-            <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Password</span>
-            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-              <code
-                style={{
-                  flex: 1,
-                  padding: "0.5rem 0.7rem",
-                  borderRadius: 6,
-                  border: "1px solid var(--border, #ddd)",
-                  background: "var(--muted, #f5f5f5)",
-                  fontSize: "0.85rem",
-                  overflow: "auto",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {settings.password}
-              </code>
-              {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
-              <button
-                type="button"
-                onClick={() => void regenerate()}
-                disabled={status !== "idle"}
-                style={{
-                  padding: "0.45rem 0.85rem",
-                  borderRadius: 6,
-                  border: "1px solid var(--border, #ddd)",
-                  background: "var(--background, white)",
-                  fontFamily: "inherit",
-                  fontSize: "0.85rem",
-                  cursor: status === "idle" ? "pointer" : "default",
-                }}
-              >
-                Regenerate
-              </button>
-            </div>
-            <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
-              Regenerating this changes the active server connection and invalidates existing HTTP
-              MCP client configs.
-            </span>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <span style={{ fontSize: "0.875rem", fontWeight: 500 }}>Bearer token</span>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <code
+              style={{
+                flex: 1,
+                padding: "0.5rem 0.7rem",
+                borderRadius: 6,
+                border: "1px solid var(--border, #ddd)",
+                background: "var(--muted, #f5f5f5)",
+                fontSize: "0.85rem",
+                overflow: "auto",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {authToken ?? "—"}
+            </code>
+            {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
+            <button
+              type="button"
+              onClick={() => void rotate()}
+              disabled={status !== "idle"}
+              style={{
+                padding: "0.45rem 0.85rem",
+                borderRadius: 6,
+                border: "1px solid var(--border, #ddd)",
+                background: "var(--background, white)",
+                fontFamily: "inherit",
+                fontSize: "0.85rem",
+                cursor: status === "idle" ? "pointer" : "default",
+              }}
+            >
+              Rotate
+            </button>
           </div>
-        )}
+          <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
+            The sidecar enforces this token on <code>/api</code> and <code>/mcp</code>. Rotating it
+            restarts the connection and invalidates existing MCP client configs — re-run your
+            connect command afterwards.
+          </span>
+        </div>
 
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}
           <button
             type="button"
             disabled={!dirty || status !== "idle"}
-            onClick={() =>
-              void apply({
-                port: draft.port,
-                requireAuth: draft.requireAuth,
-              })
-            }
+            onClick={() => void apply({ port: draft.port })}
             style={{
               padding: "0.55rem 1.1rem",
               borderRadius: 6,
@@ -380,8 +347,8 @@ function SettingsPage() {
             <div style={{ fontSize: "0.875rem", fontWeight: 600 }}>Diagnostics</div>
             <span style={{ fontSize: "0.75rem", color: "var(--muted-foreground, #888)" }}>
               Packs app and server logs, crash dumps, and version info into a zip in your Downloads
-              folder — attach it when reporting a bug. Your sources, secrets, and passwords are not
-              included.
+              folder — attach it when reporting a bug. Your sources, secrets, and bearer token are
+              not included.
             </span>
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
               {/* oxlint-disable-next-line react/forbid-elements -- plugin component uses raw HTML controls per SDK convention */}

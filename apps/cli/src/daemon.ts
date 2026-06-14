@@ -19,7 +19,6 @@ export interface DaemonSpawnSpec {
 
 export interface ExecutorServerReachabilityInput {
   readonly baseUrl: string;
-  readonly authorization?: string;
 }
 
 type ProbeServer = ReturnType<typeof createServer> & {
@@ -69,11 +68,10 @@ export const isExecutorServerReachable = (
   input: ExecutorServerReachabilityInput,
 ): Effect.Effect<boolean> =>
   Effect.tryPromise(async () => {
-    const url = new URL("/api/integrations", input.baseUrl);
-    const response = await fetch(url, {
-      ...(input.authorization ? { headers: { authorization: input.authorization } } : {}),
-      signal: AbortSignal.timeout(2000),
-    });
+    // The unauthenticated liveness probe — never forwards a credential, so a
+    // misconfigured base URL can't leak the bearer token to a third-party host.
+    const url = new URL("/api/health", input.baseUrl);
+    const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
     await response.body?.cancel();
     return response.ok;
   }).pipe(Effect.catchCause(() => Effect.succeed(false)));

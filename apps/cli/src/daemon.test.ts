@@ -19,7 +19,7 @@ describe("canAutoStartLocalDaemonForHost", () => {
 });
 
 describe("isExecutorServerReachable", () => {
-  it.effect("checks the v1.5 API surface instead of the removed scope endpoint", () =>
+  it.effect("probes the unauthenticated /api/health endpoint without forwarding a credential", () =>
     Effect.gen(function* () {
       const server = yield* Effect.acquireRelease(
         Effect.tryPromise(
@@ -27,9 +27,10 @@ describe("isExecutorServerReachable", () => {
             new Promise<{ server: Server; port: number }>((resolve, reject) => {
               const server = createServer((request, response) => {
                 const url = new URL(request.url ?? "/", "http://127.0.0.1");
-                if (url.pathname === "/api/integrations") {
-                  response.writeHead(200, { "content-type": "application/json" });
-                  response.end("[]");
+                // The probe must NOT send Authorization, and must hit /api/health.
+                if (url.pathname === "/api/health" && !request.headers.authorization) {
+                  response.writeHead(200, { "content-type": "text/plain" });
+                  response.end("ok");
                   return;
                 }
                 response.writeHead(404);
@@ -52,12 +53,6 @@ describe("isExecutorServerReachable", () => {
               }),
           ),
       );
-
-      const legacyScopeStatus = yield* Effect.tryPromise(() =>
-        fetch(`http://127.0.0.1:${server.port}/api/scope`),
-      ).pipe(Effect.map((response) => response.status));
-
-      expect(legacyScopeStatus).toBe(404);
 
       const reachable = yield* isExecutorServerReachable({
         baseUrl: `http://127.0.0.1:${server.port}`,

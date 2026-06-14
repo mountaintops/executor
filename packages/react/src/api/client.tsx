@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { reportHandledFrontendError } from "./error-reporting";
+import { notifyLocalAuthRequired } from "./local-auth";
 import {
   EXECUTOR_ORG_HEADER,
   getActiveOrgSlug,
@@ -31,6 +32,29 @@ export const reportApiClientInfrastructureCause = (cause: Cause.Cause<unknown>) 
       surface: "api_client",
       action: "decode_or_transport",
     });
+  });
+
+const isUnauthorizedCause = (cause: Cause.Cause<unknown>): boolean =>
+  Option.match(Cause.findErrorOption(cause), {
+    onNone: () => false,
+    onSome: (error) =>
+      HttpClientError.isHttpClientError(error) &&
+      "response" in error &&
+      (error as { readonly response?: { readonly status?: number } }).response?.status === 401,
+  });
+
+const handleApiClientCause = (cause: Cause.Cause<unknown>) =>
+  Effect.suspend(() => {
+    // A 401 is an expected, handled state — show the local login gate (or, on a
+    // hosted surface, the session re-auth). It is NOT an infrastructure error,
+    // so don't surface it as frontend telemetry: that was noise, and via
+    // globalThis.reportError it also tripped vite's dev error overlay, covering
+    // the gate. Other causes (schema/transport) still report.
+    if (isUnauthorizedCause(cause)) {
+      notifyLocalAuthRequired();
+      return Effect.void;
+    }
+    return reportApiClientInfrastructureCause(cause);
   });
 
 // ---------------------------------------------------------------------------
@@ -107,7 +131,7 @@ const ExecutorApiClient = AtomHttpApi.Service<"ExecutorApiClient">()("ExecutorAp
     }
     return next;
   }),
-  transformResponse: (effect) => Effect.tapCause(effect, reportApiClientInfrastructureCause),
+  transformResponse: (effect) => Effect.tapCause(effect, handleApiClientCause),
 });
 
 export { ExecutorApiClient };
