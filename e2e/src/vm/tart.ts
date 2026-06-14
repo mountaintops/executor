@@ -34,6 +34,23 @@ const SSH_OPTS = [
 const GUEST_USER = "admin";
 const GUEST_PASS = "admin";
 
+/**
+ * Reboot a tart guest by address, with no live handle. `restart()` runs in a
+ * vitest worker (separate process from the globalsetup that owns the VM), so it
+ * re-derives the guest address from env and triggers the reboot statelessly —
+ * the reconnecting tunnel and a health poll confirm recovery.
+ */
+export const sshRebootGuest = async (ip: string): Promise<void> => {
+  await execFileP(SSHPASS, [
+    "-p",
+    GUEST_PASS,
+    "ssh",
+    ...SSH_OPTS,
+    `${GUEST_USER}@${ip}`,
+    "sudo reboot",
+  ]).catch(() => undefined); // the connection drops mid-call
+};
+
 const baseImage = (os: "macos" | "linux"): string =>
   os === "macos"
     ? (process.env.E2E_TART_MACOS_BASE ?? "executor-macos-base")
@@ -129,6 +146,9 @@ export const tartVm = (os: "macos" | "linux", arch: VmArch = "arm64"): VmProvide
     const handle: VmHandle = {
       os,
       arch,
+      get host() {
+        return ip;
+      },
       ssh,
       push: async (localPath, remotePath) => {
         await execFileP(SSHPASS, [

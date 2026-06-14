@@ -22,6 +22,8 @@ export interface Tunnel {
 export interface VmHandle {
   readonly os: VmOs;
   readonly arch: VmArch;
+  /** Current reachable address of the guest (re-resolved across reboots). */
+  readonly host: string;
   /** Run a command in the guest over SSH (shell on Unix, PowerShell on Windows). */
   ssh(command: string): Promise<SshResult>;
   /** Copy a local file or directory into the guest (recursive for directories). */
