@@ -2,7 +2,7 @@
 // before any import (e.g. `@executor-js/local` → libSQL) eagerly loads them.
 import "./native-bindings";
 
-import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -2133,11 +2133,10 @@ const openInBrowser = (url: string): Effect.Effect<void> =>
         : process.platform === "win32"
           ? ["cmd", ["/c", "start", "", url]]
           : ["xdg-open", [url]];
-    const child = spawn(cmd, [...args], { stdio: "ignore", detached: true });
-    child.on("error", () => {
-      // best-effort — the URL was printed above for manual open
-    });
-    child.unref();
+    // best-effort: ignore failures (e.g. no opener on headless Linux). The URL
+    // was printed above for manual open; execFile's callback absorbs the error,
+    // so there's no unhandled 'error' event to crash the CLI.
+    execFile(cmd, [...args], () => {});
   });
 
 /**
