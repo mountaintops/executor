@@ -2,26 +2,31 @@ import { useState } from "react";
 import { Copy, Check } from "lucide-react";
 import { Button } from "./button";
 import { cn } from "../lib/utils";
+import { copyToClipboard } from "../lib/clipboard";
 
 function CopyButton({
   value,
   label,
   className,
   onCopy,
+  kind,
 }: {
   value: string;
   label?: string;
   className?: string;
   /** Fires after a successful copy. Receives nothing — the copied value may be sensitive. */
   onCopy?: () => void;
+  kind?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      onCopy?.();
-      setTimeout(() => setCopied(false), 1500);
+    void copyToClipboard(value, { kind: kind ?? "copy_button" }).then((success) => {
+      if (success) {
+        setCopied(true);
+        onCopy?.();
+        setTimeout(() => setCopied(false), 1500);
+      }
     });
   };
 

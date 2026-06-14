@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type CSSProperties } from "react";
 import { dualThemeOptions, getHighlighter, type ShikiThemeProp } from "../lib/shiki";
 import { cn } from "../lib/utils";
 import { Button } from "./button";
+import { copyToClipboard } from "../lib/clipboard";
 import type { ThemedToken } from "shiki/core";
 
 // ---------------------------------------------------------------------------
@@ -358,9 +359,11 @@ export function ExpandableCodeBlock(props: {
   }, []);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(displayCode).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+    void copyToClipboard(displayCode, { kind: "expandable_code_block" }).then((success) => {
+      if (success) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
     });
   }, [displayCode]);
 

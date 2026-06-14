@@ -217,6 +217,7 @@ export function ApiKeysPage() {
                   />
                   <CopyButton
                     value={createdKey.value}
+                    kind="api_key_value"
                     onCopy={() => trackEvent("api_key_copied", { kind: "value" })}
                   />
                 </div>
@@ -232,6 +233,7 @@ export function ApiKeysPage() {
                   />
                   <CopyButton
                     value={`Authorization: Bearer ${createdKey.value}`}
+                    kind="api_key_bearer_header"
                     onCopy={() => trackEvent("api_key_copied", { kind: "bearer_header" })}
                   />
                 </div>

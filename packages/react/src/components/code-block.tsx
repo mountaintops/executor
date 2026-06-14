@@ -10,6 +10,7 @@ import {
 } from "../lib/shiki";
 import { cn } from "../lib/utils";
 import { Button } from "./button";
+import { copyToClipboard } from "../lib/clipboard";
 
 // ---------------------------------------------------------------------------
 // Language detection
@@ -87,10 +88,12 @@ export function CodeBlock(props: {
   maxHeight?: string;
   className?: string;
   theme?: ShikiThemeProp;
+  /** Optional product-analytics kind for copy events. */
+  kind?: string;
   /** Fires after a successful copy. Receives nothing — the code may be sensitive. */
   onCopy?: () => void;
 }) {
-  const { code, lang: langHint, title, className, theme, onCopy } = props;
+  const { code, lang: langHint, title, className, theme, onCopy, kind } = props;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -102,12 +105,14 @@ export function CodeBlock(props: {
   const maxH = !expanded && isLong ? (props.maxHeight ?? "24rem") : undefined;
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      onCopy?.();
-      setTimeout(() => setCopied(false), 1500);
+    void copyToClipboard(code, { kind: kind ?? "code_block" }).then((success) => {
+      if (success) {
+        setCopied(true);
+        onCopy?.();
+        setTimeout(() => setCopied(false), 1500);
+      }
     });
-  }, [code, onCopy]);
+  }, [code, onCopy, kind]);
 
   return (
     <div className={cn("rounded-lg border border-border bg-card/60 overflow-hidden", className)}>

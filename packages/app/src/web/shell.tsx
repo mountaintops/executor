@@ -16,6 +16,7 @@ import { IntegrationIconWithAccount } from "@executor-js/react/components/integr
 import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { ServerConnectionMenu } from "./server-connection-menu";
+import { copyToClipboard } from "@executor-js/react/lib/clipboard";
 
 // ── Env ─────────────────────────────────────────────────────────────────
 
@@ -134,9 +135,11 @@ function UpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(command).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+    void copyToClipboard(command, { kind: "update_command" }).then((success) => {
+      if (success) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
     });
   }, [command]);
 

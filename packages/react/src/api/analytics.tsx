@@ -109,6 +109,10 @@ export interface AnalyticsEvents {
   api_key_revoked: { success: boolean };
   api_key_copied: { kind: "value" | "bearer_header" };
 
+  // ── Clipboard ──────────────────────────────────────────────────────────────
+  copy_succeeded: { secure: boolean; kind: string };
+  copy_failed: { secure: boolean; kind: string; fallback: boolean };
+
   // ── Organization ─────────────────────────────────────────────────────────
   org_renamed: { success: boolean };
   org_member_invited: { role: string; success: boolean };
