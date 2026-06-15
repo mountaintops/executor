@@ -353,3 +353,11 @@ export {
   type AuthToolFailureCode,
   type AuthToolFailureInput,
 } from "./auth-tool-failure";
+export {
+  applyToolkitScope,
+  EMPTY_TOOLKIT_SCOPE,
+  type ResolvedToolkitScope,
+  type ToolkitAccess,
+  type ToolkitResolver,
+  type ToolkitScopeEntry,
+} from "./toolkit-scope";

@@ -38,21 +38,26 @@ export type McpExecutionStackLayer = Layer.Layer<
  */
 export const makeMcpBuildServer =
   (executionStack: McpExecutionStackLayer): McpBuildServer =>
-  (principal: Principal, options?: McpBuildServerOptions) =>
-    makeExecutionStack(
+  (principal: Principal, options?: McpBuildServerOptions) => {
+    // `toolkitId` narrows the engine in `makeExecutionStack`; the rest of the
+    // options configure the MCP server (elicitation/approval).
+    const { toolkitId, ...serverOptions } = options ?? {};
+    return makeExecutionStack(
       principal.accountId,
       principal.organizationId,
       principal.organizationName,
+      toolkitId,
     ).pipe(
       Effect.map(({ engine }) => engine),
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap((engine) =>
-        createExecutorMcpServer({ engine, ...(options ?? {}) }).pipe(
+        createExecutorMcpServer({ engine, ...serverOptions }).pipe(
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),
     );
+  };
 
 /**
  * The standard console `McpErrorReporter` seam: route an orchestration defect

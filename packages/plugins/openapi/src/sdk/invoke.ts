@@ -645,15 +645,20 @@ export const invokeWithLayer = (
 // ---------------------------------------------------------------------------
 
 const REQUIRE_APPROVAL = new Set(["post", "put", "patch", "delete"]);
+// Methods with no side effects — classified read-only so toolkits can grant
+// read-only access (a read-only slice hides everything else, fail-closed).
+const READ_ONLY_METHODS = new Set(["get", "head", "options"]);
 
 export const annotationsForOperation = (
   method: string,
   pathTemplate: string,
-): { requiresApproval?: boolean; approvalDescription?: string } => {
+): { requiresApproval?: boolean; approvalDescription?: string; readOnly?: boolean } => {
   const m = method.toLowerCase();
-  if (!REQUIRE_APPROVAL.has(m)) return {};
+  const readOnly = READ_ONLY_METHODS.has(m) ? { readOnly: true } : {};
+  if (!REQUIRE_APPROVAL.has(m)) return readOnly;
   return {
     requiresApproval: true,
     approvalDescription: `${method.toUpperCase()} ${pathTemplate}`,
+    ...readOnly,
   };
 };

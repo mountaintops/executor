@@ -66,7 +66,19 @@ export interface McpBuildServerOptions {
     | { readonly mode: "model" }
     | { readonly mode: "native" };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /** Toolkit selector (slug or id) pinned for this session — narrows the engine
+   *  to that toolkit's slice. Read once at session create from the request. */
+  readonly toolkitId?: string;
 }
+
+/** Read the toolkit selector from the request: `x-executor-mcp-toolkit` header
+ *  (set by a host's pretty-URL rewrite) or `?toolkit=` query. */
+export const readToolkitSelector = (request: Request): string | undefined => {
+  const header = request.headers.get("x-executor-mcp-toolkit");
+  if (header && header.length > 0) return header;
+  const query = new URL(request.url).searchParams.get("toolkit");
+  return query && query.length > 0 ? query : undefined;
+};
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
 export type McpBuildServer = (
@@ -220,10 +232,9 @@ export const makeInMemoryMcpSessionStore = (
   /** Open a new session: build the server, connect a transport, drive the request. */
   const create = (principal: Principal, request: Request): Effect.Effect<McpDispatchResult> => {
     let createdSessionId: string | null = null;
-    return buildServer(
-      principal,
-      buildOptionsFor(request, () => createdSessionId),
-    ).pipe(
+    const baseOptions = buildOptionsFor(request, () => createdSessionId);
+    const toolkitId = readToolkitSelector(request);
+    return buildServer(principal, toolkitId ? { ...baseOptions, toolkitId } : baseOptions).pipe(
       Effect.flatMap(({ mcpServer, engine }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({

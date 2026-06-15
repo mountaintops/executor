@@ -14,7 +14,13 @@
 
 import { Schema } from "effect";
 import { Context, definePlugin, Effect, HttpApiBuilder } from "@executor-js/sdk/core";
-import { definePluginStorageCollection, Owner, type PluginCtx } from "@executor-js/sdk";
+import {
+  definePluginStorageCollection,
+  Owner,
+  type PluginCtx,
+  type ResolvedToolkitScope,
+  type StorageFailure,
+} from "@executor-js/sdk";
 import { addGroup, capture } from "@executor-js/api";
 
 import {
@@ -204,7 +210,29 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       return { removed: true };
     });
 
-  return { create, get, list, update, remove };
+  // Resolve a selector (slug, then id) to the scope the MCP narrowing seam
+  // applies. Request-scoped, so it only finds toolkits visible to the caller —
+  // a cross-tenant/personal-of-another-user selector returns null (the seam
+  // then fails closed to an empty slice).
+  const resolveScope = (
+    selector: string,
+  ): Effect.Effect<ResolvedToolkitScope | null, StorageFailure> =>
+    Effect.gen(function* () {
+      const bySlug = yield* toolkits.query({ where: { slug: selector }, limit: 1 });
+      const row = bySlug[0] ?? (yield* toolkits.get({ key: selector }));
+      if (row == null) return null;
+      const conns = yield* connections.query({ where: { toolkitId: row.key } });
+      return {
+        entries: conns.map((c) => ({
+          integration: c.data.integration,
+          connection: c.data.connection,
+          access: c.data.access as ToolkitAccess,
+        })),
+        inheritOrgPolicies: row.data.inheritOrgPolicies,
+      };
+    });
+
+  return { create, get, list, update, remove, resolveScope };
 };
 
 // Local aliases so the storage/extension layer stays decoupled from the wire

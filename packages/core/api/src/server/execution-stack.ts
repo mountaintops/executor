@@ -26,7 +26,14 @@
 import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
-import type { AnyPlugin, Executor, StorageFailure } from "@executor-js/sdk";
+import {
+  applyToolkitScope,
+  EMPTY_TOOLKIT_SCOPE,
+  type AnyPlugin,
+  type Executor,
+  type StorageFailure,
+  type ToolkitResolver,
+} from "@executor-js/sdk";
 import {
   createExecutionEngine,
   type ExecutionEngine,
@@ -95,17 +102,20 @@ export const makeExecutionStack = <
   accountId: string,
   organizationId: string,
   organizationName: string,
+  /** Optional toolkit selector (slug or id). When set, the executor is narrowed
+   *  to that toolkit's slice before the engine is built — so listing, search,
+   *  description, core-tools, AND execute all see only the slice. Resolves via
+   *  the `toolkits` plugin extension; an unknown/unauthorized selector applies
+   *  an EMPTY slice (fail-closed — never the full account). */
+  toolkitId?: string,
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
   StorageFailure,
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator
 > =>
   Effect.gen(function* () {
-    const executor = yield* makeScopedExecutor<TPlugins>(
-      accountId,
-      organizationId,
-      organizationName,
-    );
+    const base = yield* makeScopedExecutor<TPlugins>(accountId, organizationId, organizationName);
+    const executor = toolkitId ? yield* narrowToToolkit(base, toolkitId) : base;
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;
     const engine = decorate(createExecutionEngine({ executor, codeExecutor }), {
@@ -114,4 +124,18 @@ export const makeExecutionStack = <
       organizationName,
     });
     return { executor, engine };
+  });
+
+// Resolve the toolkit slice via the `toolkits` plugin extension (stamped on the
+// executor) and wrap the executor. Fail-closed: no extension or no match -> an
+// empty slice, so a bad/cross-tenant selector exposes only static tools, never
+// the full account.
+const narrowToToolkit = <TPlugins extends readonly AnyPlugin[]>(
+  base: Executor<TPlugins>,
+  toolkitId: string,
+): Effect.Effect<Executor<TPlugins>, StorageFailure> =>
+  Effect.gen(function* () {
+    const resolver = (base as { toolkits?: ToolkitResolver }).toolkits;
+    const scope = resolver?.resolveScope ? yield* resolver.resolveScope(toolkitId) : null;
+    return yield* applyToolkitScope(base, scope ?? EMPTY_TOOLKIT_SCOPE);
   });
