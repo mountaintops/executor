@@ -999,6 +999,38 @@
         "react",
       ],
     },
+    "packages/plugins/toolkits": {
+      "name": "@executor-js/plugin-toolkits",
+      "version": "1.5.12",
+      "dependencies": {
+        "@effect/atom-react": "catalog:",
+        "@executor-js/api": "workspace:*",
+        "@executor-js/sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@executor-js/react": "workspace:*",
+        "@types/node": "catalog:",
+        "@types/react": "catalog:",
+        "bun-types": "catalog:",
+        "effect": "catalog:",
+        "react": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+      "peerDependencies": {
+        "@effect/atom-react": "catalog:",
+        "@executor-js/react": "workspace:*",
+        "effect": "catalog:",
+        "react": ">=18",
+      },
+      "optionalPeers": [
+        "@effect/atom-react",
+        "@executor-js/react",
+        "react",
+      ],
+    },
     "packages/plugins/workos-vault": {
       "name": "@executor-js/plugin-workos-vault",
       "version": "0.0.2",
@@ -1588,6 +1620,8 @@
     "@executor-js/plugin-onepassword": ["@executor-js/plugin-onepassword@workspace:packages/plugins/onepassword"],
 
     "@executor-js/plugin-openapi": ["@executor-js/plugin-openapi@workspace:packages/plugins/openapi"],
+
+    "@executor-js/plugin-toolkits": ["@executor-js/plugin-toolkits@workspace:packages/plugins/toolkits"],
 
     "@executor-js/plugin-workos-vault": ["@executor-js/plugin-workos-vault@workspace:packages/plugins/workos-vault"],
 
