@@ -120,10 +120,17 @@ export const coreTables = defineTables({
     {
       slug: keyColumn("slug"),
       plugin_id: textColumn("plugin_id"),
-      // Display name. Nullable for pre-split rows, where `description` held
-      // the name; readers fall back (see rowToIntegration).
+      // Display name. The pre-split field: `description` used to hold the
+      // name, so cloud backfills `name` from it (migration 0006) and other
+      // hosts fall back at read time (see rowToIntegration). Nullable because
+      // SQLite boot-ensure hosts cannot add a NOT NULL column to existing
+      // tables, so the column stays nullable even though it is always present
+      // in practice.
       name: nullableTextColumn("name"),
-      description: textColumn("description"),
+      // Actual prose description, now distinct from the name. Nullable: absent
+      // until a user/spec supplies one (cloud clears the old duplicated title
+      // to NULL in 0006).
+      description: nullableTextColumn("description"),
       config: nullableJsonColumn("config"),
       // Epoch ms of the last tool-affecting config change (spec update, auth
       // template edit). Compared against each connection's `tools_synced_at`

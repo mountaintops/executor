@@ -449,7 +449,9 @@ const rowToIntegration = (
   slug: IntegrationSlug.make(row.slug),
   // Pre-split rows have no `name`; their description WAS the display name.
   name: row.name ?? row.description ?? row.slug,
-  description: row.description,
+  // `description` is now nullable (cleared where it only held a duplicated
+  // title); present it as "" so the public Integration type stays a string.
+  description: row.description ?? "",
   kind: row.plugin_id,
   canRemove: Boolean(row.can_remove),
   canRefresh: Boolean(row.can_refresh),

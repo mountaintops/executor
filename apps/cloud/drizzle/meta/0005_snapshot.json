@@ -1,5 +1,5 @@
 {
-  "id": "ab75bf05-6332-4d53-8db4-f131b67773ef",
+  "id": "e105c61d-2fde-4d2e-a785-a74fafd0f4ea",
   "prevId": "1187b7aa-fdd6-412a-bcfb-20d6ea8f8644",
   "version": "7",
   "dialect": "postgresql",
@@ -517,7 +517,7 @@
           "name": "description",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "config_revised_at": {
           "name": "config_revised_at",
