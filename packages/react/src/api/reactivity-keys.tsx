@@ -26,6 +26,8 @@ export const ReactivityKey = {
   /** Credential-provider discovery. */
   providers: "providers",
   policies: "policies",
+  /** Toolkits — named slices of connections, each with its own MCP endpoint. */
+  toolkits: "toolkits",
   /** Registered OAuth clients (apps). */
   oauthClients: "oauth-clients",
   // cloud-only resources
@@ -46,6 +48,10 @@ export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.too
 
 /** Mutations that register / replace an OAuth client (app). */
 export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
+
+/** Mutations that create / update / remove a toolkit. Self-contained — a
+ *  toolkit is its own resource and does not change the core tool catalog. */
+export const toolkitWriteKeys = [ReactivityKey.toolkits] as const;
 
 /** Mutations that mutate tool policies. Also touches `tools` because
  *  `tools.list` filters blocked tools — adding/removing a `block`

@@ -9,6 +9,7 @@ import {
   decodeResumeResponse,
   formatResumeAcknowledgement,
   readElicitationMode,
+  readToolkitSelector,
 } from "./browser-approval";
 import {
   makeInProcessBrowserApprovalStore,
@@ -62,10 +63,17 @@ export interface BuiltMcpServer {
 /** The browser-mode wiring the store hands a build call when a session opts in. */
 export interface McpBuildServerOptions {
   readonly elicitationMode?:
-    | { readonly mode: "browser"; readonly approvalUrl: (executionId: string) => string }
+    | {
+        readonly mode: "browser";
+        readonly approvalUrl: (executionId: string) => string;
+      }
     | { readonly mode: "model" }
     | { readonly mode: "native" };
   readonly browserApprovalStore?: BrowserApprovalStore;
+  /** Per-request narrowing selector (the MCP `?toolkit=` value) pinned for this
+   *  session. Core forwards it to plugin executor wrappers; an unset selector
+   *  leaves the executor unnarrowed. Read once at session create. */
+  readonly selector?: string;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
@@ -115,7 +123,10 @@ const jsonRpcError = (status: number, code: number, message: string): Response =
   jsonRpcErrorBody(status, code, message, { cors: false });
 
 const json = (value: unknown, status = 200): Response =>
-  new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 const PAUSED_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
 const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
@@ -220,10 +231,9 @@ export const makeInMemoryMcpSessionStore = (
   /** Open a new session: build the server, connect a transport, drive the request. */
   const create = (principal: Principal, request: Request): Effect.Effect<McpDispatchResult> => {
     let createdSessionId: string | null = null;
-    return buildServer(
-      principal,
-      buildOptionsFor(request, () => createdSessionId),
-    ).pipe(
+    const baseOptions = buildOptionsFor(request, () => createdSessionId);
+    const selector = readToolkitSelector(request);
+    return buildServer(principal, selector ? { ...baseOptions, selector } : baseOptions).pipe(
       Effect.flatMap(({ mcpServer, engine }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({

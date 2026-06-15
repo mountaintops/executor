@@ -26,7 +26,7 @@
 import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
-import type { AnyPlugin, Executor, StorageFailure } from "@executor-js/sdk";
+import { type AnyPlugin, type Executor, type StorageFailure } from "@executor-js/sdk";
 import {
   createExecutionEngine,
   type ExecutionEngine,
@@ -95,17 +95,21 @@ export const makeExecutionStack = <
   accountId: string,
   organizationId: string,
   organizationName: string,
+  /** Optional per-request narrowing selector (e.g. an MCP `?toolkit=` value).
+   *  When set, core resolves plugin-contributed `RequestScope` overlays and
+   *  enforces them centrally before the engine is built. */
+  selector?: string,
 ): Effect.Effect<
-  { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
+  {
+    readonly executor: Executor<TPlugins>;
+    readonly engine: ExecutionEngine<Cause.YieldableError>;
+  },
   StorageFailure,
   DbProvider | PluginsProvider | HostConfig | CodeExecutorProvider | EngineDecorator
 > =>
   Effect.gen(function* () {
-    const executor = yield* makeScopedExecutor<TPlugins>(
-      accountId,
-      organizationId,
-      organizationName,
-    );
+    const base = yield* makeScopedExecutor<TPlugins>(accountId, organizationId, organizationName);
+    const executor = selector ? yield* base.applyRequestScope(selector) : base;
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;
     const engine = decorate(createExecutionEngine({ executor, codeExecutor }), {

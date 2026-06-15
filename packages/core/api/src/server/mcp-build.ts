@@ -38,21 +38,27 @@ export type McpExecutionStackLayer = Layer.Layer<
  */
 export const makeMcpBuildServer =
   (executionStack: McpExecutionStackLayer): McpBuildServer =>
-  (principal: Principal, options?: McpBuildServerOptions) =>
-    makeExecutionStack(
+  (principal: Principal, options?: McpBuildServerOptions) => {
+    // `selector` narrows the engine in `makeExecutionStack` (a plugin's
+    // executor wrapper applies it); the rest configure the MCP server
+    // (elicitation/approval).
+    const { selector, ...serverOptions } = options ?? {};
+    return makeExecutionStack(
       principal.accountId,
       principal.organizationId,
       principal.organizationName,
+      selector,
     ).pipe(
       Effect.map(({ engine }) => engine),
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap((engine) =>
-        createExecutorMcpServer({ engine, ...(options ?? {}) }).pipe(
+        createExecutorMcpServer({ engine, ...serverOptions }).pipe(
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),
     );
+  };
 
 /**
  * The standard console `McpErrorReporter` seam: route an orchestration defect
@@ -67,6 +73,8 @@ export const makeConsoleMcpErrorReporter = (
     McpErrorReporter,
     Effect.gen(function* () {
       const capture = yield* ErrorCapture;
-      return { report: (cause) => Effect.asVoid(capture.captureException(cause)) };
+      return {
+        report: (cause) => Effect.asVoid(capture.captureException(cause)),
+      };
     }),
   ).pipe(Layer.provide(errorCapture));

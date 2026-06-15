@@ -19,7 +19,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
-import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +112,55 @@ function NavItem(props: { to: string; label: string; active: boolean; onNavigate
   );
 }
 
+// ── PluginNav ─────────────────────────────────────────────────────────────
+
+// Surfaces console pages contributed by client plugins that declare
+// `pages[].nav.label` (e.g. Toolkits). The catch-all `/plugins/$pluginId/$`
+// route mounts them, so a plugin registered in executor.config.ts appears in
+// the sidebar with no per-host wiring. `pathname` is scope-relative.
+function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
+  const plugins = useClientPlugins();
+  const entries = plugins.flatMap((plugin) =>
+    (plugin.pages ?? [])
+      .filter((page) => page.nav)
+      .map((page) => {
+        const splat = page.path.replace(/^\//, "");
+        const href = `/plugins/${plugin.id}${splat ? `/${splat}` : "/"}`;
+        // Active-state matching ignores a trailing slash (live pathname is
+        // "/plugins/toolkits", href is "/plugins/toolkits/").
+        const base = href.replace(/\/$/, "");
+        return {
+          key: `${plugin.id}:${page.path}`,
+          href,
+          base,
+          label: page.nav!.label,
+        };
+      }),
+  );
+  if (entries.length === 0) return null;
+  return (
+    <>
+      {entries.map((entry) => (
+        <Link
+          key={entry.key}
+          // Loosely-typed string `to` (like NavItem): the concrete plugin path
+          // resolves against whichever host route tree this package builds into.
+          to={orgScopedTo(entry.href)}
+          onClick={props.onNavigate}
+          className={[
+            "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
+            props.pathname === entry.base || props.pathname.startsWith(`${entry.base}/`)
+              ? "bg-sidebar-active text-foreground font-medium"
+              : "text-sidebar-foreground hover:bg-sidebar-active/60 hover:text-foreground",
+          ].join(" ")}
+        >
+          {entry.label}
+        </Link>
+      ))}
+    </>
+  );
+}
+
 // ── IntegrationList ───────────────────────────────────────────────────────────
 
 // `pathname` is scope-relative (org-slug prefix already stripped).
@@ -161,7 +210,12 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
               >
                 <IntegrationFavicon
                   icon={integrationPresetIconUrl(
-                    { id: slug, kind: integration.kind, name, url: integration.displayUrl },
+                    {
+                      id: slug,
+                      kind: integration.kind,
+                      name,
+                      url: integration.displayUrl,
+                    },
                     integrationPlugins,
                   )}
                   url={
@@ -274,7 +328,11 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
 // ── SidebarContent ───────────────────────────────────────────────────────
 
 function SidebarContent(
-  props: ShellProps & { pathname: string; onNavigate?: () => void; showBrand?: boolean },
+  props: ShellProps & {
+    pathname: string;
+    onNavigate?: () => void;
+    showBrand?: boolean;
+  },
 ) {
   const navItems = props.navItems ?? defaultShellNavItems;
   return (
@@ -295,6 +353,8 @@ function SidebarContent(
             onNavigate={props.onNavigate}
           />
         ))}
+
+        <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
         <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
           <span>Integrations</span>

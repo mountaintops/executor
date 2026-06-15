@@ -12,6 +12,11 @@ export interface ToolAnnotations {
   readonly requiresApproval?: boolean;
   readonly approvalDescription?: string;
   readonly mayElicit?: boolean;
+  /** True when the tool only reads (no side effects). Set by the owning plugin
+   *  (e.g. OpenAPI classifies GET/HEAD/OPTIONS as read-only). Consumers that
+   *  offer a read-only mode use this fail-closed: a tool is hidden unless
+   *  `readOnly === true` (unclassified counts as write). */
+  readonly readOnly?: boolean;
 }
 
 /** A tool as produced by a plugin — the definition, no address yet (the SDK

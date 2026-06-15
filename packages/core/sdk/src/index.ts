@@ -304,12 +304,25 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  type RequestScopeProvider,
   createExecutor,
   collectTables,
   parseToolAddress,
   connectionAddress,
   toolAddress,
 } from "./executor";
+
+export {
+  type RequestScope,
+  type ScopeDecision,
+  EMPTY_REQUEST_SCOPE,
+  defaultDecideStaticTool,
+  decideStaticToolForScope,
+  filterPolicyRowsForScope,
+  resolveScopedEffectivePolicy,
+  scopePluginCtx,
+  toolVisibleUnderScope,
+} from "./request-scope";
 
 // CLI / runtime config.
 export {

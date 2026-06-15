@@ -52,6 +52,7 @@ import type {
   ToolPolicy,
   UpdateToolPolicyInput,
 } from "./policies";
+import type { RequestScope } from "./request-scope";
 import type { Tool, ToolAnnotations, ToolDef } from "./tool";
 
 // ---------------------------------------------------------------------------
@@ -505,6 +506,15 @@ export interface PluginSpec<
     readonly ctx: PluginCtx<TStore>;
     readonly url: string;
   }) => Effect.Effect<IntegrationDetectionResult | null, unknown>;
+
+  /** Resolve a per-request catalog/policy overlay for a selector string.
+   *  Return `null` when this provider does not recognize the selector; core
+   *  fails closed to `EMPTY_REQUEST_SCOPE` when a selector is present but no
+   *  provider claims it. */
+  readonly resolveRequestScope?: (
+    ctx: PluginCtx<TStore>,
+    selector: string,
+  ) => Effect.Effect<RequestScope | null, StorageFailure>;
 
   /** Credential providers contributed by this plugin (keychain, file, vault, …).
    *  The v2 successor to `secretProviders`. */

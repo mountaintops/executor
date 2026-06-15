@@ -98,6 +98,13 @@ import {
   type ToolPolicy,
   type UpdateToolPolicyInput,
 } from "./policies";
+import {
+  EMPTY_REQUEST_SCOPE,
+  resolveScopedEffectivePolicy,
+  scopePluginCtx,
+  toolVisibleUnderScope,
+  type RequestScope,
+} from "./request-scope";
 import type { CredentialProvider, ProviderEntry } from "./provider";
 import type {
   AnyPlugin,
@@ -241,6 +248,10 @@ interface OwnedKeys {
 // core-table query unioned with the in-memory static pool.
 // ---------------------------------------------------------------------------
 
+export type RequestScopeProvider = (
+  selector: string,
+) => Effect.Effect<RequestScope | null, StorageFailure>;
+
 export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   readonly integrations: {
     readonly list: () => Effect.Effect<readonly Integration[], StorageFailure>;
@@ -318,6 +329,11 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
   ) => Effect.Effect<unknown, ExecuteError>;
 
   readonly close: () => Effect.Effect<void, StorageFailure>;
+
+  /** Apply a per-request catalog/policy overlay resolved from `selector`. */
+  readonly applyRequestScope: (
+    selector: string,
+  ) => Effect.Effect<Executor<TPlugins>, StorageFailure>;
 } & PluginExtensions<TPlugins>;
 
 export interface ExecutorDb {
@@ -505,7 +521,10 @@ const normalizeConnectionInputs = (
   input: ConnectionValueInput,
 ): readonly NormalizedConnectionInput[] => {
   if ("inputs" in input) {
-    return Object.entries(input.inputs).map(([variable, origin]) => ({ variable, origin }));
+    return Object.entries(input.inputs).map(([variable, origin]) => ({
+      variable,
+      origin,
+    }));
   }
   if ("values" in input) {
     return Object.entries(input.values).map(([variable, value]) => ({
@@ -1336,6 +1355,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     };
 
     const extensions: Record<string, object> = {};
+    const requestScopeProviders: RequestScopeProvider[] = [];
 
     // ------------------------------------------------------------------
     // Owner condition builders. The owner policy already restricts reads to
@@ -2439,144 +2459,162 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       }
     });
 
-    const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
-      Effect.gen(function* () {
-        yield* syncStaleConnectionTools;
-        // Projected: the list surface is metadata (address, description,
-        // annotations) — loading every tool's input/output schema JSON made
-        // an unbounded list scale with schema bytes, not tool count.
-        const rows = yield* core.findMany("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              filter?.integration === undefined
-                ? true
-                : b("integration", "=", String(filter.integration)),
-              filter?.owner === undefined ? true : b("owner", "=", filter.owner),
-              filter?.connection === undefined
-                ? true
-                : b("connection", "=", String(filter.connection)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
-        const includeBlocked = filter?.includeBlocked ?? false;
-        const policyRows = yield* core.findMany("tool_policy", {});
-        const tools: Tool[] = [];
-        for (const row of rows) {
-          const tool = rowToTool(row);
-          if (!matchesToolFilter(tool, filter)) continue;
-          if (!includeBlocked) {
-            const effective = resolveEffectivePolicy(
-              normalizedPolicyId(tool),
-              policyRows,
-              ownerRankForRow,
-              tool.annotations?.requiresApproval,
-            );
-            if (effective.action === "block") continue;
-          }
-          tools.push(tool);
-        }
-        for (const entry of staticTools.values()) {
-          const tool = staticToolToTool(entry);
-          if (!matchesToolFilter(tool, filter)) continue;
-          if (!includeBlocked) {
-            const effective = resolveEffectivePolicy(
-              normalizedPolicyId(tool),
-              policyRows,
-              ownerRankForRow,
-              tool.annotations?.requiresApproval,
-            );
-            if (effective.action === "block") continue;
-          }
-          tools.push(tool);
-        }
-        return tools;
-      });
+    const resolveToolEffectivePolicy = (
+      tool: Tool,
+      policyRows: readonly ToolPolicyRow[],
+      scope?: RequestScope,
+    ): EffectivePolicy =>
+      scope
+        ? resolveScopedEffectivePolicy(
+            normalizedPolicyId(tool),
+            tool,
+            scope,
+            policyRows,
+            ownerRankForRow,
+            tool.annotations?.requiresApproval,
+          )
+        : resolveEffectivePolicy(
+            normalizedPolicyId(tool),
+            policyRows,
+            ownerRankForRow,
+            tool.annotations?.requiresApproval,
+          );
 
-    const toolSchema = (
-      address: ToolAddress,
-    ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
-      Effect.gen(function* () {
-        const staticEntry = staticTools.get(String(address));
-        if (staticEntry) {
-          const tool = staticToolToTool(staticEntry);
+    const makeToolsList =
+      (scope?: RequestScope) =>
+      (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
+        Effect.gen(function* () {
+          yield* syncStaleConnectionTools;
+          const rows = yield* core.findMany("tool", {
+            where: (b: AnyCb) =>
+              b.and(
+                filter?.integration === undefined
+                  ? true
+                  : b("integration", "=", String(filter.integration)),
+                filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+                filter?.connection === undefined
+                  ? true
+                  : b("connection", "=", String(filter.connection)),
+              ),
+            select: TOOL_INVOCATION_COLUMNS,
+          });
+          const includeBlocked = filter?.includeBlocked ?? false;
+          const policyRows = yield* core.findMany("tool_policy", {});
+          const tools: Tool[] = [];
+          for (const row of rows) {
+            const tool = rowToTool(row);
+            if (!matchesToolFilter(tool, filter)) continue;
+            if (scope && !toolVisibleUnderScope(tool, scope)) continue;
+            if (!includeBlocked) {
+              const effective = resolveToolEffectivePolicy(tool, policyRows, scope);
+              if (effective.action === "block") continue;
+            }
+            tools.push(tool);
+          }
+          for (const entry of staticTools.values()) {
+            const tool = staticToolToTool(entry);
+            if (!matchesToolFilter(tool, filter)) continue;
+            if (scope && !toolVisibleUnderScope(tool, scope)) continue;
+            if (!includeBlocked) {
+              const effective = resolveToolEffectivePolicy(tool, policyRows, scope);
+              if (effective.action === "block") continue;
+            }
+            tools.push(tool);
+          }
+          return tools;
+        });
+
+    const toolsList = makeToolsList();
+
+    const makeToolSchema =
+      (scope?: RequestScope) =>
+      (address: ToolAddress): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
+        Effect.gen(function* () {
+          const staticEntry = staticTools.get(String(address));
+          if (staticEntry) {
+            const tool = staticToolToTool(staticEntry);
+            if (scope && !toolVisibleUnderScope(tool, scope)) return null;
+            const preview = yield* Effect.tryPromise({
+              try: () =>
+                buildToolTypeScriptPreview({
+                  inputSchema: tool.inputSchema,
+                  outputSchema: tool.outputSchema,
+                  defs: new Map(),
+                }),
+              catch: (cause) =>
+                storageFailureFromUnknown("Failed to build static tool TypeScript preview", cause),
+            }).pipe(Effect.option);
+            return ToolSchemaView.make({
+              address,
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+              outputSchema: tool.outputSchema,
+              inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
+              outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
+              typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
+            });
+          }
+
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) return null;
+          const row = yield* core.findFirst("tool", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(parsed.owner)(b),
+                b("integration", "=", String(parsed.integration)),
+                b("connection", "=", String(parsed.connection)),
+                b("name", "=", String(parsed.tool)),
+              ),
+          });
+          if (!row) return null;
+          const tool = rowToTool(row);
+          if (scope && !toolVisibleUnderScope(tool, scope)) return null;
+
+          const definitionRows = yield* core.findMany("definition", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(parsed.owner)(b),
+                b("integration", "=", String(parsed.integration)),
+                b("connection", "=", String(parsed.connection)),
+              ),
+          });
+          const defs = new Map<string, unknown>();
+          for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
+
+          const referenced = collectReferencedDefinitions(
+            [tool.inputSchema, tool.outputSchema],
+            defs,
+          );
           const preview = yield* Effect.tryPromise({
             try: () =>
               buildToolTypeScriptPreview({
                 inputSchema: tool.inputSchema,
                 outputSchema: tool.outputSchema,
-                defs: new Map(),
+                defs,
               }),
             catch: (cause) =>
-              storageFailureFromUnknown("Failed to build static tool TypeScript preview", cause),
+              storageFailureFromUnknown("Failed to build tool TypeScript preview", cause),
           }).pipe(Effect.option);
+
+          const view = preview;
           return ToolSchemaView.make({
             address,
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
             outputSchema: tool.outputSchema,
-            inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
-            outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
-            typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
+            schemaDefinitions:
+              Object.keys(referenced).length > 0
+                ? (referenced as Record<string, unknown>)
+                : undefined,
+            inputTypeScript: Option.getOrUndefined(view)?.inputTypeScript,
+            outputTypeScript: Option.getOrUndefined(view)?.outputTypeScript,
+            typeScriptDefinitions: Option.getOrUndefined(view)?.typeScriptDefinitions,
           });
-        }
-
-        const parsed = parseToolAddress(String(address));
-        if (!parsed) return null;
-        const row = yield* core.findFirst("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
-            ),
         });
-        if (!row) return null;
-        const tool = rowToTool(row);
 
-        const definitionRows = yield* core.findMany("definition", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-            ),
-        });
-        const defs = new Map<string, unknown>();
-        for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
-
-        const referenced = collectReferencedDefinitions(
-          [tool.inputSchema, tool.outputSchema],
-          defs,
-        );
-        const preview = yield* Effect.tryPromise({
-          try: () =>
-            buildToolTypeScriptPreview({
-              inputSchema: tool.inputSchema,
-              outputSchema: tool.outputSchema,
-              defs,
-            }),
-          catch: (cause) =>
-            storageFailureFromUnknown("Failed to build tool TypeScript preview", cause),
-        }).pipe(Effect.option);
-
-        const view = preview;
-        return ToolSchemaView.make({
-          address,
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          outputSchema: tool.outputSchema,
-          schemaDefinitions:
-            Object.keys(referenced).length > 0
-              ? (referenced as Record<string, unknown>)
-              : undefined,
-          inputTypeScript: Option.getOrUndefined(view)?.inputTypeScript,
-          outputTypeScript: Option.getOrUndefined(view)?.outputTypeScript,
-          typeScriptDefinitions: Option.getOrUndefined(view)?.typeScriptDefinitions,
-        });
-      });
+    const toolSchema = makeToolSchema();
 
     // ------------------------------------------------------------------
     // Providers
@@ -2833,196 +2871,216 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         select: TOOL_INVOCATION_COLUMNS,
       });
 
-    const execute = (
-      address: ToolAddress,
-      args: unknown,
-      options?: InvokeOptions,
-    ): Effect.Effect<unknown, ExecuteError> => {
-      const handler = pickHandler(options);
-      return Effect.gen(function* () {
-        // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
-        const formatInvocationCauseMessage = (cause: unknown): string => {
-          if (cause instanceof Error && cause.message.length > 0) return cause.message;
-          // Non-Error / empty-message causes: `String(plainObject)` renders
-          // "[object Object]", which is what telemetry then shows as the only
-          // label for the failure. Prefer the tag, else stringify structurally.
-          if (typeof cause === "object" && cause !== null) {
-            const tag = (cause as { readonly _tag?: unknown })._tag;
-            if (typeof tag === "string") return tag;
-            return Inspectable.toStringUnknown(cause, 0);
-          }
-          return String(cause);
-        };
-        // oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check
-        const wrapInvocationError = <A, E>(
-          effect: Effect.Effect<A, E>,
-        ): Effect.Effect<A, ToolInvocationError> =>
-          effect.pipe(
-            Effect.mapError(
-              (cause) =>
-                new ToolInvocationError({
-                  address,
-                  message: formatInvocationCauseMessage(cause),
-                  cause,
-                }),
-            ),
-          );
+    const makeExecute =
+      (scope?: RequestScope) =>
+      (
+        address: ToolAddress,
+        args: unknown,
+        options?: InvokeOptions,
+      ): Effect.Effect<unknown, ExecuteError> => {
+        const handler = pickHandler(options);
+        return Effect.gen(function* () {
+          // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
+          const formatInvocationCauseMessage = (cause: unknown): string => {
+            if (cause instanceof Error && cause.message.length > 0) return cause.message;
+            // Non-Error / empty-message causes: `String(plainObject)` renders
+            // "[object Object]", which is what telemetry then shows as the only
+            // label for the failure. Prefer the tag, else stringify structurally.
+            if (typeof cause === "object" && cause !== null) {
+              const tag = (cause as { readonly _tag?: unknown })._tag;
+              if (typeof tag === "string") return tag;
+              return Inspectable.toStringUnknown(cause, 0);
+            }
+            return String(cause);
+          };
+          // oxlint-enable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check
+          const wrapInvocationError = <A, E>(
+            effect: Effect.Effect<A, E>,
+          ): Effect.Effect<A, ToolInvocationError> =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ToolInvocationError({
+                    address,
+                    message: formatInvocationCauseMessage(cause),
+                    cause,
+                  }),
+              ),
+            );
 
-        // Static path — O(1) map lookup for plugin-contributed static tools
-        // (core-tools, plugin executor namespaces). Addressed by their fqid,
-        // not the 5-segment dynamic form.
-        const staticEntry = staticTools.get(String(address));
-        if (staticEntry) {
+          // Static path — O(1) map lookup for plugin-contributed static tools
+          // (core-tools, plugin executor namespaces). Addressed by their fqid,
+          // not the 5-segment dynamic form.
+          const staticEntry = staticTools.get(String(address));
+          if (staticEntry) {
+            const staticTool = staticToolToTool(staticEntry);
+            const policyRows = yield* core.findMany("tool_policy", {});
+            const policy = resolveToolEffectivePolicy(staticTool, policyRows, scope);
+            if (policy.action === "block") {
+              return yield* new ToolBlockedError({
+                address,
+                pattern: policy.pattern ?? "*",
+              });
+            }
+            yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
+            const handlerCtx = scope ? scopePluginCtx(staticEntry.ctx, scope) : staticEntry.ctx;
+            return yield* wrapInvocationError(
+              staticEntry.tool.handler({
+                ctx: handlerCtx,
+                args,
+                elicit: buildElicit(address, args, handler),
+              }),
+            );
+          }
+
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) {
+            return yield* new ToolNotFoundError({ address });
+          }
+
+          // Find the tool row — projected: invoke needs routing/policy fields
+          // only, never the multi-KB input/output schema JSON (`tools.schema`
+          // is the schema-bearing surface).
+          const row = yield* core.findFirst("tool", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(parsed.owner)(b),
+                b("integration", "=", String(parsed.integration)),
+                b("connection", "=", String(parsed.connection)),
+                b("name", "=", String(parsed.tool)),
+              ),
+            select: TOOL_INVOCATION_COLUMNS,
+          });
+          if (!row) {
+            if (scope) {
+              const connectionRow = yield* findConnectionRow({
+                owner: parsed.owner,
+                integration: parsed.integration,
+                name: parsed.connection,
+              });
+              if (!connectionRow || !scope.allowsConnection(rowToConnection(connectionRow))) {
+                return yield* new ToolBlockedError({
+                  address,
+                  pattern: REQUEST_SCOPE_BLOCK_PATTERN,
+                });
+              }
+            }
+            const searchMatches = yield* searchToolRowsForConnection(parsed);
+            const connectionTools =
+              searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
+            const visibleTools = scope
+              ? connectionTools.filter((candidate) =>
+                  toolVisibleUnderScope(rowToTool(candidate), scope),
+                )
+              : connectionTools;
+            if (scope && visibleTools.length === 0) {
+              return yield* new ToolBlockedError({
+                address,
+                pattern: REQUEST_SCOPE_BLOCK_PATTERN,
+              });
+            }
+            return yield* new ToolNotFoundError({
+              address,
+              suggestions: toolSuggestions(visibleTools),
+            });
+          }
+
+          // Resolve policy (owner-ranked).
+          const toolForPolicy = rowToTool(row);
           const policyRows = yield* core.findMany("tool_policy", {});
-          const policy = resolveEffectivePolicy(
-            String(address),
-            policyRows,
-            ownerRankForRow,
-            staticEntry.tool.annotations?.requiresApproval,
-          );
+          const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
+          const policy = resolveToolEffectivePolicy(toolForPolicy, policyRows, scope);
           if (policy.action === "block") {
             return yield* new ToolBlockedError({
               address,
               pattern: policy.pattern ?? "*",
             });
           }
-          yield* enforceApproval(staticEntry.tool.annotations, address, args, policy, handler);
-          return yield* wrapInvocationError(
-            staticEntry.tool.handler({
-              ctx: staticEntry.ctx,
-              args,
-              elicit: buildElicit(address, args, handler),
-            }),
-          );
-        }
 
-        const parsed = parseToolAddress(String(address));
-        if (!parsed) {
-          return yield* new ToolNotFoundError({ address });
-        }
+          const runtime = runtimes.get(row.plugin_id);
+          if (!runtime) {
+            return yield* new PluginNotLoadedError({
+              address,
+              pluginId: row.plugin_id,
+            });
+          }
+          if (!runtime.plugin.invokeTool) {
+            return yield* new NoHandlerError({
+              address,
+              pluginId: row.plugin_id,
+            });
+          }
 
-        // Find the tool row — projected: invoke needs routing/policy fields
-        // only, never the multi-KB input/output schema JSON (`tools.schema`
-        // is the schema-bearing surface).
-        const row = yield* core.findFirst("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
-        if (!row) {
-          const searchMatches = yield* searchToolRowsForConnection(parsed);
-          const connectionTools =
-            searchMatches.length > 0 ? searchMatches : yield* findToolRowsForConnection(parsed);
-          return yield* new ToolNotFoundError({
-            address,
-            suggestions: toolSuggestions(connectionTools),
-          });
-        }
-
-        // Resolve policy (owner-ranked).
-        const toolForPolicy = rowToTool(row);
-        const policyRows = yield* core.findMany("tool_policy", {});
-        const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
-        const policy = resolveEffectivePolicy(
-          normalizedPolicyId(toolForPolicy),
-          policyRows,
-          ownerRankForRow,
-          annotations?.requiresApproval,
-        );
-        if (policy.action === "block") {
-          return yield* new ToolBlockedError({
-            address,
-            pattern: policy.pattern ?? "*",
-          });
-        }
-
-        const runtime = runtimes.get(row.plugin_id);
-        if (!runtime) {
-          return yield* new PluginNotLoadedError({
-            address,
-            pluginId: row.plugin_id,
-          });
-        }
-        if (!runtime.plugin.invokeTool) {
-          return yield* new NoHandlerError({
-            address,
-            pluginId: row.plugin_id,
-          });
-        }
-
-        // Find the connection row.
-        const connectionRow = yield* findConnectionRow({
-          owner: parsed.owner,
-          integration: parsed.integration,
-          name: parsed.connection,
-        });
-        if (!connectionRow) {
-          return yield* new ConnectionNotFoundError({
+          // Find the connection row.
+          const connectionRow = yield* findConnectionRow({
             owner: parsed.owner,
             integration: parsed.integration,
             name: parsed.connection,
           });
-        }
-
-        // Resolve annotations + enforce approval.
-        let resolvedAnnotations = annotations;
-        if (policy.action !== "approve" && runtime.plugin.resolveAnnotations) {
-          const map = yield* runtime.plugin
-            .resolveAnnotations({
-              ctx: runtime.ctx,
+          if (!connectionRow) {
+            return yield* new ConnectionNotFoundError({
+              owner: parsed.owner,
               integration: parsed.integration,
-              connection: parsed.connection,
-              toolRows: [row],
-            })
-            .pipe(wrapInvocationError);
-          resolvedAnnotations = map[String(parsed.tool)] ?? annotations;
-        }
-        yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
+              name: parsed.connection,
+            });
+          }
 
-        // Resolve every named credential input (`variable → value`); `value` is
-        // the primary `token` for single-input + OAuth callers.
-        const values = yield* resolveConnectionValues(connectionRow);
-        const integrationRow = yield* findIntegrationRow(parsed.integration);
-        const credential: ToolInvocationCredential = {
-          owner: parsed.owner,
-          integration: parsed.integration,
-          connection: parsed.connection,
-          template: AuthTemplateSlug.make(connectionRow.template),
-          value: values[PRIMARY_INPUT_VARIABLE] ?? null,
-          values,
-          config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
-        };
+          // Resolve annotations + enforce approval.
+          let resolvedAnnotations = annotations;
+          if (policy.action !== "approve" && runtime.plugin.resolveAnnotations) {
+            const map = yield* runtime.plugin
+              .resolveAnnotations({
+                ctx: runtime.ctx,
+                integration: parsed.integration,
+                connection: parsed.connection,
+                toolRows: [row],
+              })
+              .pipe(wrapInvocationError);
+            resolvedAnnotations = map[String(parsed.tool)] ?? annotations;
+          }
+          yield* enforceApproval(resolvedAnnotations, address, args, policy, handler);
 
-        return yield* wrapInvocationError(
-          runtime.plugin.invokeTool({
-            ctx: runtime.ctx,
-            toolRow: row,
-            credential,
-            args,
-            elicit: buildElicit(address, args, handler),
+          // Resolve every named credential input (`variable → value`); `value` is
+          // the primary `token` for single-input + OAuth callers.
+          const values = yield* resolveConnectionValues(connectionRow);
+          const integrationRow = yield* findIntegrationRow(parsed.integration);
+          const credential: ToolInvocationCredential = {
+            owner: parsed.owner,
+            integration: parsed.integration,
+            connection: parsed.connection,
+            template: AuthTemplateSlug.make(connectionRow.template),
+            value: values[PRIMARY_INPUT_VARIABLE] ?? null,
+            values,
+            config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
+          };
+
+          return yield* wrapInvocationError(
+            runtime.plugin.invokeTool({
+              ctx: runtime.ctx,
+              toolRow: row,
+              credential,
+              args,
+              elicit: buildElicit(address, args, handler),
+            }),
+          );
+        }).pipe(
+          // Expected tool failures (`ToolResult.fail`) resolve through the
+          // success channel, so the tracer alone would record them as healthy
+          // spans. Stamp the outcome + error code so telemetry can distinguish
+          // "tool ran fine" from "user hit an upstream error / auth wall"
+          // without parsing response bodies.
+          Effect.tap(annotateToolResultOutcome),
+          Effect.withSpan("executor.tool.execute", {
+            attributes: {
+              "mcp.tool.name": String(address),
+              "executor.tenant": tenant,
+              ...(subject != null ? { "executor.subject": subject } : {}),
+            },
           }),
         );
-      }).pipe(
-        // Expected tool failures (`ToolResult.fail`) resolve through the
-        // success channel, so the tracer alone would record them as healthy
-        // spans. Stamp the outcome + error code so telemetry can distinguish
-        // "tool ran fine" from "user hit an upstream error / auth wall"
-        // without parsing response bodies.
-        Effect.tap(annotateToolResultOutcome),
-        Effect.withSpan("executor.tool.execute", {
-          attributes: {
-            "mcp.tool.name": String(address),
-            "executor.tenant": tenant,
-            ...(subject != null ? { "executor.subject": subject } : {}),
-          },
-        }),
-      );
-    };
+      };
+
+    const execute = makeExecute();
 
     // ------------------------------------------------------------------
     // OAuth service seam.
@@ -3156,6 +3214,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       if (plugin.extension) {
         extensions[plugin.id] = extension;
       }
+      if (plugin.resolveRequestScope) {
+        const resolveScope = plugin.resolveRequestScope;
+        requestScopeProviders.push((selector) => resolveScope(ctx, selector));
+      }
 
       const decls = plugin.staticSources ? plugin.staticSources(extension) : [];
       for (const source of decls) {
@@ -3270,7 +3332,95 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     };
 
     const toExecutor = (value: unknown): Executor<TPlugins> => value as Executor<TPlugins>;
-    return toExecutor(Object.assign(base, extensions));
+
+    const REQUEST_SCOPE_BLOCK_PATTERN = "request-scope";
+
+    const scopeBlocked = (surface: string): Effect.Effect<never, ToolBlockedError> =>
+      Effect.fail(
+        new ToolBlockedError({
+          address: ToolAddress.make(surface),
+          pattern: REQUEST_SCOPE_BLOCK_PATTERN,
+        }),
+      );
+
+    const buildScopedExecutor = (scope: RequestScope): Executor<TPlugins> =>
+      toExecutor({
+        ...extensions,
+        integrations: {
+          list: () =>
+            integrationsList().pipe(
+              Effect.map((items) => items.filter((i) => scope.allowsIntegration(i))),
+            ),
+          get: (slug: IntegrationSlug) =>
+            integrationsGet(slug).pipe(
+              Effect.map((item) => (item && scope.allowsIntegration(item) ? item : null)),
+            ),
+          update: () => scopeBlocked("executor.integrations.update"),
+          remove: () => scopeBlocked("executor.integrations.remove"),
+          detect: () => scopeBlocked("executor.integrations.detect"),
+        },
+        connections: {
+          list: (filter?: { readonly integration?: IntegrationSlug; readonly owner?: Owner }) =>
+            connectionsList(filter).pipe(
+              Effect.map((items) => items.filter((c) => scope.allowsConnection(c))),
+            ),
+          get: (ref: ConnectionRef) =>
+            connectionsGet(ref).pipe(
+              Effect.map((connection) =>
+                connection && scope.allowsConnection(connection) ? connection : null,
+              ),
+            ),
+          create: () => scopeBlocked("executor.connections.create"),
+          update: () => scopeBlocked("executor.connections.update"),
+          remove: () => scopeBlocked("executor.connections.remove"),
+          refresh: () => scopeBlocked("executor.connections.refresh"),
+        },
+        oauth: {
+          createClient: () => scopeBlocked("executor.oauth.createClient"),
+          registerDynamicClient: () => scopeBlocked("executor.oauth.registerDynamicClient"),
+          listClients: () => scopeBlocked("executor.oauth.listClients"),
+          removeClient: () => scopeBlocked("executor.oauth.removeClient"),
+          start: () => scopeBlocked("executor.oauth.start"),
+          complete: () => scopeBlocked("executor.oauth.complete"),
+          cancel: () => scopeBlocked("executor.oauth.cancel"),
+          probe: () => scopeBlocked("executor.oauth.probe"),
+        },
+        tools: {
+          list: makeToolsList(scope),
+          schema: makeToolSchema(scope),
+        },
+        providers: {
+          list: () => scopeBlocked("executor.providers.list"),
+          items: () => scopeBlocked("executor.providers.items"),
+        },
+        policies: {
+          list: policiesList,
+          create: () => scopeBlocked("executor.policies.create"),
+          update: () => scopeBlocked("executor.policies.update"),
+          remove: () => scopeBlocked("executor.policies.remove"),
+          resolve: policiesResolve,
+        },
+        execute: makeExecute(scope),
+        close,
+        applyRequestScope: applyRequestScope,
+      });
+
+    const applyRequestScope = (
+      selector: string,
+    ): Effect.Effect<Executor<TPlugins>, StorageFailure> =>
+      Effect.gen(function* () {
+        let resolved: RequestScope | null = null;
+        for (const provider of requestScopeProviders) {
+          const scope = yield* provider(selector);
+          if (scope !== null) {
+            resolved = scope;
+            break;
+          }
+        }
+        return buildScopedExecutor(resolved ?? EMPTY_REQUEST_SCOPE);
+      });
+
+    return toExecutor({ ...base, ...extensions, applyRequestScope });
   });
 
 // Helper alias so the inline literal used for the optimistic projection in
