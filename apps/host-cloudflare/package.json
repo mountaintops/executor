@@ -12,7 +12,8 @@
     "deploy:setup": "bash scripts/deploy.sh",
     "vendor-wasm": "bun run scripts/vendor-quickjs-wasm.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "routes:gen": "bun scripts/gen-routes.ts"
   },
   "dependencies": {
     "@effect/atom-react": "catalog:",

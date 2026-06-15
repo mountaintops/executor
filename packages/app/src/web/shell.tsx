@@ -11,6 +11,8 @@ import {
   toolsAllAtom,
 } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
+import { toast } from "@executor-js/react/components/sonner";
+import { copyToClipboard } from "@executor-js/react/lib/clipboard";
 import { integrationPresetIconUrl } from "@executor-js/react/components/integration-favicon";
 import { IntegrationIconWithAccount } from "@executor-js/react/components/integration-icon-with-account";
 import { CommandPalette } from "@executor-js/react/components/command-palette";
@@ -134,7 +136,11 @@ function UpdateCard(props: { latestVersion: string; channel: UpdateChannel }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(command).then(() => {
+    void copyToClipboard(command).then((ok) => {
+      if (!ok) {
+        toast.error("Failed to copy to clipboard");
+        return;
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
@@ -252,7 +258,7 @@ function PluginNav(props: { pathname: string; onNavigate?: () => void }) {
       {entries.map((entry) => (
         <Link
           key={entry.key}
-          to="/plugins/$pluginId/$"
+          to="/{-$orgSlug}/plugins/$pluginId/$"
           params={{ pluginId: entry.pluginId, _splat: entry.splat }}
           onClick={props.onNavigate}
           className={[
@@ -296,7 +302,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
             return (
               <Link
                 key={slug}
-                to="/integrations/$namespace"
+                to="/{-$orgSlug}/integrations/$namespace"
                 params={{ namespace: slug }}
                 onClick={props.onNavigate}
                 className={[
@@ -344,7 +350,7 @@ function SidebarContent(props: {
     <>
       {props.showBrand !== false && (
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
-          <Link to="/" className="flex shrink-0 items-center gap-1.5">
+          <Link to="/{-$orgSlug}" className="flex shrink-0 items-center gap-1.5">
             <span className="font-display text-base tracking-tight text-foreground">executor</span>
             <span className="rounded bg-primary/15 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wider text-primary">
               Beta
@@ -357,10 +363,20 @@ function SidebarContent(props: {
       )}
 
       <nav className="flex flex-1 flex-col overflow-y-auto p-2">
-        <NavItem to="/" label="Integrations" active={isHome} onNavigate={props.onNavigate} />
-        <NavItem to="/secrets" label="Secrets" active={isSecrets} onNavigate={props.onNavigate} />
         <NavItem
-          to="/policies"
+          to="/{-$orgSlug}"
+          label="Integrations"
+          active={isHome}
+          onNavigate={props.onNavigate}
+        />
+        <NavItem
+          to="/{-$orgSlug}/secrets"
+          label="Secrets"
+          active={isSecrets}
+          onNavigate={props.onNavigate}
+        />
+        <NavItem
+          to="/{-$orgSlug}/policies"
           label="Policies"
           active={isPolicies}
           onNavigate={props.onNavigate}
@@ -475,7 +491,7 @@ export function Shell() {
           />
           <div className="relative flex h-full w-[84vw] max-w-xs flex-col border-r border-sidebar-border bg-sidebar shadow-2xl">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
-              <Link to="/" className="flex items-center gap-1.5">
+              <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
                 <span className="font-display text-base tracking-tight text-foreground">
                   executor
                 </span>
@@ -532,7 +548,7 @@ export function Shell() {
               />
             </svg>
           </Button>
-          <Link to="/" className="flex items-center gap-1.5">
+          <Link to="/{-$orgSlug}" className="flex items-center gap-1.5">
             <span className="font-display text-base tracking-tight text-foreground">executor</span>
           </Link>
           <div className="w-8 shrink-0" />

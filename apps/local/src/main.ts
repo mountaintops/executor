@@ -53,9 +53,10 @@ const closeServerHandlers = async (handlers: ServerHandlers): Promise<void> => {
   );
 };
 
-export const createServerHandlers = async (): Promise<ServerHandlers> => {
-  // The typed `/api` web-handler comes from `ExecutorApp.make` (./app.ts).
-  const apiHandler: ServerHandlers["api"] = await makeLocalApiHandler();
+export const createServerHandlers = async (token: string): Promise<ServerHandlers> => {
+  // The typed `/api` web-handler comes from `ExecutorApp.make` (./app.ts). The
+  // boot bearer token is the authoritative `/api` gate (see `identity.ts`).
+  const apiHandler: ServerHandlers["api"] = await makeLocalApiHandler(token);
 
   // The in-process MCP server runs over the SAME boot executor, with its own
   // engine instance (the browser-approval + stdio surface is local-only and not
@@ -75,22 +76,36 @@ export class ServerHandlersService extends Context.Service<ServerHandlersService
   "@executor-js/local/ServerHandlersService",
 ) {}
 
-const ServerHandlersLive = Layer.effect(ServerHandlersService)(
-  Effect.acquireRelease(
-    Effect.promise(() => createServerHandlers()),
-    (handlers) => Effect.promise(() => closeServerHandlers(handlers)),
-  ),
-);
+// The handlers are built once per process and memoized. The boot token is
+// captured on the first call (serve.ts / the vite dev middleware both pass the
+// SAME token loaded from `auth.json`), so memoization on first-call is correct.
+let serverHandlersRuntime: ManagedRuntime.ManagedRuntime<ServerHandlersService, never> | null =
+  null;
 
-const serverHandlersRuntime = ManagedRuntime.make(ServerHandlersLive);
+const getServerHandlersRuntime = (
+  token: string,
+): ManagedRuntime.ManagedRuntime<ServerHandlersService, never> => {
+  if (serverHandlersRuntime) return serverHandlersRuntime;
+  const layer = Layer.effect(ServerHandlersService)(
+    Effect.acquireRelease(
+      Effect.promise(() => createServerHandlers(token)),
+      (handlers) => Effect.promise(() => closeServerHandlers(handlers)),
+    ),
+  );
+  serverHandlersRuntime = ManagedRuntime.make(layer);
+  return serverHandlersRuntime;
+};
 
-export const getServerHandlers = (): Promise<ServerHandlers> =>
-  serverHandlersRuntime.runPromise(ServerHandlersService.asEffect());
+export const getServerHandlers = (token: string): Promise<ServerHandlers> =>
+  getServerHandlersRuntime(token).runPromise(ServerHandlersService.asEffect());
 
 export const disposeServerHandlers = async (): Promise<void> => {
+  const runtime = serverHandlersRuntime;
+  if (!runtime) return;
+  serverHandlersRuntime = null;
   await Effect.runPromise(
     Effect.tryPromise({
-      try: () => serverHandlersRuntime.dispose(),
+      try: () => runtime.dispose(),
       catch: (cause) => cause,
     }).pipe(Effect.ignore),
   );

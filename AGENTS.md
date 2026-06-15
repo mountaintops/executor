@@ -61,6 +61,12 @@ with zero setup. See the `emulate` skill
 (`.claude/skills/emulate/SKILL.md`) for the control-plane reference and
 recipes.
 
+The emulators are a standalone project (`github.com/UsefulSoftwareCo/emulate`),
+not vendored here — this repo only consumes the published `@executor-js/emulate`
+package. You have full autonomy to change, publish, and deploy the emulators,
+working directly on their `main`; the skill covers the loop. Don't re-introduce
+a `vendor/` submodule for them.
+
 ## Attribution
 
 Do not add any AI assistant, Claude, Anthropic, or Co-Authored-By

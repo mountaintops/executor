@@ -4,6 +4,8 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import appPlugin from "@executor-js/app/vite";
+import { loadOrMintLocalAuthToken } from "./src/auth";
+import { isUnauthenticatedOAuthCallbackPath, makeIsAuthorized } from "./src/serve-shared";
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const rootPackage = JSON.parse(
@@ -36,10 +38,32 @@ const APP_ROOT = fileURLToPath(new URL("../../packages/app/", import.meta.url));
  */
 function executorApiPlugin(): Plugin {
   let handlers: import("./src/main").ServerHandlers | null = null;
+  // The dev server's in-process /api + /mcp require the bearer (same gate as the
+  // production Bun shell). The browser gets the token the SAME way it does in
+  // production — via the one-time `?_token=` URL printed below — so there is no
+  // dev-only token-injection path to drift.
+  let devToken: string | null = null;
 
   return {
     name: "executor-api",
     configureServer(server) {
+      devToken ??= loadOrMintLocalAuthToken();
+
+      // Print the bootstrap URL when vite is the front (plain `bun run dev`).
+      // When the CLI daemon spawns vite as a child (EXECUTOR_DEV_VITE_PORT set),
+      // the daemon prints its own `?_token=` URL and the app is loaded from the
+      // daemon port, so we stay quiet to avoid two conflicting URLs.
+      if (!process.env.EXECUTOR_DEV_VITE_PORT) {
+        server.httpServer?.once("listening", () => {
+          const address = server.httpServer?.address();
+          const port =
+            typeof address === "object" && address ? address.port : server.config.server.port;
+          server.config.logger.info(
+            `\n  Open with auth:  http://127.0.0.1:${port}/?_token=${devToken}\n`,
+          );
+        });
+      }
+
       server.watcher.on("change", (path) => {
         if (path.includes("/apps/local/src/") || path.endsWith("/executor.config.ts")) {
           handlers = null;
@@ -52,11 +76,36 @@ function executorApiPlugin(): Plugin {
 
         if (!isApi && !isMcp) return next();
 
+        // Gate parity with the production Bun shell (serve.ts): the vite server
+        // is reachable by any local process, so /api and /mcp require the bearer
+        // here too — otherwise /mcp would be unauthenticated arbitrary code
+        // execution in dev. Exempt the health probe and the state-gated OAuth
+        // callback. The SPA carries the token from its `?_token`/localStorage
+        // bootstrap, so the UI is unaffected; external MCP clients use the
+        // daemon port.
+        const pathOnly = rawUrl.split("?")[0] ?? "/";
+        const authExempt =
+          pathOnly === "/api/health" || isUnauthenticatedOAuthCallbackPath(pathOnly);
+        if (!authExempt) {
+          const presented = req.headers.authorization;
+          const authValue = Array.isArray(presented) ? presented[0] : presented;
+          const probe = new Request(
+            "http://localhost/",
+            authValue ? { headers: { authorization: authValue } } : undefined,
+          );
+          if (!makeIsAuthorized(devToken ?? loadOrMintLocalAuthToken())(probe)) {
+            res.statusCode = 401;
+            res.setHeader("www-authenticate", 'Bearer realm="executor"');
+            res.end("Unauthorized");
+            return;
+          }
+        }
+
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Vite middleware must convert handler failures into HTTP 500 responses
         try {
           if (!handlers) {
             const { getServerHandlers } = await import("./src/main");
-            handlers = await getServerHandlers();
+            handlers = await getServerHandlers(devToken ?? loadOrMintLocalAuthToken());
           }
 
           const origin = `http://${req.headers.host ?? "localhost"}`;

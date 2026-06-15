@@ -17,6 +17,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { TransportState } from "agents/mcp";
 
 import { jsonRpcErrorBody } from "@executor-js/host-mcp";
+import { formatResumeAcknowledgement } from "@executor-js/host-mcp/browser-approval";
 import { RequestWebOrigin } from "@executor-js/api/server";
 import {
   formatPausedExecution,
@@ -72,26 +73,12 @@ export type McpSessionResumeApprovalResult =
 const resumeApprovalResult = (
   executionId: string,
   response: ResumeResponse,
-): Extract<McpSessionResumeApprovalResult, { readonly status: "ok" }> => {
-  const textByAction = {
-    accept: "I've approved it",
-    decline: "I've denied it",
-    cancel: "I've canceled it",
-  } satisfies Record<ResumeResponse["action"], string>;
-  const statusByAction = {
-    accept: "approved",
-    decline: "denied",
-    cancel: "canceled",
-  } satisfies Record<ResumeResponse["action"], string>;
-
-  return {
-    status: "ok",
-    executionStatus: "completed",
-    text: textByAction[response.action],
-    structured: { status: statusByAction[response.action], executionId },
-    isError: false,
-  };
-};
+): Extract<McpSessionResumeApprovalResult, { readonly status: "ok" }> => ({
+  status: "ok",
+  executionStatus: "completed",
+  ...formatResumeAcknowledgement(executionId, response),
+  isError: false,
+});
 
 const HEARTBEAT_MS = 30 * 1000;
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000;

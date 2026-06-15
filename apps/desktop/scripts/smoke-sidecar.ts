@@ -33,8 +33,8 @@ const BINARY = resolve(
   process.platform === "win32" ? "executor-sidecar.exe" : "executor-sidecar",
 );
 
-const AUTH_PASSWORD = "smoke-test-password";
-const AUTH_HEADER = `Basic ${btoa(`executor:${AUTH_PASSWORD}`)}`;
+const AUTH_TOKEN = "smoke-test-token";
+const AUTH_HEADER = `Bearer ${AUTH_TOKEN}`;
 const READY_TIMEOUT_MS = 30_000;
 
 // Throw instead of process.exit so main()'s finally still tears down the
@@ -349,7 +349,7 @@ const main = async () => {
       ...process.env,
       EXECUTOR_PORT: "0",
       EXECUTOR_HOST: "127.0.0.1",
-      EXECUTOR_AUTH_PASSWORD: AUTH_PASSWORD,
+      EXECUTOR_AUTH_TOKEN: AUTH_TOKEN,
       EXECUTOR_SCOPE_DIR: scopeDir,
       EXECUTOR_DATA_DIR: dataDir,
       XDG_DATA_HOME: xdgDir,

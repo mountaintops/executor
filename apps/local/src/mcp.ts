@@ -1,4 +1,4 @@
-import { Deferred, Effect, Option, Schema } from "effect";
+import { Effect } from "effect";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -8,7 +8,14 @@ import {
   createExecutorMcpServer,
   type ExecutorMcpServerConfig,
 } from "@executor-js/host-mcp/tool-server";
-import type { ResumeResponse } from "@executor-js/execution";
+import {
+  approvalUrlForRequest,
+  decodeResumeResponse,
+  formatResumeAcknowledgement,
+  readElicitationMode,
+} from "@executor-js/host-mcp/browser-approval";
+import { makeInProcessBrowserApprovalStore } from "@executor-js/host-mcp/browser-approval-store";
+import { formatPausedExecution, type ResumeResponse } from "@executor-js/execution";
 
 import { startIntegrationsRefresh } from "./integrations";
 
@@ -18,6 +25,9 @@ import { startIntegrationsRefresh } from "./integrations";
 
 export type McpRequestHandler = {
   readonly handleRequest: (request: Request) => Promise<Response>;
+  /** GET `/api/mcp-sessions/:id/executions/:id` — paused detail for the console. */
+  readonly handlePausedRequest: (request: Request) => Promise<Response>;
+  /** POST `/api/mcp-sessions/:id/executions/:id/resume` — record the decision. */
   readonly handleApprovalRequest: (request: Request) => Promise<Response>;
   readonly close: () => Promise<void>;
 };
@@ -34,35 +44,6 @@ const formatBoundaryError = (error: unknown): unknown => {
   return error;
 };
 
-type McpElicitationMode = "browser" | "model" | "native";
-
-const MCP_ELICITATION_MODES = new Set<McpElicitationMode>(["browser", "model", "native"]);
-const ResumeResponsePayload = Schema.Struct({
-  action: Schema.Literals(["accept", "decline", "cancel"]),
-  content: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-});
-const decodeResumeResponsePayload = Schema.decodeUnknownOption(ResumeResponsePayload);
-
-const readElicitationMode = (request: Request): McpElicitationMode => {
-  const url = new URL(request.url);
-  const mode = url.searchParams.get("elicitation_mode");
-  if (mode && MCP_ELICITATION_MODES.has(mode as McpElicitationMode)) {
-    return mode as McpElicitationMode;
-  }
-
-  return "model";
-};
-
-const approvalUrlForRequest = (
-  request: Request,
-  executionId: string,
-  sessionId: string | null,
-): string => {
-  const url = new URL(`/resume/${encodeURIComponent(executionId)}`, request.url);
-  if (sessionId) url.searchParams.set("mcp_session_id", sessionId);
-  return url.toString();
-};
-
 const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
     ? Effect.runPromise(
@@ -75,6 +56,7 @@ const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
       )
     : Promise.resolve();
 
+const pausedRequestPattern = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
 const approvalRequestPattern = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
 
 const json = (value: unknown, status = 200): Response =>
@@ -88,46 +70,41 @@ const readResumeResponse = (request: Request): Promise<ResumeResponse | null> =>
     Effect.tryPromise({
       try: () => request.json(),
       catch: () => null,
-    }).pipe(
-      Effect.map((raw) =>
-        raw === null ? null : Option.getOrNull(decodeResumeResponsePayload(raw)),
-      ),
-    ),
+    }).pipe(Effect.map((raw) => (raw === null ? null : decodeResumeResponse(raw)))),
   );
 
-const resumeApprovalResult = (executionId: string, response: ResumeResponse) => {
-  const textByAction = {
-    accept: "I've approved it",
-    decline: "I've denied it",
-    cancel: "I've canceled it",
-  } satisfies Record<ResumeResponse["action"], string>;
-  const statusByAction = {
-    accept: "approved",
-    decline: "denied",
-    cancel: "canceled",
-  } satisfies Record<ResumeResponse["action"], string>;
-
-  return {
-    status: "completed",
-    text: textByAction[response.action],
-    structured: { status: statusByAction[response.action], executionId },
-    isError: false,
-  };
-};
+const resumeApprovalResult = (executionId: string, response: ResumeResponse) => ({
+  status: "completed",
+  ...formatResumeAcknowledgement(executionId, response),
+  isError: false,
+});
 
 export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpRequestHandler => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
-  const approvalResponses = new Map<string, Map<string, ResumeResponse>>();
-  const approvalWaiters = new Map<string, Map<string, Deferred.Deferred<ResumeResponse>>>();
+  const approvals = makeInProcessBrowserApprovalStore();
+  // Local runs one shared engine across every MCP session (main.ts builds it and
+  // passes it in), so the paused-execution lookup for browser approval reads it
+  // directly — there is no per-session engine to track.
+  const engine = "engine" in config ? config.engine : null;
+
+  const pausedDetail = (
+    executionId: string,
+  ): Promise<ReturnType<typeof formatPausedExecution> | null> =>
+    engine
+      ? Effect.runPromise(
+          engine.getPausedExecution(executionId).pipe(
+            Effect.map((paused) => (paused ? formatPausedExecution(paused) : null)),
+            Effect.orElseSucceed(() => null),
+          ),
+        )
+      : Promise.resolve(null);
 
   const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
     const s = servers.get(id);
     transports.delete(id);
     servers.delete(id);
-    approvalResponses.delete(id);
-    approvalWaiters.delete(id);
     if (opts.transport) await ignoreClose(t ? () => t.close() : undefined);
     if (opts.server) await ignoreClose(s ? () => s.close() : undefined);
   };
@@ -166,48 +143,7 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
         created = await Effect.runPromise(
           createExecutorMcpServer({
             ...config,
-            browserApprovalStore: {
-              takeResponse: (executionId) =>
-                Effect.sync(() => {
-                  if (!createdSessionId) return null;
-                  const sessionApprovals = approvalResponses.get(createdSessionId);
-                  const response = sessionApprovals?.get(executionId) ?? null;
-                  sessionApprovals?.delete(executionId);
-                  return response;
-                }),
-              waitForResponse: (executionId) =>
-                Effect.gen(function* () {
-                  if (!createdSessionId) return null;
-                  const sessionApprovals = approvalResponses.get(createdSessionId);
-                  const response = sessionApprovals?.get(executionId) ?? null;
-                  if (response) {
-                    sessionApprovals?.delete(executionId);
-                    return response;
-                  }
-
-                  const sessionWaiters =
-                    approvalWaiters.get(createdSessionId) ??
-                    new Map<string, Deferred.Deferred<ResumeResponse>>();
-                  const waiter =
-                    sessionWaiters.get(executionId) ?? (yield* Deferred.make<ResumeResponse>());
-                  sessionWaiters.set(executionId, waiter);
-                  approvalWaiters.set(createdSessionId, sessionWaiters);
-
-                  yield* Deferred.await(waiter).pipe(
-                    Effect.ensuring(
-                      Effect.sync(() => {
-                        if (sessionWaiters.get(executionId) === waiter) {
-                          sessionWaiters.delete(executionId);
-                        }
-                      }),
-                    ),
-                  );
-                  const approvals = approvalResponses.get(createdSessionId);
-                  const approved = approvals?.get(executionId) ?? null;
-                  approvals?.delete(executionId);
-                  return approved;
-                }),
-            },
+            browserApprovalStore: approvals.store,
             elicitationMode:
               elicitationMode === "browser"
                 ? {
@@ -238,26 +174,29 @@ export const createMcpRequestHandler = (config: ExecutorMcpServerConfig): McpReq
       }
     },
 
+    handlePausedRequest: async (request) => {
+      const match = pausedRequestPattern.exec(new URL(request.url).pathname);
+      if (!match) return json({ error: "Not found" }, 404);
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
+
+      const paused = await pausedDetail(decodeURIComponent(match[2]));
+      if (!paused) return json({ error: "Paused execution not found" }, 404);
+      return json({ text: paused.text, structured: paused.structured });
+    },
+
     handleApprovalRequest: async (request) => {
-      const url = new URL(request.url);
-      const match = approvalRequestPattern.exec(url.pathname);
+      const match = approvalRequestPattern.exec(new URL(request.url).pathname);
       if (!match) return json({ error: "Not found" }, 404);
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-      const sessionId = decodeURIComponent(match[1]);
       const executionId = decodeURIComponent(match[2]);
-      if (!servers.has(sessionId)) return json({ error: "MCP session not found" }, 404);
+      // The shared engine must still hold the paused execution — guards stale ids.
+      if (!(await pausedDetail(executionId))) return json({ error: "MCP session not found" }, 404);
 
       const response = await readResumeResponse(request);
       if (!response) return json({ error: "Invalid approval response" }, 400);
 
-      const sessionApprovals =
-        approvalResponses.get(sessionId) ?? new Map<string, ResumeResponse>();
-      sessionApprovals.set(executionId, response);
-      approvalResponses.set(sessionId, sessionApprovals);
-      const waiter = approvalWaiters.get(sessionId)?.get(executionId);
-      if (waiter) await Effect.runPromise(Deferred.succeed(waiter, response));
-
+      await Effect.runPromise(approvals.recordResponse(executionId, response));
       return json(resumeApprovalResult(executionId, response));
     },
 

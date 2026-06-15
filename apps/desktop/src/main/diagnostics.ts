@@ -197,10 +197,9 @@ const buildManifest = () => {
       logs: dirname(log.transports.file.getFile().path),
       crashDumps: app.getPath("crashDumps"),
     },
-    // Redacted on purpose: the Basic-auth password never leaves the machine.
+    // The bearer token is never included — it stays in auth.json on the machine.
     serverSettings: {
       port: settings.port,
-      requireAuth: settings.requireAuth,
     },
   };
 };

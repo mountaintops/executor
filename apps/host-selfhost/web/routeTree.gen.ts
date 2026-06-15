@@ -12,11 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRouteImport } from './../../../packages/react/src/routes/tools'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRouteImport } from './../../../packages/react/src/routes/secrets'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport } from './../../../packages/react/src/routes/policies'
-import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
-import { Route as AdminRouteImport } from './routes/app/admin'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport } from './../../../packages/react/src/routes/index'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesResumeDotexecutionIdRouteImport } from './../../../packages/react/src/routes/resume.$executionId'
-import { Route as JoinDotcodeRouteImport } from './routes/app/join.$code'
+import { Route as JoinDotcodeRouteImport } from './routes/public/join.$code'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotnamespaceRouteImport } from './../../../packages/react/src/routes/integrations.$namespace'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPluginsDotpluginIdDotsplatRouteImport } from './../../../packages/react/src/routes/plugins.$pluginId.$'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport } from './../../../packages/react/src/routes/integrations.add.$pluginKey'
@@ -39,16 +37,6 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute =
     path: '/policies',
     getParentRoute: () => rootRouteImport,
   } as any)
-const ApiKeysRoute = ApiKeysRouteImport.update({
-  id: '/api-keys',
-  path: '/api-keys',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AdminRoute = AdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport.update({
     id: '/',
@@ -95,8 +83,6 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginK
 
 export interface FileRoutesByFullPath {
   '/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
-  '/admin': typeof AdminRoute
-  '/api-keys': typeof ApiKeysRoute
   '/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
@@ -108,8 +94,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
-  '/admin': typeof AdminRoute
-  '/api-keys': typeof ApiKeysRoute
   '/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
@@ -122,8 +106,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
-  '/admin': typeof AdminRoute
-  '/api-keys': typeof ApiKeysRoute
   '/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/tools': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
@@ -137,8 +119,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/admin'
-    | '/api-keys'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -150,8 +130,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/admin'
-    | '/api-keys'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -163,8 +141,6 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/admin'
-    | '/api-keys'
     | '/policies'
     | '/secrets'
     | '/tools'
@@ -177,8 +153,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute
-  AdminRoute: typeof AdminRoute
-  ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRoute
@@ -210,20 +184,6 @@ declare module '@tanstack/react-router' {
       path: '/policies'
       fullPath: '/policies'
       preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api-keys': {
-      id: '/api-keys'
-      path: '/api-keys'
-      fullPath: '/api-keys'
-      preLoaderRoute: typeof ApiKeysRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/admin': {
-      id: '/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -274,8 +234,6 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute,
-  AdminRoute: AdminRoute,
-  ApiKeysRoute: ApiKeysRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute:

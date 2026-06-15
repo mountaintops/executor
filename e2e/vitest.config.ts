@@ -38,6 +38,14 @@ export default defineConfig({
         include: ["scenarios/**/*.test.ts", "selfhost/**/*.test.ts"],
         fileParallelism: false,
       }),
+      // The Cloudflare self-host worker (workerd via wrangler dev, dev-auth).
+      // Scoped to the browser-approval scenario for now — the only cross-target
+      // scenario wired for this host; the rest of scenarios/** is not yet
+      // validated against the worker. Shares self-host's single-admin model.
+      project("cloudflare", {
+        include: ["scenarios/browser-approval.test.ts", "cloudflare/**/*.test.ts"],
+        fileParallelism: false,
+      }),
       // The Electron desktop app. Only desktop/** scenarios — the desktop
       // target provides none of the standard surfaces (each scenario
       // launches its own app via Playwright's electron driver), so running
@@ -48,6 +56,46 @@ export default defineConfig({
         fileParallelism: false,
         testTimeout: 300_000,
       }),
+      // The PACKAGED desktop app: the real electron-builder bundle, where
+      // app.isPackaged is true — the ONLY target that exercises the supervised-
+      // daemon attach path (ensureSupervisedConnection) and the bundled compiled
+      // sidecar. Its globalsetup builds the bundle (slow), so it's separate from
+      // `desktop` to keep the fast dev-electron suite off the package build.
+      // Needs a display; not part of the default `npm run test` chain — run with
+      // `vitest run --project desktop-packaged`.
+      project("desktop-packaged", {
+        include: ["desktop-packaged/**/*.test.ts"],
+        fileParallelism: false,
+        testTimeout: 360_000,
+        hookTimeout: 600_000,
+      }),
+      // The single-user local app. Each scenario launches its OWN `executor
+      // web` via the CLI on a throwaway data dir + an OS-assigned port, so
+      // there is no shared instance and scenarios are independent — file
+      // parallelism is ON. No globalSetup (nothing shared to boot). Only
+      // local/** scenarios. Not part of the default `npm run test` chain; run
+      // with `vitest run --project local`.
+      project("local", {
+        include: ["local/**/*.test.ts"],
+        globalSetup: [],
+        fileParallelism: true,
+        testTimeout: 180_000,
+      }),
+      // The supervised CLI daemon inside a guest VM, one project per OS. The
+      // globalsetup provisions a VM, `executor service install`s the daemon, and
+      // tunnels it; restart() reboots the guest for REAL, so restart-persistence
+      // proves the boot-time auto-start path. Needs tart (macOS/Linux) or an EC2
+      // credential (Windows); not part of the default `npm run test` chain — run
+      // with `vitest run --project cli-macos` (etc.) on the Mini.
+      ...(["macos", "linux", "windows"] as const).map((os) =>
+        project(`cli-${os}`, {
+          include: ["scenarios/restart-persistence.test.ts", "cli/**/*.test.ts"],
+          env: { E2E_TARGET: `cli-${os}`, E2E_VM_OS: os },
+          fileParallelism: false,
+          testTimeout: 300_000,
+          hookTimeout: 900_000,
+        }),
+      ),
     ],
   },
 });

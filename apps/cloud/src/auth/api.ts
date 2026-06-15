@@ -14,6 +14,8 @@ const AuthUser = Schema.Struct({
 const AuthOrganization = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
+  slug: Schema.String,
 });
 
 const AuthMeResponse = Schema.Struct({
@@ -24,15 +26,12 @@ const AuthMeResponse = Schema.Struct({
 const AuthOrganizationSummary = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 const AuthOrganizationsResponse = Schema.Struct({
   organizations: Schema.Array(AuthOrganizationSummary),
   activeOrganizationId: Schema.NullOr(Schema.String),
-});
-
-const SwitchOrganizationBody = Schema.Struct({
-  organizationId: Schema.String,
 });
 
 const CreateOrganizationBody = Schema.Struct({
@@ -42,6 +41,7 @@ const CreateOrganizationBody = Schema.Struct({
 const CreateOrganizationResponse = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 // `state` is optional — some WorkOS-initiated redirects arrive at the
@@ -83,6 +83,7 @@ const AcceptInvitationBody = Schema.Struct({
 const AcceptInvitationResponse = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  slug: Schema.String,
 });
 
 const McpSessionExecutionParams = {
@@ -138,7 +139,6 @@ export const AUTH_PATHS = {
   login: "/api/auth/login",
   logout: "/api/auth/logout",
   callback: "/api/auth/callback",
-  switchOrganization: "/api/auth/switch-organization",
 } as const;
 
 const AuthErrors = [UserStoreError, WorkOSError] as const;
@@ -170,12 +170,6 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
   .add(
     HttpApiEndpoint.get("organizations", "/auth/organizations", {
       success: AuthOrganizationsResponse,
-      error: WorkOSError,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("switchOrganization", "/auth/switch-organization", {
-      payload: SwitchOrganizationBody,
       error: WorkOSError,
     }),
   )

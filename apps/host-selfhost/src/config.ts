@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { isValidOrgSlug } from "@executor-js/api";
+
 // ---------------------------------------------------------------------------
 // Self-host server config — a single typed surface parsed from the
 // environment. Slice 1 keeps this a plain loader with safe defaults; it can
@@ -34,6 +36,7 @@ export interface SelfHostConfig {
   readonly bootstrapAdminName: string;
   /** The single organization every self-host user belongs to. */
   readonly organizationName: string;
+  /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
   readonly orgSlug: string;
 }
 
@@ -114,6 +117,21 @@ export const loadConfig = (): SelfHostConfig => {
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
     bootstrapAdminName: process.env.EXECUTOR_BOOTSTRAP_ADMIN_NAME ?? "Admin",
     organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
-    orgSlug: process.env.EXECUTOR_ORG_SLUG ?? "default",
+    orgSlug: resolveOrgSlug(),
   };
+};
+
+// The org slug doubles as a URL segment (`/<slug>/policies`), so an
+// operator-set value must fit the shared grammar and avoid reserved root
+// segments (api, mcp, login, …) — a colliding slug would shadow real routes.
+const resolveOrgSlug = (): string => {
+  const slug = process.env.EXECUTOR_ORG_SLUG;
+  if (!slug) return "default";
+  if (!isValidOrgSlug(slug) && slug !== "default") {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a colliding org slug would shadow app routes; refuse to boot
+    throw new Error(
+      `EXECUTOR_ORG_SLUG ${JSON.stringify(slug)} is not usable as a URL slug (2-48 chars of [a-z0-9-], not a reserved path segment like "api" or "login")`,
+    );
+  }
+  return slug;
 };

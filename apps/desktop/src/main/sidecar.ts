@@ -5,14 +5,14 @@
  * In prod: spawns the Bun-compiled `executor-sidecar` binary shipped under
  *          `process.resourcesPath/sidecar/`.
  *
- * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_PASSWORD
+ * Either way, the child receives EXECUTOR_PORT/EXECUTOR_HOST/EXECUTOR_AUTH_TOKEN
  * via env, calls `startServer()` from `@executor-js/local`, and announces a
  * single sentinel line on stdout (`EXECUTOR_READY:<port>`) so this controller
  * can resolve the connection promise.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { app } from "electron";
@@ -23,6 +23,7 @@ import {
   parseExecutorLocalServerManifest,
   serializeExecutorLocalServerManifest,
 } from "@executor-js/sdk/shared";
+import { loadOrMintLocalAuthToken } from "@executor-js/local/auth";
 import { getServerSettings } from "./settings";
 import { reportSidecarCrash, sidecarCrashReportingEnv } from "./diagnostics";
 import { SERVER_SETTINGS_USERNAME, type DesktopServerSettings } from "../shared/server-settings";
@@ -66,8 +67,18 @@ export interface SidecarConnection {
   readonly hostname: string;
   readonly port: number;
   readonly username: string;
-  readonly authPassword: string | null;
-  readonly child: ChildProcess;
+  readonly authToken: string;
+  /**
+   * The child process we spawned and own, or `null` when we attached to an
+   * OS-supervised daemon that outlives this app (see `supervisedDaemon`).
+   */
+  readonly child: ChildProcess | null;
+  /**
+   * True when this connection points at an OS-supervised daemon (launchd/etc.)
+   * that we did NOT spawn and must NOT stop on quit — quitting the app should
+   * leave MCP serving.
+   */
+  readonly supervisedDaemon: boolean;
 }
 
 export class SidecarPortInUseError extends Error {
@@ -171,7 +182,7 @@ const writeSidecarManifest = (input: {
   readonly dataDir: string;
   readonly scopeDir: string;
   readonly baseUrl: string;
-  readonly authPassword: string | null;
+  readonly authToken: string;
   readonly childPid: number;
 }) => {
   const connection = normalizeExecutorServerConnection({
@@ -179,18 +190,11 @@ const writeSidecarManifest = (input: {
     key: "desktop-sidecar",
     origin: input.baseUrl,
     displayName: "Desktop sidecar",
-    ...(input.authPassword
-      ? {
-          auth: {
-            kind: "basic" as const,
-            username: SERVER_SETTINGS_USERNAME,
-            password: input.authPassword,
-          },
-        }
-      : {}),
+    auth: { kind: "bearer" as const, token: input.authToken },
   });
+  const manifestPath = localServerManifestPath(input.dataDir);
   writeFileSync(
-    localServerManifestPath(input.dataDir),
+    manifestPath,
     serializeExecutorLocalServerManifest({
       version: 1,
       kind: "desktop-sidecar",
@@ -205,7 +209,11 @@ const writeSidecarManifest = (input: {
         executablePath: process.execPath || null,
       },
     }),
+    { mode: 0o600 },
   );
+  // The manifest embeds the bearer token; keep it owner-only even if a looser
+  // file already existed (writeFileSync's mode does not re-apply on overwrite).
+  chmodSync(manifestPath, 0o600);
   sidecarManifestPathByPid.set(input.childPid, input.dataDir);
 };
 
@@ -255,7 +263,10 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
   const dataDir = scopeDir;
   mkdirSync(dataDir, { recursive: true });
 
-  const effectivePassword = settings.requireAuth ? settings.password : null;
+  // The stable bearer token from auth.json (shared with the CLI). The main
+  // process holds it so it can inject the header into the webview; the child
+  // validates against the same value. Always present — auth is unconditional.
+  const authToken = loadOrMintLocalAuthToken(dataDir);
   const releaseStartupLock = acquireLocalServerStartLock(dataDir);
   let startupLockReleased = false;
   const releaseLock = () => {
@@ -286,10 +297,9 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
         EXECUTOR_HOST: hostname,
         EXECUTOR_WEB_BASE_URL: webBaseUrl,
         PORT: String(settings.port),
-        // Only export the password env var when auth is enabled — the sidecar
-        // treats an empty password as "no auth required". Matches the CLI's
-        // `executor web` default.
-        ...(effectivePassword ? { EXECUTOR_AUTH_PASSWORD: effectivePassword } : {}),
+        // The bearer token the child validates and the main process injects into
+        // the webview. Always set — auth is unconditional.
+        EXECUTOR_AUTH_TOKEN: authToken,
         EXECUTOR_CLIENT_DIR: clientDir,
         EXECUTOR_SCOPE_DIR: scopeDir,
         EXECUTOR_DATA_DIR: dataDir,
@@ -342,7 +352,7 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
           dataDir,
           scopeDir,
           baseUrl,
-          authPassword: effectivePassword,
+          authToken,
           childPid: child.pid,
         });
         releaseLock();
@@ -351,8 +361,9 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
           hostname,
           port,
           username: SERVER_SETTINGS_USERNAME,
-          authPassword: effectivePassword,
+          authToken,
           child,
+          supervisedDaemon: false,
         });
       }
     };
@@ -395,6 +406,65 @@ export async function startSidecar(options: StartOptions = {}): Promise<SidecarC
     child.stderr?.on("data", onStderr);
     child.once("exit", onExit);
   });
+}
+
+/**
+ * Probe whether an HTTP server is listening at `origin`. Any HTTP response —
+ * even 401/404 — means a server is up; only a network error or timeout counts
+ * as unreachable. Auth is attached so a 401 still confirms liveness cleanly.
+ */
+const isDaemonReachable = async (origin: string, authToken: string): Promise<boolean> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: fetch rejects on a down server; that's the "not reachable" signal
+  try {
+    const headers: Record<string, string> = {};
+    if (authToken) headers.Authorization = `Bearer ${authToken}`;
+    await fetch(origin, { signal: controller.signal, headers, redirect: "manual" });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * Attach to an already-running OS-supervised daemon instead of spawning our own
+ * sidecar. Reads `server.json`, confirms the recorded process is alive and the
+ * endpoint answers, and returns a child-less `SidecarConnection` flagged
+ * `supervisedDaemon: true`. Returns null when no usable supervised daemon is
+ * present (the caller then falls back to managed-spawn).
+ *
+ * Only a `cli-daemon` manifest is treated as supervised — a `desktop-sidecar`
+ * manifest belongs to a managed sidecar (ours or another desktop instance) and
+ * is handled by the existing single-instance / ownership logic.
+ */
+export async function attachToSupervisedDaemon(): Promise<SidecarConnection | null> {
+  const dataDir = join(homedir(), ".executor");
+  const manifest = readManifest(dataDir);
+  if (!manifest || manifest.kind !== "cli-daemon") return null;
+  if (!isPidAlive(manifest.pid)) {
+    removeManifestIfOwnedBy(dataDir, manifest.pid);
+    return null;
+  }
+
+  const origin = manifest.connection.origin;
+  const auth = manifest.connection.auth;
+  const authToken = auth && auth.kind === "bearer" ? auth.token : "";
+  if (!(await isDaemonReachable(origin, authToken))) return null;
+
+  const url = new URL(origin);
+  sidecarLog.info(`attaching to supervised daemon at ${origin} (pid ${manifest.pid})`);
+  return {
+    baseUrl: origin,
+    hostname: url.hostname,
+    port: Number.parseInt(url.port, 10) || (url.protocol === "https:" ? 443 : 80),
+    username: SERVER_SETTINGS_USERNAME,
+    authToken,
+    child: null,
+    supervisedDaemon: true,
+  };
 }
 
 export async function stopSidecar(child: ChildProcess): Promise<void> {

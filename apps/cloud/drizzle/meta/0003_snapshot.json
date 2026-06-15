@@ -1,5 +1,5 @@
 {
-  "id": "c5186f26-8379-4ca1-88a0-d7994b35d3e1",
+  "id": "80591016-4fb7-47d8-ab60-9a5c8eaea9c8",
   "prevId": "288497ac-d4ea-4e84-9426-ce46d01b909e",
   "version": "7",
   "dialect": "postgresql",
@@ -102,6 +102,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -110,7 +116,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "organizations_slug_unique": {
+          "name": "organizations_slug_unique",
+          "columns": [
+            {
+              "expression": "slug",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -214,18 +236,6 @@
         "identity_label": {
           "name": "identity_label",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tools_synced_at": {
-          "name": "tools_synced_at",
-          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         },
@@ -485,23 +495,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "description": {
           "name": "description",
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "config_revised_at": {
-          "name": "config_revised_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
         },
         "config": {
           "name": "config",

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,6 +19,7 @@ import updater from "electron-updater";
 const { autoUpdater } = updater;
 type UpdateInfo = { readonly version: string };
 import {
+  attachToSupervisedDaemon,
   startSidecar,
   stopSidecar,
   onUnexpectedSidecarExit,
@@ -33,16 +35,21 @@ import {
   reportAProblem,
 } from "./diagnostics";
 import { sidecarCrashHtml } from "./crash-screen";
+import {
+  installSupervisedService,
+  restartSupervisedService,
+  supervisedServiceStatus,
+  uninstallSupervisedService,
+} from "./service";
 import { announceBackup, confirmResetState, resetExecutorState } from "./reset-state";
 import {
   getServerProfiles,
   getServerSettings,
-  regeneratePassword,
+  rotateServerToken,
   setServerProfiles,
   updateServerSettings,
 } from "./settings";
 import {
-  SERVER_SETTINGS_USERNAME,
   type DesktopServerConnection,
   type DesktopServerSettings,
 } from "../shared/server-settings";
@@ -100,15 +107,148 @@ const ensureSingleInstance = () => {
   return true;
 };
 
-const installBasicAuthHeader = (origin: string, password: string | null) => {
+/**
+ * Stop the local server only when WE own it. A supervised daemon (launchd/etc.)
+ * outlives this app by design — quitting, restarting the window, or resetting
+ * state must never kill it. Spawned sidecars (`child` set) are stopped as before.
+ */
+const stopConnection = async (conn: SidecarConnection): Promise<void> => {
+  if (conn.supervisedDaemon || !conn.child) return;
+  await stopSidecar(conn.child);
+};
+
+// The supervised daemon (and the desktop sidecar) own this data dir — the same
+// path the CLI's `executor web`/daemon uses, so desktop and CLI share state.
+const DESKTOP_DATA_DIR = join(homedir(), ".executor");
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Poll for a reachable supervised daemon until the deadline. */
+const waitForSupervisedAttach = async (timeoutMs: number): Promise<SidecarConnection | null> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const attached = await attachToSupervisedDaemon();
+    if (attached) return attached;
+    if (Date.now() >= deadline) return null;
+    await delay(300);
+  }
+};
+
+const confirmEnableBackgroundService = async (): Promise<boolean> => {
+  const { response } = await dialog.showMessageBox({
+    type: "question",
+    title: "Keep Executor running in the background?",
+    message: "Keep your connections available after you quit Executor?",
+    detail:
+      "Executor can run as a lightweight background service so your MCP tools keep working after you close this window or restart your Mac. You can turn this off anytime in Settings. It will appear under System Settings → General → Login Items.",
+    buttons: ["Keep running in the background", "Not now"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  return response === 0;
+};
+
+/**
+ * Resolve a connection to the OS-supervised daemon, installing it on first run
+ * (with consent). Returns null when supervision is unavailable or the user
+ * declined — the caller then falls back to managed-spawn.
+ */
+const ensureSupervisedConnection = async (): Promise<SidecarConnection | null> => {
+  // 1. Already running → attach.
+  const attached = await attachToSupervisedDaemon();
+  if (attached) return attached;
+
+  const status = await supervisedServiceStatus();
+  if (!status.supported) return null;
+
+  // 2. Registered but not currently serving → kick it and wait.
+  if (status.registered) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a restart failure just falls through to managed-spawn
+    try {
+      await restartSupervisedService();
+    } catch (error) {
+      log.warn("Failed to kickstart supervised service", error);
+    }
+    return waitForSupervisedAttach(15_000);
+  }
+
+  // 3. First run → ask, then install + start. The unit carries no secret; the
+  // supervised daemon mints/loads its bearer from auth.json under DESKTOP_DATA_DIR.
+  if (!(await confirmEnableBackgroundService())) return null;
+  const settings = getServerSettings();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: install failure falls back to managed-spawn so the app still launches
+  try {
+    await installSupervisedService({
+      port: settings.port,
+      dataDir: DESKTOP_DATA_DIR,
+    });
+  } catch (error) {
+    log.error("Failed to install supervised service; using managed sidecar", error);
+    return null;
+  }
+  return waitForSupervisedAttach(15_000);
+};
+
+// Crash monitor for the supervised daemon: launchd restarts it on crash, but
+// during that window the window's requests fail. Poll, show a reconnecting
+// overlay while it's down, and reload once it's back.
+let supervisedMonitorTimer: ReturnType<typeof setInterval> | null = null;
+let supervisedDaemonDown = false;
+
+const stopSupervisedMonitor = () => {
+  if (supervisedMonitorTimer) clearInterval(supervisedMonitorTimer);
+  supervisedMonitorTimer = null;
+  supervisedDaemonDown = false;
+};
+
+const armSupervisedMonitor = () => {
+  stopSupervisedMonitor();
+  supervisedMonitorTimer = setInterval(() => {
+    void (async () => {
+      const live = await attachToSupervisedDaemon();
+      const window = liveMainWindow();
+      if (!live) {
+        if (!supervisedDaemonDown && window) {
+          supervisedDaemonDown = true;
+          const html = sidecarCrashHtml({ reported: errorReportingEnabled });
+          void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+        }
+        return;
+      }
+      if (supervisedDaemonDown) {
+        supervisedDaemonDown = false;
+        connection = live;
+        installBearerAuthHeader(live.baseUrl, live.authToken);
+        if (window) void window.loadURL(live.baseUrl);
+      }
+    })();
+  }, 10_000);
+};
+
+const installBearerAuthHeader = (origin: string, token: string | null) => {
   authHeaderUnsubscribe?.();
   authHeaderUnsubscribe = null;
-  if (!password) return;
-  const credentials = Buffer.from(`${SERVER_SETTINGS_USERNAME}:${password}`).toString("base64");
-  const headerValue = `Basic ${credentials}`;
+  if (!token) return;
+  const headerValue = `Bearer ${token}`;
   session.defaultSession.webRequest.onBeforeSendHeaders(
     { urls: [`${origin}/*`] },
     (details, callback) => {
+      // Scope the bearer to the app's OWN renderer. OAuth popups run in this same
+      // session but load third-party provider pages; auto-attaching the bearer to
+      // any request they make to the sidecar would make it an ambient credential
+      // (a CSRF vector) for untrusted content — the very thing the bearer model
+      // exists to avoid. The popup only ever needs the bearer-exempt
+      // /oauth/callback and hands its result back via same-origin browser
+      // channels (localStorage/postMessage), so withholding the bearer from any
+      // non-app webContents is safe. Requests with no webContentsId (main
+      // process / network service) still get it.
+      const fromOtherWebContents =
+        details.webContentsId !== undefined &&
+        (mainWindow === null || details.webContentsId !== mainWindow.webContents.id);
+      if (fromOtherWebContents) {
+        callback({ requestHeaders: details.requestHeaders });
+        return;
+      }
       callback({
         requestHeaders: {
           ...details.requestHeaders,
@@ -175,7 +315,7 @@ const createWindow = async (conn: SidecarConnection) => {
     defaultHeight: 800,
   });
 
-  installBasicAuthHeader(conn.baseUrl, conn.authPassword);
+  installBearerAuthHeader(conn.baseUrl, conn.authToken);
 
   const linuxIcon = resolveLinuxIcon();
 
@@ -226,7 +366,7 @@ const createWindow = async (conn: SidecarConnection) => {
             // No preload, no nodeIntegration — popup loads third-party
             // OAuth provider pages, then a final navigation back to
             // 127.0.0.1:<port>/oauth/callback which the session-level
-            // Basic auth header injection (installBasicAuthHeader)
+            // bearer header injection (installBearerAuthHeader)
             // catches automatically. The popup never needs the
             // executor IPC bridge.
             contextIsolation: true,
@@ -275,8 +415,15 @@ const startWithCurrentSettings = async (): Promise<SidecarConnection | null> => 
 };
 
 const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
+  // A supervised daemon isn't ours to restart — just reload the window against
+  // the same endpoint instead of tearing down a process we don't own.
+  if (connection?.supervisedDaemon) {
+    const window = liveMainWindow();
+    if (window) await window.loadURL(connection.baseUrl);
+    return toDesktopServerConnection(connection);
+  }
   if (connection) {
-    await stopSidecar(connection.child);
+    await stopConnection(connection);
     connection = null;
   }
   const next = await startWithCurrentSettings();
@@ -285,42 +432,83 @@ const restartSidecarAndReload = async (): Promise<DesktopServerConnection> => {
     throw new Error("Sidecar failed to restart — see Settings");
   }
   connection = next;
-  installBasicAuthHeader(next.baseUrl, next.authPassword);
+  installBearerAuthHeader(next.baseUrl, next.authToken);
   const window = liveMainWindow();
   if (window) await window.loadURL(next.baseUrl);
   return toDesktopServerConnection(next);
 };
 
+// The renderer's connection carries NO auth: the main process injects the
+// bearer header at the session layer (installBearerAuthHeader), so the token
+// never crosses the IPC boundary.
 const toDesktopServerConnection = (conn: SidecarConnection): DesktopServerConnection => ({
   kind: "desktop-sidecar",
   key: "desktop-sidecar",
   origin: conn.baseUrl,
   apiBaseUrl: `${conn.baseUrl.replace(/\/+$/, "")}/api`,
   displayName: "Desktop sidecar",
-  ...(conn.authPassword
-    ? {
-        auth: {
-          kind: "basic" as const,
-          username: SERVER_SETTINGS_USERNAME,
-          password: conn.authPassword,
-        },
-      }
-    : {}),
 });
 
 const registerIpcHandlers = () => {
   ipcMain.handle("executor:server:connection", (): DesktopServerConnection | null =>
     connection ? toDesktopServerConnection(connection) : null,
   );
+  // The bearer token, exposed only for the "Connect an agent" install command
+  // (an external agent needs it in plaintext). The renderer's own requests
+  // never use it — the header is injected at the session layer.
+  ipcMain.handle("executor:server:auth-token", (): string | null => connection?.authToken ?? null);
   ipcMain.handle("executor:settings:get", (): DesktopServerSettings => getServerSettings());
   ipcMain.handle(
     "executor:settings:update",
     (_evt, patch: Partial<DesktopServerSettings>): DesktopServerSettings =>
       updateServerSettings(patch),
   );
+  // Rotate the bearer token (auth.json). A supervised daemon must be restarted
+  // so it re-reads auth.json at boot, then re-attached; a managed sidecar is
+  // restarted in-process. Either way the webview header is re-injected.
+  ipcMain.handle("executor:server:rotate-token", async (): Promise<DesktopServerConnection> => {
+    rotateServerToken();
+    if (connection?.supervisedDaemon) {
+      const previous = connection;
+      await restartSupervisedService();
+      const active = (await waitForSupervisedAttach(15_000)) ?? previous;
+      connection = active;
+      installBearerAuthHeader(active.baseUrl, active.authToken);
+      const window = liveMainWindow();
+      if (window) await window.loadURL(active.baseUrl);
+      return toDesktopServerConnection(active);
+    }
+    return restartSidecarAndReload();
+  });
+  // Background-service control surface (macOS) — lets a Settings toggle enable
+  // or disable the supervised daemon. Disabling tears down the service and
+  // falls back to a managed sidecar on next launch.
+  ipcMain.handle("executor:service:status", () => supervisedServiceStatus());
   ipcMain.handle(
-    "executor:settings:regenerate-password",
-    (): DesktopServerSettings => regeneratePassword(),
+    "executor:service:set-enabled",
+    async (_evt, enabled: unknown): Promise<boolean> => {
+      if (typeof enabled !== "boolean") return false;
+      if (enabled) {
+        const settings = getServerSettings();
+        await installSupervisedService({
+          port: settings.port,
+          dataDir: DESKTOP_DATA_DIR,
+        });
+        const next = await waitForSupervisedAttach(15_000);
+        if (next) {
+          if (connection && !connection.supervisedDaemon) await stopConnection(connection);
+          connection = next;
+          armSupervisedMonitor();
+          installBearerAuthHeader(next.baseUrl, next.authToken);
+          const window = liveMainWindow();
+          if (window) await window.loadURL(next.baseUrl);
+        }
+        return true;
+      }
+      stopSupervisedMonitor();
+      await uninstallSupervisedService(DESKTOP_DATA_DIR);
+      return true;
+    },
   );
   ipcMain.handle("executor:server-profiles:get", (): string | null => getServerProfiles());
   ipcMain.handle("executor:server-profiles:set", (_evt, value: unknown): void => {
@@ -340,7 +528,7 @@ const registerIpcHandlers = () => {
   ipcMain.handle("executor:state:reset", async (): Promise<boolean> => {
     if (!(await confirmResetState())) return false;
     if (connection) {
-      await stopSidecar(connection.child);
+      await stopConnection(connection);
       connection = null;
     }
     const { backupDir } = resetExecutorState();
@@ -395,9 +583,10 @@ const promptInstallUpdate = async (version: string) => {
       cancelId: 1,
     });
     if (response.response === 0) {
-      // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle.
+      // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle. A
+      // supervised daemon is left running — it's independent of this bundle.
       if (connection) {
-        await stopSidecar(connection.child);
+        await stopConnection(connection);
         connection = null;
       }
       autoUpdater.quitAndInstall(false, true);
@@ -570,6 +759,21 @@ const boot = async () => {
     // self-heal as the fatal startup path).
     void runUpdateCheck({ alertOnFail: false });
   });
+  // Prefer an OS-supervised daemon: attach to one that's running, kick one
+  // that's installed, or offer to install on first run. Quitting the app then
+  // leaves MCP serving. This is also the clean handoff that replaces the old
+  // "another server owns the data dir → fatal error" path. Packaged macOS only;
+  // dev and unsupported platforms keep managed-spawn.
+  if (app.isPackaged) {
+    const supervised = await ensureSupervisedConnection();
+    if (supervised) {
+      connection = supervised;
+      await createWindow(supervised); // installs the bearer-auth header itself
+      armSupervisedMonitor();
+      void runUpdateCheck({ alertOnFail: false });
+      return;
+    }
+  }
   connection = await startWithCurrentSettings();
   if (!connection && lastSidecarStartError != null) {
     // Port conflicts already showed their dialog inside
@@ -610,8 +814,14 @@ if (ensureSingleInstance()) {
 
   app.on("before-quit", async (event) => {
     if (!connection) return;
+    // A supervised daemon must keep serving after the app quits — don't stop it,
+    // and don't block the quit on teardown we don't need to do.
+    if (connection.supervisedDaemon) {
+      connection = null;
+      return;
+    }
     event.preventDefault();
-    await stopSidecar(connection.child);
+    await stopConnection(connection);
     connection = null;
     app.exit(0);
   });

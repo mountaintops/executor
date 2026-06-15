@@ -1,4 +1,4 @@
-import { Link, Outlet, useLocation } from "@tanstack/react-router";
+import { Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -11,7 +11,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu";
 import {
@@ -35,34 +34,57 @@ import { useAuth } from "./auth-context";
 // Everything visual is identical so both products look the same.
 // ---------------------------------------------------------------------------
 
+/** Nav targets are ORG-SCOPE-RELATIVE paths ("/", "/policies", "/admin") — the
+ *  shell prefixes the optional `{-$orgSlug}` segment when rendering, and the
+ *  router's param inheritance keeps the active org's slug in every href. */
 export type ShellNavItem = { readonly to: string; readonly label: string };
 
 /** Integrations lives at "/", plus the standard tool-management sections. Hosts
- *  spread this and append their own (e.g. Organization, Billing). */
+ *  spread this and append their own (e.g. API keys, Organization, Billing). A
+ *  host only adds API keys if it actually serves them in-app (Cloudflare manages
+ *  them in Access, so it omits the link). */
 export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
   { to: "/policies", label: "Policies" },
 ];
 
+// Scope-relative path -> the route id under the optional org segment
+// ("/" -> "/{-$orgSlug}", "/policies" -> "/{-$orgSlug}/policies"). Loosely
+// typed on purpose: host-specific items ("/admin", "/billing") resolve against
+// the host's own route tree, which this package can't see.
+const orgScopedTo = (to: string): string => (to === "/" ? "/{-$orgSlug}" : `/{-$orgSlug}${to}`);
+
+/** The pathname with the active org-slug prefix stripped, for active-state
+ *  comparisons against scope-relative paths. */
+function useScopeRelativePathname(): string {
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const params = useParams({ strict: false }) as { orgSlug?: string };
+  const orgSlug = params.orgSlug;
+  if (orgSlug && (pathname === `/${orgSlug}` || pathname.startsWith(`/${orgSlug}/`))) {
+    return pathname.slice(orgSlug.length + 1) || "/";
+  }
+  return pathname;
+}
+
 export interface ShellProps {
   /** End the session. Cloud POSTs its logout path; self-host calls Better Auth. */
   readonly onSignOut: () => void | Promise<void>;
   /** Nav sections; defaults to {@link defaultShellNavItems}. */
   readonly navItems?: ReadonlyArray<ShellNavItem>;
-  /** Where the "API keys" footer link goes; null hides it. Default "/api-keys". */
-  readonly apiKeysTo?: string | null;
   /** Injected into the account dropdown — cloud's org switcher / create-org. */
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
   readonly supportSlot?: ReactNode;
+  /** Replaces the routed `<Outlet />` (the org-slug gate's in-shell 404). */
+  readonly content?: ReactNode;
 }
 
 // ── Brand ────────────────────────────────────────────────────────────────
 
 function Brand(props: { onNavigate?: () => void }) {
   return (
-    <Link to="/" onClick={props.onNavigate} className="flex items-center gap-1.5">
+    <Link to="/{-$orgSlug}" onClick={props.onNavigate} className="flex items-center gap-1.5">
       <span className="font-display text-base tracking-tight text-foreground">executor</span>
       <span className="rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
         Beta
@@ -76,7 +98,7 @@ function Brand(props: { onNavigate?: () => void }) {
 function NavItem(props: { to: string; label: string; active: boolean; onNavigate?: () => void }) {
   return (
     <Link
-      to={props.to}
+      to={orgScopedTo(props.to)}
       onClick={props.onNavigate}
       className={[
         "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
@@ -92,6 +114,7 @@ function NavItem(props: { to: string; label: string; active: boolean; onNavigate
 
 // ── IntegrationList ───────────────────────────────────────────────────────────
 
+// `pathname` is scope-relative (org-slug prefix already stripped).
 function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
   const integrations = useAtomValue(integrationsOptimisticAtom);
   const integrationPlugins = useIntegrationPlugins();
@@ -126,7 +149,7 @@ function IntegrationList(props: { pathname: string; onNavigate?: () => void }) {
             return (
               <Link
                 key={slug}
-                to="/integrations/$namespace"
+                to="/{-$orgSlug}/integrations/$namespace"
                 params={{ namespace: slug }}
                 onClick={props.onNavigate}
                 className={[
@@ -183,10 +206,9 @@ function Avatar(props: { url: string | null; name: string | null; email: string 
 
 // ── UserFooter ──────────────────────────────────────────────────────────
 
-function UserFooter(props: Pick<ShellProps, "onSignOut" | "apiKeysTo" | "orgMenuSlot">) {
+function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
   const auth = useAuth();
   if (auth.status !== "authenticated") return null;
-  const apiKeysTo = props.apiKeysTo === undefined ? "/api-keys" : props.apiKeysTo;
 
   return (
     <div className="shrink-0 border-t border-sidebar-border px-3 py-2.5">
@@ -223,14 +245,6 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "apiKeysTo" | "orgMenu
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" side="top" className="w-64">
           {props.orgMenuSlot}
-          {apiKeysTo && (
-            <>
-              <DropdownMenuItem asChild className="text-xs">
-                <Link to={apiKeysTo}>API keys</Link>
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          )}
           <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
             Signed in as
           </DropdownMenuLabel>
@@ -291,11 +305,7 @@ function SidebarContent(
 
       {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
 
-      <UserFooter
-        onSignOut={props.onSignOut}
-        apiKeysTo={props.apiKeysTo}
-        orgMenuSlot={props.orgMenuSlot}
-      />
+      <UserFooter onSignOut={props.onSignOut} orgMenuSlot={props.orgMenuSlot} />
     </>
   );
 }
@@ -303,8 +313,7 @@ function SidebarContent(
 // ── Shell ─────────────────────────────────────────────────────────────────
 
 export function Shell(props: ShellProps) {
-  const location = useLocation();
-  const pathname = location.pathname;
+  const pathname = useScopeRelativePathname();
   const lastPathname = useRef(pathname);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   if (lastPathname.current !== pathname) {
@@ -395,7 +404,7 @@ export function Shell(props: ShellProps) {
           <div className="w-8 shrink-0" />
         </div>
 
-        <Outlet />
+        {props.content ?? <Outlet />}
       </main>
     </div>
   );
