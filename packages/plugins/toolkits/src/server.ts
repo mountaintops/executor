@@ -22,8 +22,8 @@ import {
 import {
   definePluginStorageCollection,
   Owner,
-  type ExecutorWrapper,
   type PluginCtx,
+  type RequestScope,
   type StorageFailure,
 } from "@executor-js/sdk";
 import { addGroup, capture } from "@executor-js/api";
@@ -40,8 +40,8 @@ import {
   type UpdateToolkitPayload,
 } from "./shared";
 import {
-  applyToolkitScope,
   EMPTY_TOOLKIT_SCOPE,
+  toolkitScopeToRequestScope,
   type ResolvedToolkitScope,
 } from "./toolkit-scope";
 
@@ -312,18 +312,7 @@ const makeToolkitsExtension = (ctx: PluginCtx) => {
       };
     });
 
-  // The plugin's contribution to core's generic executor-wrapper seam: given a
-  // selector, resolve it to a scope (fail-closed to the empty slice when it
-  // doesn't resolve for this caller) and narrow the executor. Core collects and
-  // runs this without knowing it's about toolkits.
-  const wrapExecutor: ExecutorWrapper = (base, selector) =>
-    resolveScope(selector).pipe(
-      Effect.flatMap((scope) =>
-        applyToolkitScope(base, scope ?? EMPTY_TOOLKIT_SCOPE),
-      ),
-    );
-
-  return { create, get, list, update, remove, resolveScope, wrapExecutor };
+  return { create, get, list, update, remove, resolveScope };
 };
 
 // Local aliases so the storage/extension layer stays decoupled from the wire
@@ -396,12 +385,25 @@ const ToolkitsHandlers = HttpApiBuilder.group(
       ),
 );
 
+const resolveToolkitRequestScope = (
+  ctx: PluginCtx,
+  selector: string,
+): Effect.Effect<RequestScope, StorageFailure> =>
+  makeToolkitsExtension(ctx)
+    .resolveScope(selector)
+    .pipe(
+      Effect.map((scope) =>
+        toolkitScopeToRequestScope(scope ?? EMPTY_TOOLKIT_SCOPE),
+      ),
+    );
+
 export const toolkitsPlugin = definePlugin(() => ({
   id: "toolkits" as const,
   packageName: "@executor-js/plugin-toolkits",
   storage: () => ({}),
   pluginStorage: { toolkits: TOOLKITS, connections: CONNECTIONS },
   extension: makeToolkitsExtension,
+  resolveRequestScope: resolveToolkitRequestScope,
   routes: () => ToolkitsApi,
   handlers: () => ToolkitsHandlers,
   extensionService: ToolkitsExtensionService,

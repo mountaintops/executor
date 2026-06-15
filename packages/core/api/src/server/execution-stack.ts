@@ -29,7 +29,6 @@ import type * as Cause from "effect/Cause";
 import {
   type AnyPlugin,
   type Executor,
-  type ExecutorWrapper,
   type StorageFailure,
 } from "@executor-js/sdk";
 import {
@@ -110,11 +109,8 @@ export const makeExecutionStack = <
   organizationId: string,
   organizationName: string,
   /** Optional per-request narrowing selector (e.g. an MCP `?toolkit=` value).
-   *  When set, the executor is run through every plugin-contributed
-   *  `ExecutorWrapper` before the engine is built — so listing, search,
-   *  description, core-tools, AND execute all see only the narrowed view. Core
-   *  is agnostic about what a wrapper narrows to; a plugin (e.g. toolkits) owns
-   *  that, including fail-closed behavior for an unknown selector. */
+   *  When set, core resolves plugin-contributed `RequestScope` overlays and
+   *  enforces them centrally before the engine is built. */
   selector?: string,
 ): Effect.Effect<
   {
@@ -134,9 +130,7 @@ export const makeExecutionStack = <
       organizationId,
       organizationName,
     );
-    const executor = selector
-      ? yield* applyExecutorWrappers(base, selector)
-      : base;
+    const executor = selector ? yield* base.applyRequestScope(selector) : base;
     const codeExecutor = yield* CodeExecutorProvider;
     const { decorate } = yield* EngineDecorator;
     const engine = decorate(createExecutionEngine({ executor, codeExecutor }), {
@@ -145,22 +139,4 @@ export const makeExecutionStack = <
       organizationName,
     });
     return { executor, engine };
-  });
-
-// Run every plugin-contributed executor wrapper (collected on the executor at
-// assembly) with the request selector. Core does not know what any wrapper
-// narrows to — the toolkits plugin's wrapper, for instance, fails closed to an
-// empty slice for an unknown/cross-tenant selector. With no wrapper registered,
-// the executor passes through unchanged.
-const applyExecutorWrappers = <TPlugins extends readonly AnyPlugin[]>(
-  base: Executor<TPlugins>,
-  selector: string,
-): Effect.Effect<Executor<TPlugins>, StorageFailure> =>
-  Effect.gen(function* () {
-    const wrappers = (base as { executorWrappers?: readonly ExecutorWrapper[] })
-      .executorWrappers;
-    let executor = base;
-    for (const wrap of wrappers ?? [])
-      executor = yield* wrap(executor, selector);
-    return executor;
   });

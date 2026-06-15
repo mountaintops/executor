@@ -1,7 +1,7 @@
 // Selfhost · Toolkit access "read" exposes only read-only tools and blocks
 // writes. `readOnly` is derived from HTTP method on OpenAPI integrations
 // (GET/HEAD/OPTIONS => readOnly:true; POST/PUT/PATCH/DELETE are writes), and
-// `applyToolkitScope` keeps a connection's tool under "read" access ONLY when
+// Read-only toolkit access keeps a connection's tool under "read" ONLY when
 // `annotations.readOnly === true`. So we stand up a real OpenAPI upstream with
 // BOTH a GET (read) and a POST (write) operation, grant the same connection at
 // "read" in one workspace toolkit and "full" in another, and prove:

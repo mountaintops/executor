@@ -1,27 +1,7 @@
 // Selfhost · org policies vs a toolkit's inheritOrgPolicies flag.
 //
-// INTENDED contract: a toolkit inherits the org's policies only when
-// inheritOrgPolicies=true; with false, org-level policies do NOT apply to the
-// toolkit's slice.
-//
-// CURRENT v1 BEHAVIOR (what this test pins): the inheritOrgPolicies flag is
-// persisted + surfaced but NOT yet wired into enforcement. Org `block` policies
-// are enforced by the base executor, and the toolkit narrowing seam
-// (`applyToolkitScope`) computes its allowed slice from `base.tools.list()`,
-// which ALREADY drops org-blocked tools (`includeBlocked: false`). So an
-// org-blocked tool is excluded from EVERY toolkit's slice regardless of the
-// flag. This test therefore asserts:
-//   1. the org block is real on a bare /mcp session (the guardrail works);
-//   2. the flag round-trips on create (true vs false), AND
-//   3. an org block is inherited by BOTH a true- and a false-flagged toolkit
-//      today — i.e. inheritOrgPolicies:false does NOT yet un-inherit it.
-// When enforcement is wired up, assertion (3)'s `isolated` leg should flip to a
-// successful run; the inline markers below say exactly where.
-//
-// The ORG policy is created through the core PoliciesApi (`client.policies.create`
-// with owner "org"). The org `tool_policy` matcher tests the 4-segment
-// `<integration>.<owner>.<connection>.<tool>` form (owner included), so a
-// plugin-wide `<slug>.*` subtree pattern covers `<slug>.org.<conn>.simple_echo`.
+// Org `block` / `require_approval` guardrails always reach scoped sessions; only
+// org `approve` rows may be dropped when inheritOrgPolicies=false.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -217,21 +197,12 @@ scenario(
         `T_inherit (inheritOrgPolicies:true) inherits the org block; text=${inheritCall.text}`,
       ).toBe(true);
 
-      // CURRENT v1 BEHAVIOR — the org block also reaches T_isolated because the
-      // flag is not yet wired into enforcement and the narrowing seam computes
-      // its slice from an already-org-filtered `tools.list()`. The INTENDED end
-      // state is that this call RUNS (org block NOT inherited). When enforcement
-      // lands, flip the next assertion to:
-      //   expect(isolatedCall.ok && !isBlocked(isolatedCall.text), ...).toBe(true);
+      // T_isolated still inherits org block/require_approval guardrails even when
+      // inheritOrgPolicies:false — a toolkit may only tighten, never loosen.
       expect(
         isBlocked(isolatedCall.text),
-        `KNOWN GAP: T_isolated (inheritOrgPolicies:false) should NOT inherit the org ` +
-          `block, but v1 still blocks it; text=${isolatedCall.text}`,
+        `T_isolated (inheritOrgPolicies:false) still blocked by org guardrail; text=${isolatedCall.text}`,
       ).toBe(true);
-
-      // The flag does round-trip and is visible to the toolkit view layer, so the
-      // only missing piece is enforcement honoring it — pinned here so a future
-      // wiring change makes the gap-assertion above fail loudly and get fixed.
       const inheritView = yield* client.toolkits.get({
         params: { id: inherit.id },
       });
