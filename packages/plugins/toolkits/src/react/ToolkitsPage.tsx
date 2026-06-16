@@ -16,9 +16,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import { usePluginNavigate, usePluginRoute } from "@executor-js/sdk/client";
+import { useIntegrationPlugins, usePluginNavigate, usePluginRoute } from "@executor-js/sdk/client";
+import { effectivePolicyFromSorted, PolicyId } from "@executor-js/sdk/shared";
 
-import { connectionsAllAtom, integrationsAtom } from "@executor-js/react/api/atoms";
+import { connectionsAllAtom, integrationsAtom, toolsAllAtom } from "@executor-js/react/api/atoms";
 import { Button } from "@executor-js/react/components/button";
 import { Input } from "@executor-js/react/components/input";
 import { Textarea } from "@executor-js/react/components/textarea";
@@ -26,13 +27,12 @@ import { Switch } from "@executor-js/react/components/switch";
 import { Label } from "@executor-js/react/components/label";
 import { Badge } from "@executor-js/react/components/badge";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@executor-js/react/components/select";
-import { IntegrationFavicon } from "@executor-js/react/components/integration-favicon";
+  IntegrationFavicon,
+  integrationInferredUrl,
+  integrationPresetIconUrl,
+} from "@executor-js/react/components/integration-favicon";
+import { ToolTree, type ToolSummary } from "@executor-js/react/components/tool-tree";
+import { toPolicyPattern } from "@executor-js/react/lib/policy-pattern";
 import { copyToClipboard } from "@executor-js/react/lib/clipboard";
 import { cn } from "@executor-js/react/lib/utils";
 
@@ -65,10 +65,20 @@ import {
 // read, so this file doesn't pin a specific API success-type name.
 // ---------------------------------------------------------------------------
 
-interface Integ {
+interface IntegrationInfo {
   readonly slug: string;
   readonly name: string;
+  readonly kind: string;
+  readonly displayUrl?: string;
 }
+
+type ToolRow = {
+  readonly integration: string;
+  readonly connection: string;
+  readonly name: string;
+  readonly description: string;
+  readonly requiresApproval?: boolean;
+};
 
 const ACCESS_OPTIONS: ReadonlyArray<{ value: ToolkitAccess; label: string }> = [
   { value: "off", label: "Off" },
@@ -76,11 +86,50 @@ const ACCESS_OPTIONS: ReadonlyArray<{ value: ToolkitAccess; label: string }> = [
   { value: "full", label: "Full" },
 ];
 
-const ACTION_LABEL: Record<ToolkitPolicyAction, string> = {
-  approve: "Auto-approve",
-  require_approval: "Needs approval",
-  block: "Block",
+/** Toolkit rules match `integration.connection.tool` — undo ToolTree's 4-segment bridge. */
+const fromToolTreePattern = (pattern: string): string => {
+  const match = pattern.match(/^([^.]+)\.\*\.\*\.(.+)$/);
+  if (match) return `${match[1]}.${match[2]}`;
+  return pattern;
 };
+
+const sortToolkitPolicies = (
+  policies: ReadonlyArray<ToolkitPolicy>,
+): ReadonlyArray<ToolkitPolicy> =>
+  [...policies].sort((a, b) => {
+    const aWild = a.pattern.endsWith("*");
+    const bWild = b.pattern.endsWith("*");
+    if (aWild !== bWild) return aWild ? 1 : -1;
+    return b.pattern.length - a.pattern.length;
+  });
+
+function IntegrationIcon(props: {
+  readonly slug: string;
+  readonly size: number;
+  readonly integration: IntegrationInfo | undefined;
+  readonly integrationPlugins: ReturnType<typeof useIntegrationPlugins>;
+}) {
+  const name = props.integration?.name ?? props.slug;
+  return (
+    <IntegrationFavicon
+      icon={integrationPresetIconUrl(
+        {
+          id: props.slug,
+          kind: props.integration?.kind ?? "",
+          name,
+          url: props.integration?.displayUrl,
+        },
+        props.integrationPlugins,
+      )}
+      url={
+        props.integration?.displayUrl ??
+        integrationInferredUrl({ id: props.slug, name }) ??
+        undefined
+      }
+      size={props.size}
+    />
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Access segmented control (off / read / full)
@@ -112,6 +161,8 @@ function AccessSeg(props: { value: ToolkitAccess; onChange: (v: ToolkitAccess) =
 function ToolkitCard(props: {
   toolkit: ToolkitView;
   integrationName: (slug: string) => string;
+  integrationBySlug: ReadonlyMap<string, IntegrationInfo>;
+  integrationPlugins: ReturnType<typeof useIntegrationPlugins>;
   onOpen: () => void;
 }) {
   const active = props.toolkit.connections.filter((c) => c.access !== "off");
@@ -138,7 +189,12 @@ function ToolkitCard(props: {
               key={slug}
               className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2 py-0.5 text-[12px]"
             >
-              <IntegrationFavicon sourceId={slug} size={14} />
+              <IntegrationIcon
+                slug={slug}
+                size={14}
+                integration={props.integrationBySlug.get(slug)}
+                integrationPlugins={props.integrationPlugins}
+              />
               {props.integrationName(slug)}
             </span>
           ))
@@ -156,6 +212,8 @@ function ListSection(props: {
   empty: string;
   toolkits: ReadonlyArray<ToolkitView>;
   integrationName: (slug: string) => string;
+  integrationBySlug: ReadonlyMap<string, IntegrationInfo>;
+  integrationPlugins: ReturnType<typeof useIntegrationPlugins>;
   onOpen: (id: string) => void;
   onCreate: () => void;
 }) {
@@ -178,6 +236,8 @@ function ListSection(props: {
               key={tk.id}
               toolkit={tk}
               integrationName={props.integrationName}
+              integrationBySlug={props.integrationBySlug}
+              integrationPlugins={props.integrationPlugins}
               onOpen={() => props.onOpen(tk.id)}
             />
           ))}
@@ -197,6 +257,8 @@ interface EditorProps {
   readonly takenSlugs: ReadonlySet<string>;
   readonly connections: ReadonlyArray<Conn>;
   readonly integrationName: (slug: string) => string;
+  readonly integrationBySlug: ReadonlyMap<string, IntegrationInfo>;
+  readonly integrationPlugins: ReturnType<typeof useIntegrationPlugins>;
   readonly onBack: () => void;
   readonly onCreated: () => void;
   readonly onRemoved: () => void;
@@ -243,14 +305,85 @@ function ToolkitEditor(props: EditorProps) {
     setNotes((m) => ({ ...m, [key]: v }));
     mark();
   };
-  const setPolicy = (i: number, patch: Partial<ToolkitPolicy>) => {
-    setPolicies((ps) => ps.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+  const upsertPolicy = (pattern: string, action: ToolkitPolicyAction) => {
+    const toolkitPattern = fromToolTreePattern(pattern);
+    setPolicies((ps) => {
+      const i = ps.findIndex((p) => p.pattern === toolkitPattern);
+      if (i >= 0) return ps.map((p, j) => (j === i ? { ...p, action } : p));
+      return [...ps, { pattern: toolkitPattern, action }];
+    });
     mark();
   };
+  const removePolicy = (pattern: string) => {
+    const toolkitPattern = fromToolTreePattern(pattern);
+    setPolicies((ps) => ps.filter((p) => p.pattern !== toolkitPattern));
+    mark();
+  };
+
+  const toolsResult = useAtomValue(toolsAllAtom);
 
   // The connections this toolkit may draw on: workspace = org-owned only;
   // personal = org + the caller's own.
   const tiers = useMemo(() => tiersForScope(props.connections, scope), [props.connections, scope]);
+
+  const activeScopes = useMemo(() => {
+    const pinned = new Map<string, Set<string>>();
+    const wildcards = new Set<string>();
+    for (const [key, a] of Object.entries(access)) {
+      if (a === "off") continue;
+      const space = key.indexOf(" ");
+      const integration = key.slice(0, space);
+      const connection = key.slice(space + 1);
+      if (connection === "*") {
+        wildcards.add(integration);
+      } else {
+        const conns = pinned.get(integration) ?? new Set<string>();
+        conns.add(connection);
+        pinned.set(integration, conns);
+      }
+    }
+    return { pinned, wildcards };
+  }, [access]);
+
+  const hasActiveConnections = useMemo(
+    () => activeScopes.wildcards.size > 0 || activeScopes.pinned.size > 0,
+    [activeScopes],
+  );
+
+  const sortedPolicies = useMemo(() => sortToolkitPolicies(policies), [policies]);
+  const treePolicies = useMemo(
+    () =>
+      sortedPolicies.map((p) => ({
+        pattern: toPolicyPattern(p.pattern),
+        action: p.action,
+      })),
+    [sortedPolicies],
+  );
+
+  const toolSummaries: ReadonlyArray<ToolSummary> = useMemo(() => {
+    if (!AsyncResult.isSuccess(toolsResult)) return [];
+    const matchesTool = (t: ToolRow) => {
+      if (activeScopes.wildcards.has(t.integration)) return true;
+      const conns = activeScopes.pinned.get(t.integration);
+      return conns?.has(t.connection) ?? false;
+    };
+    const rows: ToolSummary[] = [];
+    for (const tool of toolsResult.value as readonly ToolRow[]) {
+      if (!matchesTool(tool)) continue;
+      const id = `${tool.integration}.${tool.connection}.${tool.name}`;
+      rows.push({
+        id,
+        name: id,
+        description: tool.description,
+        policy: effectivePolicyFromSorted(
+          id,
+          sortedPolicies.map((p) => ({ ...p, id: PolicyId.make(p.pattern) })),
+          tool.requiresApproval,
+        ),
+      });
+    }
+    return rows;
+  }, [toolsResult, activeScopes, sortedPolicies]);
 
   const buildEntries = () => entriesFromAccess(props.connections, scope, access, notes);
 
@@ -414,7 +547,12 @@ function ToolkitEditor(props: EditorProps) {
                     groupByIntegration(tier.conns).map(([intSlug, conns]) => (
                       <div key={intSlug} className="px-4 pb-2 pt-1.5">
                         <div className="flex items-center gap-2 pb-1">
-                          <IntegrationFavicon sourceId={intSlug} size={16} />
+                          <IntegrationIcon
+                            slug={intSlug}
+                            size={16}
+                            integration={props.integrationBySlug.get(intSlug)}
+                            integrationPlugins={props.integrationPlugins}
+                          />
                           <span className="text-[12.5px] font-semibold text-foreground">
                             {props.integrationName(intSlug)}
                           </span>
@@ -491,70 +629,33 @@ function ToolkitEditor(props: EditorProps) {
                     : "Workspace guardrails are off — this toolkit is governed only by its own rules below."}
                 </p>
               </div>
-              <div className="border-t border-border px-4 py-2.5">
-                <div className="flex items-center gap-2 pb-1">
-                  <span className="text-[12.5px] font-semibold text-foreground">Toolkit rules</span>
-                  <span className="ml-auto text-[11px] text-muted-foreground">
-                    {policies.length} {policies.length === 1 ? "rule" : "rules"}
-                  </span>
-                </div>
-                {policies.map((p, i) => (
-                  <div key={i} className="flex flex-wrap items-center gap-2 py-1.5">
-                    <Input
-                      value={p.pattern}
-                      onChange={(e) =>
-                        setPolicy(i, {
-                          pattern: (e.target as HTMLInputElement).value,
-                        })
-                      }
-                      placeholder="slack.*.post_message"
-                      className="h-8 min-w-[190px] flex-1 font-mono text-[12px]"
-                    />
-                    <Select
-                      value={p.action}
-                      onValueChange={(v) => setPolicy(i, { action: v as ToolkitPolicyAction })}
-                    >
-                      <SelectTrigger className="h-8 w-[150px] text-[12px]">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="approve">{ACTION_LABEL.approve}</SelectItem>
-                        <SelectItem value="require_approval">
-                          {ACTION_LABEL.require_approval}
-                        </SelectItem>
-                        <SelectItem value="block">{ACTION_LABEL.block}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="h-8 px-2 text-destructive/70 hover:text-destructive"
-                      onClick={() => {
-                        setPolicies((ps) => ps.filter((_, j) => j !== i));
-                        mark();
-                      }}
-                    >
-                      ✕
-                    </Button>
-                  </div>
-                ))}
-                <div className="flex items-center gap-3 pt-1">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setPolicies((ps) => [...ps, { pattern: "", action: "approve" }]);
-                      mark();
-                    }}
-                  >
-                    + Add rule
-                  </Button>
-                  <span className="text-[11px] text-muted-foreground">
-                    Block hides matching tools entirely · approve / needs-approval set gating.
-                  </span>
-                </div>
+              <div className="border-t border-border">
+                {!hasActiveConnections ? (
+                  <p className="px-4 py-3 text-[12px] text-muted-foreground">
+                    Add a connection above to set tool policies.
+                  </p>
+                ) : (
+                  AsyncResult.match(toolsResult, {
+                    onInitial: () => (
+                      <p className="px-4 py-3 text-[12px] text-muted-foreground">Loading tools…</p>
+                    ),
+                    onFailure: () => (
+                      <p className="px-4 py-3 text-[12px] text-destructive">Failed to load tools</p>
+                    ),
+                    onSuccess: () => (
+                      <div className="h-80 min-h-0">
+                        <ToolTree
+                          tools={toolSummaries}
+                          selectedToolId={null}
+                          onSelect={() => {}}
+                          policies={treePolicies}
+                          onSetPolicy={upsertPolicy}
+                          onClearPolicy={removePolicy}
+                        />
+                      </div>
+                    ),
+                  })
+                )}
               </div>
             </div>
 
@@ -629,7 +730,12 @@ function ToolkitEditor(props: EditorProps) {
                   {previewGroups.map(([intSlug, conns]) => (
                     <div key={intSlug}>
                       <div className="flex items-center gap-2">
-                        <IntegrationFavicon sourceId={intSlug} size={15} />
+                        <IntegrationIcon
+                          slug={intSlug}
+                          size={15}
+                          integration={props.integrationBySlug.get(intSlug)}
+                          integrationPlugins={props.integrationPlugins}
+                        />
                         <span className="text-[12.5px] font-semibold text-foreground">
                           {props.integrationName(intSlug)}
                         </span>
@@ -694,6 +800,7 @@ function viewFromSubpath(subpath: string): View {
 export function ToolkitsPage() {
   const { subpath } = usePluginRoute();
   const navigate = usePluginNavigate();
+  const integrationPlugins = useIntegrationPlugins();
   const view = viewFromSubpath(subpath);
   const toolkitsResult = useAtomValue(toolkitsAtom);
   const connectionsResult = useAtomValue(connectionsAllAtom);
@@ -716,18 +823,22 @@ export function ToolkitsPage() {
     },
   );
   const integrations = AsyncResult.match(
-    integrationsResult as AsyncResult.AsyncResult<ReadonlyArray<Integ>, unknown>,
+    integrationsResult as AsyncResult.AsyncResult<ReadonlyArray<IntegrationInfo>, unknown>,
     {
-      onInitial: () => [] as ReadonlyArray<Integ>,
-      onFailure: () => [] as ReadonlyArray<Integ>,
+      onInitial: () => [] as ReadonlyArray<IntegrationInfo>,
+      onFailure: () => [] as ReadonlyArray<IntegrationInfo>,
       onSuccess: ({ value }) => value,
     },
   );
 
+  const integrationBySlug = useMemo(
+    () => new Map(integrations.map((i) => [i.slug, i])),
+    [integrations],
+  );
+
   const integrationName = useMemo(() => {
-    const bySlug = new Map(integrations.map((i) => [i.slug, i.name]));
-    return (slug: string) => bySlug.get(slug) ?? slug;
-  }, [integrations]);
+    return (slug: string) => integrationBySlug.get(slug)?.name ?? slug;
+  }, [integrationBySlug]);
 
   const takenSlugs = useMemo(() => new Set((toolkits ?? []).map((t) => t.slug)), [toolkits]);
 
@@ -750,6 +861,8 @@ export function ToolkitsPage() {
         takenSlugs={takenSlugs}
         connections={connections}
         integrationName={integrationName}
+        integrationBySlug={integrationBySlug}
+        integrationPlugins={integrationPlugins}
         onBack={() => navigate("")}
         onCreated={() => navigate("")}
         onRemoved={() => navigate("")}
@@ -777,6 +890,8 @@ export function ToolkitsPage() {
           empty="No workspace toolkits yet — these draw on shared workspace connections."
           toolkits={workspace}
           integrationName={integrationName}
+          integrationBySlug={integrationBySlug}
+          integrationPlugins={integrationPlugins}
           onOpen={(id) => navigate(id)}
           onCreate={() => navigate("new/workspace")}
         />
@@ -785,6 +900,8 @@ export function ToolkitsPage() {
           empty="No personal toolkits yet — these can use workspace and personal connections."
           toolkits={personal}
           integrationName={integrationName}
+          integrationBySlug={integrationBySlug}
+          integrationPlugins={integrationPlugins}
           onOpen={(id) => navigate(id)}
           onCreate={() => navigate("new/personal")}
         />
