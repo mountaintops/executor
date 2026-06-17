@@ -74,21 +74,20 @@ let activeConnection = resolveInitialExecutorServerConnection();
 // Active org selector — the org the console URL is scoped to.
 // ---------------------------------------------------------------------------
 //
-// Org-scoped hosts (cloud) send this on every API request so the server scopes
-// to the URL's org, not the session's stored one — which is what lets two
-// browser tabs sit in two different orgs at once (each tab's window.location is
-// its own).
+// Org-scoped hosts (cloud) carry the org as the FIRST PATH SEGMENT of every
+// API request (`/{slug}/api/...`), never as a client header. The org travels
+// the same way the console URL does, which is what lets two browser tabs sit
+// in two different orgs at once (each tab's window.location is its own) and
+// keeps the URL the single source of org truth across the whole app.
 //
 // Read straight from `window.location` at REQUEST time, not from a
 // React-synced mirror: the API clients' `transformClient` runs only in the
 // browser, so this never touches SSR/hydration, and it's always exactly the
 // current URL with no effect-timing to get wrong. The org is the first path
 // segment when it's a valid slug; reserved console roots (`/policies`,
-// `/login`, …) are NOT valid slugs, so a bare path sends no header and the
-// server falls back to the session org. Hosts without slugs (self-host,
+// `/login`, …) are NOT valid slugs, so a bare path stays org-less and the
+// worker boundary leaves the request unscoped. Hosts without slugs (self-host,
 // cloudflare) never produce one either.
-export const EXECUTOR_ORG_HEADER = "x-executor-organization";
-
 export const getActiveOrgSlug = (): string | null => {
   const pathname = globalThis.window?.location?.pathname;
   if (!pathname) return null;
@@ -111,6 +110,23 @@ export const setExecutorServerApiBaseUrl = (apiBaseUrl: string): void => {
 };
 
 export const getExecutorApiBaseUrl = (): string => activeConnection.apiBaseUrl;
+
+// The per-request API base URL: the slug-less base with the active org slug
+// spliced in as the first path segment (`https://host/api` →
+// `https://host/{slug}/api`). This is the single client-side chokepoint that
+// scopes API traffic to the URL's org. The HttpApi clients call it inside
+// `mapRequest`, so it re-reads the slug on every request — a tab that
+// navigates to another org immediately scopes its next call with no client
+// re-init. Org-less paths (and slug-less hosts) get the base unchanged, so the
+// worker boundary leaves those requests unscoped.
+export const getExecutorApiRequestBaseUrl = (): string => {
+  const base = activeConnection.apiBaseUrl;
+  const slug = getActiveOrgSlug();
+  if (!slug) return base;
+  const url = new URL(base);
+  url.pathname = `/${slug}${url.pathname}`;
+  return url.toString();
+};
 
 export const getExecutorServerAuthPassword = (): string | null =>
   activeConnection.auth?.kind === "basic" ? activeConnection.auth.password : null;

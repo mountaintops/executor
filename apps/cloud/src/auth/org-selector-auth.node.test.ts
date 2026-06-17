@@ -6,11 +6,12 @@ import { UserStoreService } from "./context";
 import { resolveSessionPrincipal } from "./workos-auth-provider";
 import { WorkOSClient, type WorkOSClientService } from "./workos";
 
-// The org a console request resolves to is the URL's org (sent in the
-// `x-executor-organization` selector header), not the session's stored org —
-// with the session org as the fallback for non-console callers, and live
-// membership re-checked either way. This is what makes two browser tabs on
-// different orgs independent.
+// The org a request resolves to comes ONLY from the URL, carried in the
+// `x-executor-organization` selector header that the worker boundary derives
+// from the `/<slug>/api/...` path. There is no session-org fallback: a request
+// with no selector is org-less and fails `NoOrganization`. Live membership is
+// re-checked either way. This is what makes two browser tabs on different orgs
+// independent — the session's stored org never silently scopes a request.
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -85,10 +86,13 @@ const run = (headers: Record<string, string>) =>
   );
 
 describe("resolveSessionPrincipal · URL org selector", () => {
-  it.effect("falls back to the session org when no selector header is sent", () =>
+  it.effect("rejects an org-less request when no selector header is sent", () =>
     Effect.gen(function* () {
-      const principal = yield* run({ cookie: "wos-session=x" });
-      expect(principal.organizationId, "scopes to the session org").toBe(SESSION_ORG);
+      // No `/<slug>/` in the URL → no selector header → no org. The session's
+      // stored org does NOT silently scope the request anymore; org comes only
+      // from the URL.
+      const error = yield* Effect.flip(run({ cookie: "wos-session=x" }));
+      expect(error).toMatchObject({ _tag: "NoOrganization" });
     }),
   );
 

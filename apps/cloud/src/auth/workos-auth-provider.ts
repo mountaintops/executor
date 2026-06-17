@@ -115,11 +115,13 @@ export const resolveSessionPrincipal = (request: Request) =>
     if (!session) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }
-    // The console URL's org is the scope authority (sent as a header); the
-    // session's own org is the fallback for non-console callers. Membership is
-    // re-checked live either way — the header is a selector, not a trust
-    // boundary (see organization.ts).
-    const selector = orgSelectorFromRequest(request) ?? session.organizationId;
+    // The console URL is the ONLY scope authority: the worker boundary pins the
+    // URL's org in the selector header from `/<slug>/api/...`. The session
+    // identifies the USER, never the org — a request with no URL-scoped org is
+    // org-less here (an org-less page must not reach a protected route).
+    // Membership is still re-checked live — the selector is not a trust boundary
+    // (see organization.ts).
+    const selector = orgSelectorFromRequest(request);
     if (!selector) {
       return yield* new NoOrganization(NO_ORGANIZATION_IN_SESSION);
     }

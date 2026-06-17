@@ -87,16 +87,18 @@ export const workosAccountProvider: Layer.Layer<
         ? Effect.succeed(caller.session)
         : Effect.fail<AccountUnauthorized>(new AccountUnauthorized());
 
-    // The org scope for an org-scoped request: the console URL's org (sent in
-    // the selector header) when present, else the session's own org. Membership
-    // is re-checked live, so the header is a selector, not a trust boundary —
-    // and two browser tabs on different orgs each send their own header, so
-    // they stay independent (see organization.ts). Yields the session +
-    // resolved org, or AccountNoOrganization.
+    // The org scope for an org-scoped request comes ONLY from the console URL,
+    // which the worker boundary pins in the selector header (`/<slug>/api/...`
+    // → ORG_SELECTOR_HEADER). The session identifies the USER, never the org —
+    // there is no session fallback, so two browser tabs on different orgs each
+    // resolve their own org from their own URL and stay independent (see
+    // organization.ts). Membership is re-checked live, so the header is a
+    // URL-derived selector, not a trust boundary. Yields the session + resolved
+    // org, or AccountNoOrganization when the request is org-less.
     const requireOrganization = (headers: AccountHeaders) =>
       Effect.gen(function* () {
         const session = yield* requireSession();
-        const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+        const selector = headers[ORG_SELECTOR_HEADER];
         if (!selector) {
           return yield* new AccountNoOrganization();
         }
@@ -165,10 +167,12 @@ export const workosAccountProvider: Layer.Layer<
       me: (headers) =>
         Effect.gen(function* () {
           const session = yield* requireSession();
-          // Same selector precedence as requireOrganization: the URL's org
-          // (header) drives /account/me so the shell reflects the org the tab
-          // is viewing, not a session-global active org.
-          const selector = headers[ORG_SELECTOR_HEADER] ?? session.organizationId;
+          // Same org source as requireOrganization: the URL's org (pinned in
+          // the selector header by the worker boundary) drives /account/me so
+          // the shell reflects the org the tab is viewing. `me` stays
+          // null-tolerant — an org-less request (no URL slug, e.g. onboarding)
+          // resolves organization: null rather than erroring.
+          const selector = headers[ORG_SELECTOR_HEADER];
           const org = selector
             ? yield* authorizeOrganizationSelector(session.accountId, selector).pipe(
                 Effect.provideContext(ctx),

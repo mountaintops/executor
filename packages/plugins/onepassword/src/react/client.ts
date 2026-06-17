@@ -1,11 +1,11 @@
 import { createPluginAtomClient } from "@executor-js/sdk/client";
 import {
-  getExecutorApiBaseUrl,
+  getExecutorApiRequestBaseUrl,
   getExecutorServerAuthorizationHeader,
 } from "@executor-js/react/api/server-connection";
 import { OnePasswordGroup } from "../api/group";
 
 export const OnePasswordClient = createPluginAtomClient(OnePasswordGroup, {
-  baseUrl: getExecutorApiBaseUrl,
+  baseUrl: getExecutorApiRequestBaseUrl,
   authorizationHeader: getExecutorServerAuthorizationHeader,
 });

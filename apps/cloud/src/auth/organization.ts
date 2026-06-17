@@ -82,23 +82,27 @@ export const authorizeOrganization = (userId: string, organizationId: string) =>
 // Org SELECTOR — the URL is the scope authority, not the session.
 // ---------------------------------------------------------------------------
 //
-// Org-scoped requests carry the active org in this header, set by the web
-// client from the console URL's slug (the MCP plane carries the same idea in
-// its own `x-executor-mcp-organization`). The selector is a slug (`acme`, the
-// readable URL form) or a WorkOS id (`org_…`, the legacy/token form). It is a
-// SELECTOR, not a trust boundary: `authorizeOrganizationSelector` re-checks
-// live membership, so the worst a forged header does is name an org the caller
-// already belongs to.
+// Org-scoped API requests carry the active org as the FIRST PATH SEGMENT of the
+// URL (`/<slug>/api/...`). The worker boundary (`api/org-scope.ts`'s
+// `prepareApiOrgScope`) strips that segment and re-pins it in this INTERNAL
+// header before the request reaches the app handler — the same shape the MCP
+// plane uses with its own `x-executor-mcp-organization`. The selector is a slug
+// (`acme`, the readable URL form) or a WorkOS id (`org_…`, the legacy/token
+// form). It is a SELECTOR, not a trust boundary: clients never set it (the
+// boundary strips any client-sent value on a bare `/api/*`), and
+// `authorizeOrganizationSelector` re-checks live membership, so the worst a
+// value does is name an org the caller already belongs to.
 //
-// Why a header and not the session's `org_id`: a browser shares ONE cookie jar
+// Why the URL and not the session's `org_id`: a browser shares ONE cookie jar
 // across tabs, so a single session-pinned org makes "active org" a
 // browser-global — two tabs can't be in two orgs at once, and switching in one
-// silently re-scopes the other. Scoping per-request from the URL makes each
-// tab independent.
+// silently re-scopes the other. Scoping per-request from the URL makes each tab
+// independent.
 
 export const ORG_SELECTOR_HEADER = "x-executor-organization";
 
-/** The URL-pinned org selector for a request, or `null` to fall back to the session. */
+/** The URL-pinned org selector for a request (set by the worker boundary from
+ *  the URL), or `null` when the request is org-less. */
 export const orgSelectorFromRequest = (request: Request): string | null =>
   request.headers.get(ORG_SELECTOR_HEADER);
 

@@ -95,5 +95,12 @@ export const makeCloudExtensionRoutes = (rsLive: Layer.Layer<DbService | UserSto
     HttpRouter.add("GET", "/api/openapi.json", Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
   );
 
-  return [SessionRoutes, OrgRoutes, DocsRoutes, AutumnRoutesLive, ApiErrorLoggingLive] as const;
+  // The Autumn billing proxy resolves the URL's org (the selector the worker
+  // boundary pins from `/<slug>/api/billing/...`) to its WorkOS id via
+  // `authorizeOrganizationSelector`, which yields `UserStoreService` — so it
+  // needs the SAME per-request DB scoping the session routes use (the postgres
+  // socket must live in the request fiber's scope). `WorkOSClient` is on boot.
+  const BillingRoutes = AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer));
+
+  return [SessionRoutes, OrgRoutes, DocsRoutes, BillingRoutes, ApiErrorLoggingLive] as const;
 };

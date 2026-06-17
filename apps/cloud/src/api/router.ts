@@ -1,7 +1,7 @@
 import { Layer } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 
-import { RouterConfigLive } from "@executor-js/api/server";
+import { RouterConfigLive, requestScopedMiddleware } from "@executor-js/api/server";
 
 import { UserStoreService } from "../auth/context";
 import { DbService } from "../db/db";
@@ -36,7 +36,11 @@ export const makeApiLive = (requestScopedLive: Layer.Layer<DbService | UserStore
     makeAccountApiLive(requestScopedLive),
     CloudDocsLive,
     makeProtectedApiLive(requestScopedLive),
-    AutumnRoutesLive,
+    // The Autumn billing proxy resolves the URL's org selector to its WorkOS id
+    // via `authorizeOrganizationSelector`, which yields `UserStoreService` — so
+    // it needs the SAME per-request DB scoping the other sub-APIs thread in
+    // (matching `makeCloudExtensionRoutes`, the production composition).
+    AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(requestScopedLive).layer)),
     ApiErrorLoggingLive,
   ).pipe(Layer.provideMerge(RouterConfigLive), Layer.provideMerge(BootSharedServices));
 

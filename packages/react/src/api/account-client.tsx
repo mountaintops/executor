@@ -5,9 +5,7 @@ import * as Effect from "effect/Effect";
 
 import { reportApiClientInfrastructureCause } from "./client";
 import {
-  EXECUTOR_ORG_HEADER,
-  getActiveOrgSlug,
-  getExecutorApiBaseUrl,
+  getExecutorApiRequestBaseUrl,
   getExecutorServerAuthorizationHeader,
 } from "./server-connection";
 
@@ -25,15 +23,12 @@ const AccountApiClient = AtomHttpApi.Service<"AccountApiClient">()("AccountApiCl
   api: AccountHttpApi,
   httpClient: FetchHttpClient.layer,
   transformClient: HttpClient.mapRequest((request) => {
-    let next = HttpClientRequest.prependUrl(request, getExecutorApiBaseUrl());
+    // The base URL carries the org as its first path segment (see
+    // getExecutorApiRequestBaseUrl) — the URL is the only place org enters.
+    let next = HttpClientRequest.prependUrl(request, getExecutorApiRequestBaseUrl());
     const authorization = getExecutorServerAuthorizationHeader();
     if (authorization) {
       next = HttpClientRequest.setHeader(next, "authorization", authorization);
-    }
-    // Scope to the org the console URL is on (see server-connection).
-    const orgSlug = getActiveOrgSlug();
-    if (orgSlug) {
-      next = HttpClientRequest.setHeader(next, EXECUTOR_ORG_HEADER, orgSlug);
     }
     return next;
   }),

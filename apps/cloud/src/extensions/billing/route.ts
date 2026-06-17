@@ -4,8 +4,16 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import { autumnHandler } from "autumn-js/backend";
 
 import { WorkOSClient } from "../../auth/workos";
+import { authorizeOrganizationSelector, orgSelectorFromRequest } from "../../auth/organization";
 import { HttpResponseError, isServerError, toErrorServerResponse } from "../../api/error-response";
 
+// The Autumn customer is the WorkOS ORGANIZATION, and the org is the one named
+// by the console URL — NOT the session's own org. The worker boundary pins the
+// URL's org selector (`/<slug>/api/billing/...`) in the request, and we resolve
+// it to its WorkOS id with a live membership check before using it as the
+// customerId. This is the load-bearing fix for the multi-org seat bug: a member
+// of several orgs viewing a team-plan org must bill against THAT org's plan, so
+// the seat cap the billing proxy reports matches the org the user is looking at.
 const handler = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const webRequest = yield* Effect.mapError(
@@ -19,13 +27,28 @@ const handler = Effect.gen(function* () {
   );
 
   const workos = yield* WorkOSClient;
+  // The session identifies the USER (for the membership check + customer
+  // display), never the org. The org comes ONLY from the URL selector.
   const session = yield* workos.authenticateRequest(webRequest);
+  const selector = orgSelectorFromRequest(webRequest);
 
-  if (!session || !session.organizationId) {
+  if (!session || !selector) {
     return yield* new HttpResponseError({
       status: 401,
       code: "unauthorized",
       message: "Unauthorized",
+    });
+  }
+
+  // Live membership check: `null` => the caller isn't an active member of the
+  // selected org (or it doesn't exist) => 403. Store/WorkOS failures fall
+  // through to the outer `catchCause` as a 500.
+  const org = yield* authorizeOrganizationSelector(session.userId, selector);
+  if (!org) {
+    return yield* new HttpResponseError({
+      status: 403,
+      code: "forbidden",
+      message: "Forbidden",
     });
   }
 
@@ -50,9 +73,9 @@ const handler = Effect.gen(function* () {
         method: request.method,
         body,
       },
-      customerId: session.organizationId,
+      customerId: org.id,
       customerData: {
-        name: session.email,
+        name: org.name,
         email: session.email,
       },
       clientOptions: {

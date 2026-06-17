@@ -7,12 +7,13 @@
 // silently re-scoped the other tab out from under it.
 //
 // The stateless URL model removes that hazard. The slug in the path is the
-// request scope: every API call carries it (the `x-executor-organization`
-// header), the server re-checks live membership and resolves data for THAT
-// org, and the session merely authenticates the user to all their orgs at
-// once. Nothing writes the cookie on a switch. So this scenario — once the
-// reproduction of the corruption — now asserts the opposite: each tab's
-// requests stay scoped to its own URL org, no matter what the other tab does.
+// request scope: every API call carries it in its OWN URL (`/<slug>/api/...`,
+// the same slug as the page), the server re-checks live membership and resolves
+// data for THAT org, and the session merely authenticates the user to all their
+// orgs at once. No client header carries org anymore, and nothing writes the
+// cookie on a switch. So this scenario — once the reproduction of the
+// corruption — now asserts the opposite: each tab's requests stay scoped to its
+// own URL org, no matter what the other tab does.
 //
 // Everything runs through the browser (onboarding + the menu create-org), so
 // the single-use WorkOS refresh-token chain stays browser-owned and valid.
@@ -34,19 +35,19 @@ scenario(
       const slugOf = (page: typeof tab1) => new URL(page.url()).pathname.replace(/^\/|\/.*$/g, "");
 
       // The org slug a page's REAL app requests carry — read straight off the
-      // outgoing `x-executor-organization` header, the actual request scope.
-      // This is what makes the two tabs independent; the shared session cookie
-      // is irrelevant to it.
+      // outgoing request URL, which is `/<slug>/api/...`: the slug IS the first
+      // path segment, the actual request scope. No client header carries org
+      // anymore. This is what makes the two tabs independent; the shared session
+      // cookie is irrelevant to it.
       const requestOrgSlugOf = async (page: typeof tab1): Promise<string> => {
         const matching = page.waitForRequest(
-          (request) =>
-            request.url().includes("/api/") &&
-            request.headers()["x-executor-organization"] !== undefined,
+          (request) => /^\/[a-z0-9-]+\/api\//.test(new URL(request.url()).pathname),
           { timeout: 15_000 },
         );
         // Nudge the app to refetch so a fresh scoped request goes out.
         void page.reload({ waitUntil: "commit" });
-        return (await matching).headers()["x-executor-organization"]!;
+        const pathname = new URL((await matching).url()).pathname;
+        return pathname.split("/").filter((segment) => segment.length > 0)[0]!;
       };
 
       let slugA = "";

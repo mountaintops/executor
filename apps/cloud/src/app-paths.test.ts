@@ -25,6 +25,13 @@ describe("isAppOwnedPath", () => {
     "/org_01ABCDEF/mcp",
     "/.well-known/oauth-protected-resource/acme-corp/mcp",
     "/.well-known/oauth-protected-resource/org_01ABCDEF/mcp",
+    // Org-scoped API: org rides as the first path segment (`/<slug>/api/...`),
+    // mirroring the MCP plane. The React app posts billing to
+    // `/<slug>/api/billing/*` via <AutumnProvider pathPrefix> — that slug-scoped
+    // form must reach the app handler, not the SPA. Legacy org-id form too.
+    "/acme-corp/api/billing/customer",
+    "/acme-corp/api/executions",
+    "/org_01ABCDEF/api/billing/attach",
   ];
   for (const pathname of appOwned) {
     it(`forwards ${pathname} to the app handler`, () => {

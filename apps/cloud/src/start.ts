@@ -1,6 +1,7 @@
 import { createMiddleware, createStart } from "@tanstack/react-start";
 
 import { cloudApiHandler } from "./app";
+import { prepareApiOrgScope } from "./api/org-scope";
 import { isAppOwnedPath } from "./app-paths";
 import { authGateMiddleware } from "./auth/ssr-gate";
 import { prepareMcpOrgScope } from "./mcp/mount";
@@ -30,14 +31,17 @@ let app: ReturnType<typeof cloudApiHandler> | undefined;
 const getApp = () => (app ??= cloudApiHandler());
 
 // app-owned = anything under `/api/*` (incl. the cloud extension routes) OR an
-// MCP/OAuth-discovery path (see `./app-paths`). The app handler serves these at
-// their real paths, so we forward unmodified — except `prepareMcpOrgScope`
-// rewrites an org-scoped MCP path (`/org_xxx/mcp`) to the bare path the shared
-// envelope routes, pinning the org in an internal header (a no-op for everything
-// else, including `/api/*`).
+// org-scoped API path (`/<slug>/api/*`) OR an MCP/OAuth-discovery path (see
+// `./app-paths`). The app handler routes only the bare paths, so before
+// forwarding we normalize the org-scoped forms: `prepareApiOrgScope` rewrites
+// `/<slug>/api/...` → `/api/...` and `prepareMcpOrgScope` rewrites
+// `/<slug>/mcp` → `/mcp`, each pinning the URL's org in its internal header and
+// each a no-op outside its own plane (the two path shapes are disjoint).
 const appRequestMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
-    if (isAppOwnedPath(pathname)) return getApp().handler(prepareMcpOrgScope(request));
+    if (isAppOwnedPath(pathname)) {
+      return getApp().handler(prepareApiOrgScope(prepareMcpOrgScope(request)));
+    }
     return next();
   },
 );

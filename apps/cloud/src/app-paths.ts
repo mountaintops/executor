@@ -1,3 +1,4 @@
+import { classifyApiOrgScope, isApiPath } from "./api/org-scope";
 import { classifyMcpPath } from "./mcp/mount";
 
 // ---------------------------------------------------------------------------
@@ -8,12 +9,13 @@ import { classifyMcpPath } from "./mcp/mount";
 // `/api/*` — the typed API plus the cloud `extensions.routes` (the Autumn billing
 // proxy at `/api/billing/*` and Swagger at `/api/docs` both live under `/api`) —
 // plus the `/mcp` serving envelope and its `/.well-known/*` OAuth discovery docs.
-// The dispatcher forwards those UNMODIFIED; anything else falls through to the
-// Start router. Keeping every served route under `/api` (no separate top-level
-// namespace) is what keeps this gate a simple two-prefix check.
+// Org-scoped API requests arrive slug-first (`/<slug>/api/...`); the dispatcher
+// forwards every app-owned path, rewriting the slug-scoped MCP/API forms to the
+// bare path the handler routes (see `prepareMcpOrgScope` / `prepareApiOrgScope`).
+// Anything else falls through to the Start router.
 // ---------------------------------------------------------------------------
 
-export const isApiPath = (pathname: string) => pathname === "/api" || pathname.startsWith("/api/");
-
 export const isAppOwnedPath = (pathname: string) =>
-  isApiPath(pathname) || classifyMcpPath(pathname) !== null;
+  isApiPath(pathname) ||
+  classifyApiOrgScope(pathname) !== null ||
+  classifyMcpPath(pathname) !== null;

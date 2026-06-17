@@ -286,7 +286,12 @@ function AuthGate({ ssrOrigin }: { ssrOrigin: string | null }) {
   const scopeSlug = urlOrgSlug ?? activeSlug;
 
   return (
-    <AutumnProvider pathPrefix="/api/billing">
+    // The org enters ONLY through the URL, so the billing proxy is reached at
+    // `/<slug>/api/billing/*` (the worker boundary strips the slug and pins the
+    // org for the route) — never the bare `/api/billing/*`, which carries no
+    // org. We're past the `auth.organization == null` guard, so `scopeSlug` is
+    // always a real slug here.
+    <AutumnProvider pathPrefix={`/${scopeSlug}/api/billing`}>
       <Sentry.ErrorBoundary fallback={<ShellErrorFallback />} showDialog={false}>
         <ExecutorProvider connection={connection} onHandledError={captureFrontendError}>
           <React.Suspense fallback={<BlankScreen />}>
