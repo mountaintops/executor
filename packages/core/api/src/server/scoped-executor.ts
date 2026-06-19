@@ -33,6 +33,7 @@
 
 import { Context, Effect, Option } from "effect";
 
+import type { McpResource } from "@executor-js/host-mcp";
 import {
   createExecutor,
   Subject,
@@ -138,8 +139,12 @@ export const resolveScopedWebBaseUrl = (input: {
 // while a host with static plugins (self-host) just returns a constant array.
 // ---------------------------------------------------------------------------
 
+export interface PluginsProviderContext {
+  readonly mcpResource?: McpResource;
+}
+
 export interface PluginsProviderShape {
-  readonly plugins: () => readonly AnyPlugin[];
+  readonly plugins: (context?: PluginsProviderContext) => readonly AnyPlugin[];
 }
 
 export class PluginsProvider extends Context.Service<PluginsProvider, PluginsProviderShape>()(
@@ -176,6 +181,7 @@ export const makeScopedExecutor = <
   // `EngineStackIdentity` (the engine decorator still wants it); not part of the
   // v2 executor binding, which is `{ tenant, subject }` only.
   _organizationName: string,
+  options?: { readonly plugins?: PluginsProviderContext },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
     const { db, blobs } = yield* DbProvider;
@@ -207,7 +213,7 @@ export const makeScopedExecutor = <
     const oauthCallbackPath = config.oauthCallbackPath ?? "/oauth/callback";
     const redirectUri = webBaseUrl ? new URL(oauthCallbackPath, webBaseUrl).toString() : undefined;
 
-    const plugins = pluginsFactory();
+    const plugins = pluginsFactory(options?.plugins);
     const httpClientLayer = makeHostedHttpClientLayer({
       allowLocalNetwork: config.allowLocalNetwork,
     });

@@ -270,6 +270,8 @@ export {
   type AnyPlugin,
   type StorageDeps,
   type OwnerBinding,
+  type ToolPolicyProvider,
+  type ToolPolicyProviderRule,
   type IntegrationRecord,
   type StaticSourceDecl,
   type StaticToolDecl,

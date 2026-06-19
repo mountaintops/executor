@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { Effect } from "effect";
 import { chromium, type Page } from "playwright";
 
-import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
+import { beat, enterFocus, markFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
 import type { Identity, Target } from "../target";
 
@@ -88,9 +88,23 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         markRecordingStart(dir, "browser");
         // Main-frame navigations feed the viewer's synthetic URL bar — the
         // recording itself is chromeless, so this is the only place the
-        // address the developer "typed" survives.
+        // address the developer "typed" survives. The FIRST real navigation
+        // is also when the browser earns focus: a cold goto can sit on
+        // about:blank for seconds while the SPA loads/redirects, and cutting
+        // the session view to a blank browser at step-start reads as a hang.
+        // So we defer the focus cut to here (step() only cuts once nav.done),
+        // keeping the terminal — where the agent's last message still is — on
+        // screen through the load; the player then seeks the video past its
+        // blank head to match.
+        const nav = { done: false };
         page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) markNavigation(dir, frame.url());
+          if (frame !== page.mainFrame()) return;
+          const url = frame.url();
+          markNavigation(dir, url);
+          if (!nav.done && url !== "about:blank") {
+            nav.done = true;
+            markFocus(dir, "browser");
+          }
         });
         // Harvest distributed-trace ids: every app API request carries a W3C
         // traceparent (Effect's HttpClient), and each id names one
@@ -136,15 +150,19 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
           videoTmp,
           shots: { count: 0 },
           traceIds,
+          nav,
         };
       }),
-      ({ page, context, shots }) =>
+      ({ page, context, shots, nav }) =>
         Effect.promise(async () => {
           const step = async (label: string, action: (page: Page) => Promise<void>) => {
-            // Acting on the page IS focusing the browser window — and when
-            // filming, enterFocus lingers a beat on whatever the developer was
-            // looking at before tabbing here.
-            await enterFocus(dir, "browser");
+            // Acting on the page IS focusing the browser window — but only once
+            // it has actually navigated. Until the first real navigation the
+            // browser is a blank about:blank page; the framenavigated handler
+            // marks browser focus at that moment, so here we cut to it only
+            // when nav.done (and enterFocus lingers a beat on the outgoing
+            // window when filming). The pre-nav load stays terminal-focused.
+            if (nav.done) await enterFocus(dir, "browser");
             await context.tracing.group(label);
             try {
               await action(page);

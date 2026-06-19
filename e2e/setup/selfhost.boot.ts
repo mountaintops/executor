@@ -14,7 +14,7 @@ export interface SelfhostBootOptions {
   /** The URL the app advertises (cookies, redirects). */
   readonly webBaseUrl: string;
   readonly admin: { readonly email: string; readonly password: string };
-  /** Defaults to the suite's throwaway dir. */
+  /** Defaults to a port-scoped throwaway dir. */
   readonly dataDir?: string;
   /** Wipe the data dir before boot (hermetic). Default true. */
   readonly fresh?: boolean;
@@ -24,7 +24,9 @@ export interface SelfhostBootOptions {
 }
 
 export const bootSelfhost = async (options: SelfhostBootOptions): Promise<BootedProcesses> => {
-  const dataDir = options.dataDir ?? resolve(selfhostDir, ".e2e-data");
+  // Default data is port-scoped so a concurrent suite that walks to another
+  // port cannot wipe a long-lived CLI instance's database.
+  const dataDir = options.dataDir ?? resolve(selfhostDir, `.e2e-data-${options.port}`);
   if (options.fresh ?? true) rmSync(dataDir, { recursive: true, force: true });
 
   const procs = bootProcesses(

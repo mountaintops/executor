@@ -283,6 +283,8 @@ export function ToolTree(props: {
    *  emit the tool's full dotted id; group rows emit `prefix.*`. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  /** Maps the displayed row path into the persisted policy pattern. */
+  patternForDisplay?: (displayPattern: string) => string;
   /** Sorted user-authored policies (most-precedent first). Used to
    *  decide whether a node has its own exact-pattern user rule today
    *  (so the menu can show a "Clear" option). Optional — when absent,
@@ -300,6 +302,7 @@ export function ToolTree(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay = toPolicyPattern,
     policies,
     groupByConnection,
   } = props;
@@ -358,6 +361,7 @@ export function ToolTree(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay,
     exactPatterns,
     search,
     terms,
@@ -433,6 +437,7 @@ function ToolTreeBody(props: {
   onSelect: (toolId: string) => void;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactPatterns: ReadonlyMap<string, ToolPolicyAction>;
   search: string;
   terms: readonly string[];
@@ -444,6 +449,7 @@ function ToolTreeBody(props: {
     onSelect,
     onSetPolicy,
     onClearPolicy,
+    patternForDisplay,
     exactPatterns,
     search,
     terms,
@@ -510,7 +516,8 @@ function ToolTreeBody(props: {
             search={search}
             onSetPolicy={onSetPolicy}
             onClearPolicy={onClearPolicy}
-            exactRule={exactPatterns.get(toPolicyPattern(row.tool.name))}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(row.tool.name))}
           />
         ) : (
           <ToolGroupRow
@@ -524,7 +531,8 @@ function ToolTreeBody(props: {
             search={search}
             onSetPolicy={onSetPolicy}
             onClearPolicy={onClearPolicy}
-            exactRule={exactPatterns.get(toPolicyPattern(`${row.path}.*`))}
+            patternForDisplay={patternForDisplay}
+            exactRule={exactPatterns.get(patternForDisplay(`${row.path}.*`))}
           />
         ),
       )}
@@ -610,6 +618,7 @@ function ToolGroupRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const showActions = !!props.onSetPolicy;
@@ -647,7 +656,7 @@ function ToolGroupRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={toPolicyPattern(`${props.path}.*`)}
+            pattern={props.patternForDisplay(`${props.path}.*`)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}
@@ -668,6 +677,7 @@ function ToolLeafRow(props: {
   search: string;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay: (displayPattern: string) => string;
   exactRule?: ToolPolicyAction;
 }) {
   const label = props.tool.name.split(".").pop() ?? props.tool.name;
@@ -719,7 +729,7 @@ function ToolLeafRow(props: {
           )}
         >
           <PolicyActionMenu
-            pattern={toPolicyPattern(props.tool.name)}
+            pattern={props.patternForDisplay(props.tool.name)}
             current={props.exactRule}
             onSet={props.onSetPolicy!}
             onClear={props.onClearPolicy}

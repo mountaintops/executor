@@ -39,11 +39,9 @@ export type McpExecutionStackLayer = Layer.Layer<
 export const makeMcpBuildServer =
   (executionStack: McpExecutionStackLayer): McpBuildServer =>
   (principal: Principal, options?: McpBuildServerOptions) =>
-    makeExecutionStack(
-      principal.accountId,
-      principal.organizationId,
-      principal.organizationName,
-    ).pipe(
+    makeExecutionStack(principal.accountId, principal.organizationId, principal.organizationName, {
+      mcpResource: options?.resource,
+    }).pipe(
       Effect.map(({ engine }) => engine),
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),

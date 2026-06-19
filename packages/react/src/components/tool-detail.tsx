@@ -172,6 +172,7 @@ export function ToolDetail(props: {
    *  applies a user rule to this tool's exact id. */
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay?: (displayPattern: string) => string;
   /** Run-tab wiring. When `integration` + `runToolName` are provided, a third
    *  "Run" tab hosts the per-connection tool tester. */
   integration?: IntegrationSlug;
@@ -244,6 +245,7 @@ export function ToolDetail(props: {
               policy={props.policy}
               onSetPolicy={props.onSetPolicy}
               onClearPolicy={props.onClearPolicy}
+              patternForDisplay={props.patternForDisplay}
             />
           </div>
           {data?.description && <ToolDescription description={data.description} />}
@@ -400,12 +402,15 @@ function PolicyBadgeMenu(props: {
   policy?: EffectivePolicy;
   onSetPolicy?: (pattern: string, action: ToolPolicyAction) => void;
   onClearPolicy?: (pattern: string) => void;
+  patternForDisplay?: (displayPattern: string) => string;
 }) {
   const interactive = !!props.onSetPolicy;
   // The same pattern bridge the tree rows apply — the pattern WRITTEN and the
   // pattern LOOKED UP must be the same string, or the menu authors rules that
   // never match and can't see its own rule afterward.
-  const pattern = props.staticTool ? props.toolName : toPolicyPattern(props.toolName);
+  const pattern = props.staticTool
+    ? props.toolName
+    : (props.patternForDisplay ?? toPolicyPattern)(props.toolName);
   // The "Clear" affordance only makes sense when there's a user rule
   // pinned to this exact tool id — clearing a wildcard rule from a
   // single tool's detail header would silently affect siblings.

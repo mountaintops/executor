@@ -20,6 +20,7 @@ import {
   McpErrorReporterNoop,
   McpServingRoutes,
   McpSessionStore,
+  type McpResource,
   type McpDispatchResult,
   type Principal,
 } from "./index";
@@ -131,5 +132,31 @@ describe("McpServingRoutes envelope", () => {
     const captures = await Effect.runPromise(Ref.get(reported));
     expect(captures).toHaveLength(1);
     expect(captures[0]).toContain("induced defect");
+  });
+});
+
+it("dispatches toolkit MCP routes with the parsed toolkit resource", async () => {
+  const seen = await Effect.runPromise(Ref.make<McpResource | null>(null));
+  const RecordingStoreLive = Layer.succeed(McpSessionStore)({
+    dispatch: ({ resource }): Effect.Effect<McpDispatchResult> =>
+      Ref.set(seen, resource).pipe(
+        Effect.as(new Response(JSON.stringify({ jsonrpc: "2.0", id: 1 }), { status: 200 })),
+      ),
+    dispose: () => Effect.void,
+  });
+
+  const handler = buildHandler(RecordingStoreLive, McpErrorReporterNoop);
+  const response = await handler(
+    new Request("https://host.test/mcp/toolkits/deploy", {
+      method: "POST",
+      headers: { authorization: "Bearer x", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    }),
+  );
+
+  expect(response.status).toBe(200);
+  expect(await Effect.runPromise(Ref.get(seen))).toEqual({
+    kind: "toolkit",
+    slug: "deploy",
   });
 });

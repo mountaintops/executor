@@ -1,0 +1,176 @@
+import { randomBytes } from "node:crypto";
+
+import { expect } from "@effect/vitest";
+import { Effect } from "effect";
+import { composePluginApi } from "@executor-js/api/server";
+import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
+
+import { scenario } from "../src/scenario";
+import { Api, Browser, Target } from "../src/services";
+
+const api = composePluginApi([toolkitsPlugin()] as const);
+
+scenario(
+  "Toolkits · self-host UI creates a toolkit and authors rules",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const browser = yield* Browser;
+    const { client: makeApiClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeApiClient(api, identity);
+
+    const suffix = randomBytes(4).toString("hex");
+    const prefix = `toolkits-ui-${suffix}`;
+    const name = `${prefix}-created`;
+    const slug = name;
+    const seededToolkits = [
+      { owner: "org" as const, name: `${prefix}-workspace-a` },
+      { owner: "org" as const, name: `${prefix}-workspace-b` },
+      { owner: "user" as const, name: `${prefix}-personal-a` },
+      { owner: "user" as const, name: `${prefix}-personal-b` },
+      { owner: "user" as const, name: `${prefix}-personal-c` },
+    ];
+    let addedConnectionPattern = "";
+    const blockPattern = "executor.coreTools.policies.list";
+
+    const cleanup = Effect.gen(function* () {
+      const listed = yield* client.toolkits.list();
+      yield* Effect.forEach(
+        listed.toolkits.filter((row) => row.slug.startsWith(prefix)),
+        (toolkit) => client.toolkits.remove({ params: { toolkitId: toolkit.id } }),
+        { discard: true },
+      );
+    }).pipe(Effect.ignore);
+
+    yield* Effect.gen(function* () {
+      yield* Effect.forEach(
+        seededToolkits,
+        (toolkit) => client.toolkits.create({ payload: toolkit }),
+        { discard: true },
+      );
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Open the Toolkits plugin page", async () => {
+          await page.goto("/plugins/toolkits/", { waitUntil: "networkidle" });
+          await page.getByRole("heading", { name: "Toolkits" }).waitFor();
+          await page.getByRole("heading", { name: "Workspace" }).waitFor();
+          await page.getByRole("heading", { name: "Personal" }).waitFor();
+          expect(await page.getByLabel("New toolkit").count()).toBe(0);
+        });
+
+        await step("Create a workspace toolkit from the add card", async () => {
+          const workspaceSection = page.locator("section").filter({
+            has: page.getByRole("heading", { name: "Workspace" }),
+          });
+          await workspaceSection.getByRole("button", { name: "Add workspace toolkit" }).click();
+          await page.getByRole("dialog", { name: "New workspace toolkit" }).waitFor();
+          await page.getByLabel("Toolkit name").fill(name);
+          await page.getByRole("button", { name: "Create toolkit" }).click();
+          await page.getByRole("link", { name: `Open toolkit ${name}` }).waitFor();
+        });
+
+        await step("Validate owner sections render as three-column grids", async () => {
+          const workspaceSection = page.locator("section").filter({
+            has: page.getByRole("heading", { name: "Workspace" }),
+          });
+          const personalSection = page.locator("section").filter({
+            has: page.getByRole("heading", { name: "Personal" }),
+          });
+
+          const workspaceColumns = await workspaceSection
+            .getByRole("link", { name: /^Open toolkit/ })
+            .evaluateAll((nodes) =>
+              nodes.slice(0, 3).map((node) => Math.round(node.getBoundingClientRect().left)),
+            );
+          const personalColumns = await personalSection
+            .getByRole("link", { name: /^Open toolkit/ })
+            .evaluateAll((nodes) =>
+              nodes.slice(0, 3).map((node) => Math.round(node.getBoundingClientRect().left)),
+            );
+
+          expect(new Set(workspaceColumns).size).toBe(3);
+          expect(new Set(personalColumns).size).toBe(3);
+        });
+
+        await step("Open the created toolkit from the grid", async () => {
+          await page.getByRole("link", { name: `Open toolkit ${name}` }).click();
+          await page.waitForURL(new RegExp(`/plugins/toolkits/${slug}$`));
+          expect(page.url()).toMatch(new RegExp(`/plugins/toolkits/${slug}$`));
+          await page
+            .locator("code")
+            .filter({ hasText: `/mcp/toolkits/${slug}` })
+            .waitFor();
+          await page.getByText("No connections added").waitFor();
+          expect(await page.getByLabel("New toolkit").count()).toBe(0);
+        });
+
+        await step("Return to the toolkit grid with browser-visible routing", async () => {
+          await page.getByRole("button", { name: "Toolkits" }).click();
+          await page.waitForURL(/\/plugins\/toolkits\/?$/);
+          expect(page.url()).toMatch(/\/plugins\/toolkits\/?$/);
+          await page.getByRole("heading", { name: "Workspace" }).waitFor();
+          await page.getByRole("link", { name: `Open toolkit ${name}` }).waitFor();
+        });
+
+        await step("Open the created toolkit from a direct URL", async () => {
+          await page.goto(`/plugins/toolkits/${slug}`, { waitUntil: "networkidle" });
+          expect(page.url()).toMatch(new RegExp(`/plugins/toolkits/${slug}$`));
+          await page
+            .locator("code")
+            .filter({ hasText: `/mcp/toolkits/${slug}` })
+            .waitFor();
+          await page.getByText("No connections added").waitFor();
+          expect(await page.getByLabel("New toolkit").count()).toBe(0);
+        });
+
+        await step("Add a connection to the toolkit", async () => {
+          await page.getByRole("button", { name: "Add connection to toolkit" }).click();
+          const dialog = page.getByRole("dialog", { name: "Add connection" });
+          await dialog.waitFor();
+          await dialog.getByLabel("Search connections and tools").fill("policies.list");
+          expect(await dialog.getByRole("button", { name: /^Add tool/ }).count()).toBe(0);
+          addedConnectionPattern = "executor.*";
+          expect(await dialog.getByText(addedConnectionPattern, { exact: true }).count()).toBe(0);
+          await dialog
+            .getByRole("button", { name: /^Add connection / })
+            .first()
+            .click();
+          await dialog.waitFor({ state: "hidden" });
+          await page.getByText(addedConnectionPattern, { exact: true }).first().waitFor();
+          await page.getByText("Toolkit contents").waitFor();
+          await page.getByRole("region", { name: "Toolkit tools" }).waitFor();
+        });
+
+        await step("Block one tool from the existing policy menu", async () => {
+          const toolkitTools = page.getByRole("region", { name: "Toolkit tools" });
+          await toolkitTools.getByLabel("Filter tools").fill("policies.list");
+          await toolkitTools.getByRole("button").filter({ hasText: "list" }).last().click();
+          await page
+            .getByRole("button", { name: `Matched policy: ${addedConnectionPattern}` })
+            .click();
+          await page.getByText(blockPattern, { exact: true }).waitFor();
+          await page.getByRole("menuitem", { name: "Block" }).click();
+          await page.getByText(blockPattern, { exact: true }).waitFor();
+        });
+      });
+
+      const listed = yield* client.toolkits.list();
+      const toolkit = listed.toolkits.find((row) => row.slug === slug);
+      expect(toolkit, "the UI-created toolkit persisted").toBeDefined();
+      if (!toolkit) return;
+      expect(toolkit.owner).toBe("org");
+
+      const { policies } = yield* client.toolkits.listPolicies({
+        params: { toolkitId: toolkit.id },
+      });
+      expect(addedConnectionPattern.length, "the UI selected a connection policy").toBeGreaterThan(
+        0,
+      );
+      expect(
+        policies.map((policy) => `${policy.pattern} ${policy.action}`).sort(),
+        "the UI-authored rules persisted with their actions",
+      ).toEqual([`${addedConnectionPattern} approve`, `${blockPattern} block`].sort());
+    }).pipe(Effect.ensuring(cleanup));
+  }),
+);

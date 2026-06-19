@@ -22,8 +22,8 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
   ]);
   const port = ports.E2E_SELFHOST_PORT!;
 
-  // Fresh data dir per suite run — hermetic; in-suite isolation comes from
-  // fresh identities, not resets (bootSelfhost wipes it).
+  // Fresh port-scoped data dir per suite run — hermetic; in-suite isolation
+  // comes from fresh identities, not resets (bootSelfhost wipes it).
   let procs;
   try {
     procs = await bootSelfhost({
