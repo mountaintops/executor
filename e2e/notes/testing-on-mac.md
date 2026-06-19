@@ -9,6 +9,9 @@ For VM runs, log in through VNC before launching the app. SSH is still useful
 for staging files, reading logs, and running probes, but GUI app launch and
 window assertions are more reliable after a console user is active.
 
+[trycua/cua](https://github.com/trycua/cua)'s Lume CLI is a useful way to clone,
+boot, SSH into, VNC into, stop, and delete local macOS VMs programmatically.
+
 The packaged desktop app has a single-instance lock on macOS. If
 `/Applications/Executor.app` is already running on the host, prefer an isolated
 VM or close that app before running `vitest run --project desktop-packaged`.
