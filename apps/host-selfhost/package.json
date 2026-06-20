@@ -30,6 +30,7 @@
     "@executor-js/plugin-google": "workspace:*",
     "@executor-js/plugin-graphql": "workspace:*",
     "@executor-js/plugin-mcp": "workspace:*",
+    "@executor-js/plugin-microsoft": "workspace:*",
     "@executor-js/plugin-openapi": "workspace:*",
     "@executor-js/react": "workspace:*",
     "@executor-js/runtime-quickjs": "workspace:*",
