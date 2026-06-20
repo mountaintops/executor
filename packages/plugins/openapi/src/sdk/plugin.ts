@@ -72,7 +72,7 @@ export interface OpenApiSpecConfig {
   readonly headers?: Record<string, string>;
   /** Static query params applied to every request. */
   readonly queryParams?: Record<string, string>;
-  /** Auth methods a connection's value renders through — canonical
+  /** Auth methods a connection's value renders through - canonical
    *  placements or the request-shaped authoring dialect. */
   readonly authenticationTemplate?: readonly AuthenticationInput[];
 }
@@ -93,7 +93,7 @@ export interface OpenApiConfigureInput {
 }
 
 /** What changed in the tool catalog when a spec was updated in place. Tool
- *  names, not addresses — the same diff applies to every connection. */
+ *  names, not addresses - the same diff applies to every connection. */
 export interface UpdateSpecResult {
   readonly slug: IntegrationSlug;
   readonly toolCount: number;
@@ -125,7 +125,7 @@ export interface OpenApiPluginExtension {
     | StorageFailure
   >;
   /** Re-resolve the integration's spec (from its stored source URL, or the
-   *  provided input) and rebuild its tools IN PLACE — connections,
+   *  provided input) and rebuild its tools IN PLACE - connections,
    *  credentials, policies, and the curated description are untouched. */
   readonly updateSpec: (
     slug: string,
@@ -251,7 +251,7 @@ const AuthenticationSchema = Schema.Union([
     tokenUrl: Schema.String,
     scopes: Schema.Array(Schema.String),
   }),
-  // Credential methods are authored request-shaped — the ONE apikey input
+  // Credential methods are authored request-shaped - the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
   // variable("token")] }, queryParams: { … } }`.
   ApiKeyAuthTemplate,
@@ -363,7 +363,7 @@ const specInputToGoogleBundle = (spec: OpenApiSpecInput): readonly string[] | un
   spec.kind === "googleDiscoveryBundle" ? spec.urls : undefined;
 
 // ---------------------------------------------------------------------------
-// Declared auth methods — project the stored `authenticationTemplate` into the
+// Declared auth methods - project the stored `authenticationTemplate` into the
 // catalog's plugin-agnostic `AuthMethodDescriptor[]`. This mirrors the client's
 // `authMethodsFromConfig` (in the React auth-method-config module) on the
 // server so the catalog field is consistent. apikey/none projection comes from
@@ -501,10 +501,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           // Defaults the add page derives from its preview, applied here so
           // headless callers (MCP, API) get the same integration the UI's
-          // add flow would produce — see e2e/scenarios/connect-handoff.test.ts:
+          // add flow would produce - see e2e/scenarios/connect-handoff.test.ts:
           //   - effectiveBaseUrl: the spec's first server, used to anchor the
           //     derived auth template's absolute URLs. It is NOT stored as the
-          //     connection baseUrl — the request host is resolved per call from
+          //     connection baseUrl - the request host is resolved per call from
           //     the operation's extracted `servers`.
           //   - authenticationTemplate: the spec's declared security schemes
           //     (else the Add-connection modal is a dead "No authentication"
@@ -557,7 +557,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
             // Prefer the caller's explicit template; otherwise adopt the one the
             // Google Discovery converter derived from the spec (the bundle add
-            // path relies on this — it has no preview to detect auth from);
+            // path relies on this - it has no preview to detect auth from);
             // otherwise derive from the spec's declared security schemes.
             ...(config.authenticationTemplate
               ? {
@@ -572,7 +572,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           // The spec blob is written OUTSIDE the transaction: it's
           // content-addressed (re-puts are idempotent) and an aborted register
-          // leaves only an unreferenced blob behind — while blob backends like
+          // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
           yield* ctx.storage.putSpec(specHash, resolved.specText);
 
@@ -602,7 +602,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
       // Update the spec IN PLACE: re-resolve (stored source URL / bundle, or a
       // caller-supplied new input), recompile, swap the stored operations, and
       // rebuild every connection's tools. Auth templates, base URL, headers,
-      // the curated description, connections, and policies are all untouched —
+      // the curated description, connections, and policies are all untouched -
       // this is the "spec changed upstream" path, not a re-add.
       const updateSpec = (rawSlug: string, input?: OpenApiUpdateSpecInput) =>
         Effect.gen(function* () {
@@ -643,7 +643,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
 
           // The resolved spec text lives in the plugin blob store keyed by its
           // content hash (`spec/<hash>`); the config carries only the hash. Put
-          // the blob outside the transaction — re-puts are idempotent and an
+          // the blob outside the transaction - re-puts are idempotent and an
           // aborted config update just leaves an unreferenced blob.
           const specHash = yield* sha256Hex(resolved.specText);
           yield* ctx.storage.putSpec(specHash, resolved.specText);
@@ -822,7 +822,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           tool({
             name: "addSpec",
             description:
-              "Add an OpenAPI integration to the catalog and persist its operations as tools. Recommended flow: call `previewSpec`, choose a `slug`, then create a connection for that integration with the user's API key or via `oauth.start`. When `baseUrl` is omitted it defaults to the spec's first server; when `authenticationTemplate` is omitted the auth methods are derived from the spec's declared security schemes (pass an explicit template to override how a credential is applied — apiKey header/query, or oauth bearer — or an empty array for no auth methods).",
+              "Add an OpenAPI integration to the catalog and persist its operations as tools. Recommended flow: call `previewSpec`, choose a `slug`, then create a connection for that integration with the user's API key or via `oauth.start`. When `baseUrl` is omitted it defaults to the spec's first server; when `authenticationTemplate` is omitted the auth methods are derived from the spec's declared security schemes (pass an explicit template to override how a credential is applied - apiKey header/query, or oauth bearer - or an empty array for no auth methods).",
             annotations: {
               requiresApproval: true,
               approvalDescription: "Add an OpenAPI integration",
@@ -874,7 +874,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     describeIntegrationDisplay: describeOpenApiIntegrationDisplay,
 
     // Produce one tool per spec operation. Spec-derived, identical for every
-    // connection on the integration — so `getValue` is never called here. The
+    // connection on the integration - so `getValue` is never called here. The
     // operation bindings invokeTool needs are persisted at addSpec time; this
     // hook only shapes the per-connection ToolDefs from the spec blob the
     // catalog config points at.
