@@ -9,6 +9,18 @@ export {
 export { extract } from "./extract";
 export { invoke, invokeWithLayer, annotationsForOperation } from "./invoke";
 export {
+  compileOpenApiSpec,
+  extractOpenApiUpstreamMessage,
+  invokeOpenApiBackedTool,
+  loadOpenApiSpecText,
+  normalizeOpenApiRefs,
+  openApiStoredOperationsFromCompiled,
+  openApiToolDefsFromCompiled,
+  resolveOpenApiBackedAnnotations,
+  resolveOpenApiBackedTools,
+  type CompiledOpenApiSpec,
+} from "./backing";
+export {
   openApiPlugin,
   type OpenApiSpecConfig,
   type OpenApiConfigureInput,
