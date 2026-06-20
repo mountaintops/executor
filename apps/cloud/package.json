@@ -19,6 +19,7 @@
     "db:repartition-vault:dev": "op run --env-file=.env.op -- bun run scripts/repartition-vault-metadata.ts",
     "db:migrate-specs:prod": "op run --env-file=.env.production -- bun run scripts/migrate-specs-to-blobs.ts",
     "db:migrate-specs:dev": "op run --env-file=.env.op -- bun run scripts/migrate-specs-to-blobs.ts",
+    "db:migrate-google-openapi-blobs:prod": "op run --env-file=.env.production -- bun run scripts/migrate-google-openapi-blobs.ts --bucket executor-cloud-blobs",
     "db:migrate:dev": "op run --env-file=.env.op -- bun --bun ../../node_modules/.bun/node_modules/drizzle-kit/bin.cjs migrate",
     "build": "node scripts/build.mjs",
     "preview": "vite preview",
