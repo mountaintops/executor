@@ -679,6 +679,12 @@ const resolveExecutorServerConnection = (
     if (decision.kind === "use-active") return requested;
 
     if (!canAutoStartCliServerConnection(requested)) {
+      // An authenticated remote connection (oauth device-login, bearer key, or
+      // basic password): use it directly. The /api/health liveness probe is only
+      // a gate for the local auto-start decision and isn't necessarily exposed
+      // by hosted servers — the real API call surfaces any connectivity/auth
+      // error with proper context.
+      if (requested.auth) return requested;
       if (yield* isServerReachable(requested.origin)) {
         return requested;
       }
