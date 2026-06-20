@@ -36,3 +36,7 @@ export {
   type GoogleUpdateInput,
   type GoogleUpdateResult,
 } from "./plugin";
+export {
+  googleOpenApiOwnershipDataMigration,
+  runSqliteGoogleOpenApiOwnershipMigration,
+} from "./openapi-ownership-migration";

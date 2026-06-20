@@ -369,6 +369,7 @@
       "version": "0.0.33",
       "dependencies": {
         "@executor-js/plugin-file-secrets": "workspace:*",
+        "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
         "@executor-js/plugin-keychain": "workspace:*",
         "@executor-js/plugin-mcp": "workspace:*",
