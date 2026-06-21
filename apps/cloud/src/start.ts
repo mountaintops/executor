@@ -41,7 +41,10 @@ const OAUTH_CALLBACK_PATH = "/api/oauth/callback";
 
 const oauthCallbackSignInMiddleware = createMiddleware({ type: "request" }).server(
   ({ pathname, request, next }) => {
-    if (pathname !== OAUTH_CALLBACK_PATH || (request.method !== "GET" && request.method !== "HEAD")) {
+    if (
+      pathname !== OAUTH_CALLBACK_PATH ||
+      (request.method !== "GET" && request.method !== "HEAD")
+    ) {
       return next();
     }
     const sealed = parseCookie(request.headers.get("cookie"), SESSION_COOKIE);
