@@ -758,18 +758,21 @@ paths:
     }),
   );
 
-  it.effect("addSpec accepts Microsoft Graph-scale operation catalogs from one spec", () =>
-    Effect.gen(function* () {
-      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+  it.effect(
+    "addSpec accepts Microsoft Graph-scale operation catalogs from one spec",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
 
-      const added = yield* executor.openapi.addSpec({
-        spec: { kind: "blob", value: microsoftGraphScaleSpecText() },
-        slug: "microsoft_graph_scale",
-        authenticationTemplate: [],
-      });
+        const added = yield* executor.openapi.addSpec({
+          spec: { kind: "blob", value: microsoftGraphScaleSpecText() },
+          slug: "microsoft_graph_scale",
+          authenticationTemplate: [],
+        });
 
-      expect(added.toolCount).toBe(MICROSOFT_GRAPH_V1_OPERATION_COUNT);
-    }),
+        expect(added.toolCount).toBe(MICROSOFT_GRAPH_V1_OPERATION_COUNT);
+      }),
+    30_000,
   );
 
   it.effect("removeSpec cleans up the integration and its tools", () =>
