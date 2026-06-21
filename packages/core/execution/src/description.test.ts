@@ -95,6 +95,9 @@ describe("buildExecuteDescription", () => {
 
       // Stable anchor from the workflow preamble.
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
+      expect(description).toContain("File-returning tools may return `ToolFile` values");
+      expect(description).toContain("return the `ToolFile` unchanged");
+      expect(description).toContain("Gmail, return attachment bytes without a public URL");
       expect(description).toContain("## Available connection prefixes");
       expect(description).toContain("- `github.org.prod`");
       expect(description).toContain("- `github.user.personal`");
