@@ -24,7 +24,7 @@ import { OpenApiExtractionError, OpenApiParseError } from "./errors";
 import { extract } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
-import { parse } from "./parse";
+import { parse, type ParsedDocument } from "./parse";
 import { type OpenapiStore, type StoredOperation } from "./store";
 import { OperationBinding } from "./types";
 
@@ -190,11 +190,10 @@ export interface CompiledOpenApiSpec {
   readonly description: string | undefined;
 }
 
-export const compileOpenApiSpec = (
-  specText: string,
-): Effect.Effect<CompiledOpenApiSpec, OpenApiParseError | OpenApiExtractionError> =>
+export const compileOpenApiDocument = (
+  doc: ParsedDocument,
+): Effect.Effect<CompiledOpenApiSpec, OpenApiExtractionError> =>
   Effect.gen(function* () {
-    const doc = yield* parse(specText);
     const result = yield* extract(doc);
     const hoistedDefs: Record<string, unknown> = {};
     if (doc.components?.schemas) {
@@ -208,6 +207,14 @@ export const compileOpenApiSpec = (
       title: Option.getOrUndefined(result.title),
       description: Option.getOrUndefined(result.description),
     };
+  });
+
+export const compileOpenApiSpec = (
+  specText: string,
+): Effect.Effect<CompiledOpenApiSpec, OpenApiParseError | OpenApiExtractionError> =>
+  Effect.gen(function* () {
+    const doc = yield* parse(specText);
+    return yield* compileOpenApiDocument(doc);
   });
 
 export const openApiToolDefsFromCompiled = (compiled: CompiledOpenApiSpec): readonly ToolDef[] =>
