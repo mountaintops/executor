@@ -148,7 +148,201 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
-  it("execute tool renders image ToolFile results as MCP images", async () => {
+  it("execute tool renders emitted file image output as MCP images", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: { keptReturn: true },
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "photo.png",
+                mimeType: "image/png",
+                data: "iVBORw0KGgo=",
+                byteLength: 8,
+              }),
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(attachment.data);" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[0]).toMatchObject({
+        type: "text",
+        text: "File output: photo.png (image/png, 8 bytes)",
+      });
+      expect(content[1]).toMatchObject({
+        type: "image",
+        data: "iVBORw0KGgo=",
+        mimeType: "image/png",
+      });
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: { keptReturn: true },
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders emitted MCP image content as MCP images", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: null,
+          output: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Deterministic image fixture",
+              },
+            },
+            {
+              type: "content",
+              content: {
+                type: "image",
+                data: TEST_IMAGE_PNG_BASE64,
+                mimeType: TEST_IMAGE_MIME_TYPE,
+              },
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: {
+          code: "emit(result.content[1]);",
+        },
+      });
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "Deterministic image fixture",
+        },
+        {
+          type: "image",
+          data: TEST_IMAGE_PNG_BASE64,
+          mimeType: TEST_IMAGE_MIME_TYPE,
+        },
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: null,
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders explicit upstream MCP content output unchanged", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: { forwarded: true },
+          output: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "forwarded text",
+              },
+            },
+            {
+              type: "content",
+              content: {
+                type: "image",
+                data: TEST_IMAGE_PNG_BASE64,
+                mimeType: TEST_IMAGE_MIME_TYPE,
+              },
+            },
+            {
+              type: "content",
+              content: {
+                type: "audio",
+                data: "SUQz",
+                mimeType: "audio/mpeg",
+              },
+            },
+            {
+              type: "content",
+              content: {
+                type: "resource",
+                resource: {
+                  uri: "executor-file:///report.pdf",
+                  mimeType: "application/pdf",
+                  blob: "JVBERg==",
+                },
+              },
+            },
+            {
+              type: "content",
+              content: {
+                type: "resource_link",
+                uri: "executor-file:///remote.pdf",
+                name: "remote.pdf",
+                mimeType: "application/pdf",
+              },
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: {
+          code: "for (const block of result.data.content) emit(block);",
+        },
+      });
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "forwarded text",
+        },
+        {
+          type: "image",
+          data: TEST_IMAGE_PNG_BASE64,
+          mimeType: TEST_IMAGE_MIME_TYPE,
+        },
+        {
+          type: "audio",
+          data: "SUQz",
+          mimeType: "audio/mpeg",
+        },
+        {
+          type: "resource",
+          resource: {
+            uri: "executor-file:///report.pdf",
+            mimeType: "application/pdf",
+            blob: "JVBERg==",
+          },
+        },
+        {
+          type: "resource_link",
+          uri: "executor-file:///remote.pdf",
+          name: "remote.pdf",
+          mimeType: "application/pdf",
+        },
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: { forwarded: true },
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool does not render returned ToolFile values as files", async () => {
     const engine = makeStubEngine({
       execute: () =>
         Effect.succeed({
@@ -170,21 +364,17 @@ describe("MCP host server — native elicitation mode", () => {
       });
 
       const content = result.content as Array<Record<string, unknown>>;
-      expect(content[0]).toMatchObject({
-        type: "text",
-        text: "File output: photo.png\nimage/png, 8 bytes",
+      expect(content).toHaveLength(1);
+      expect(String(content[0]?.text ?? "")).toContain('"_tag": "ToolFile"');
+      expect(String(content[0]?.text ?? "")).toContain("iVBORw0KGgo=");
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
       });
-      expect(content[1]).toMatchObject({
-        type: "image",
-        data: "iVBORw0KGgo=",
-        mimeType: "image/png",
-      });
-      expect(result.structuredContent).toBeUndefined();
       expect(result.isError).toBeFalsy();
     });
   });
 
-  it("execute tool preserves upstream MCP image content as native content", async () => {
+  it("execute tool does not render returned upstream MCP image results as images", async () => {
     const engine = makeStubEngine({
       execute: () =>
         Effect.succeed({
@@ -217,126 +407,182 @@ describe("MCP host server — native elicitation mode", () => {
         },
       });
 
-      expect(result.content).toEqual([
-        {
-          type: "text",
-          text: "Deterministic image fixture: mcp-image-fixture.png (image/png, 70 bytes)",
-        },
-        {
-          type: "image",
-          data: TEST_IMAGE_PNG_BASE64,
-          mimeType: TEST_IMAGE_MIME_TYPE,
-        },
-      ]);
-      expect(result.structuredContent).toEqual({
-        name: "mcp-image-fixture.png",
-        mimeType: TEST_IMAGE_MIME_TYPE,
-        byteLength: 70,
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content).toHaveLength(1);
+      expect(String(content[0]?.text ?? "")).toContain('"type": "image"');
+      expect(String(content[0]?.text ?? "")).toContain(TEST_IMAGE_PNG_BASE64);
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
       });
       expect(result.isError).toBeFalsy();
     });
   });
 
-  it("execute tool strips nested ToolFile bytes while preserving result metadata", async () => {
+  it("execute tool renders mixed emitted text and file output in order", async () => {
     const engine = makeStubEngine({
       execute: () =>
         Effect.succeed({
-          result: {
-            subject: "Flight receipt",
-            attachment: ToolResult.ok(
-              toolFile({
+          result: { subject: "Flight receipt" },
+          output: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Flight receipt",
+              },
+            },
+            {
+              type: "file",
+              file: toolFile({
                 name: "boarding-pass.png",
                 mimeType: "image/png",
                 data: "iVBORw0KGgo=",
                 byteLength: 8,
               }),
-            ),
-          },
+            },
+          ],
         }),
     });
 
     await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
       const result = await client.callTool({
         name: "execute",
-        arguments: { code: "return { subject, attachment };" },
+        arguments: { code: "emit(subject); emit(attachment.data);" },
       });
 
       const content = result.content as Array<Record<string, unknown>>;
-      const text = String(content[0]?.text ?? "");
-      expect(text).toContain("File outputs:\n1. boarding-pass.png (image/png, 8 bytes)");
-      expect(text).toContain("Result metadata:");
-      expect(text).toContain("Flight receipt");
-      expect(text).not.toContain("iVBORw0KGgo=");
+      expect(content[0]).toMatchObject({ type: "text", text: "Flight receipt" });
       expect(content[1]).toMatchObject({
+        type: "text",
+        text: "File output: boarding-pass.png (image/png, 8 bytes)",
+      });
+      expect(content[2]).toMatchObject({
         type: "image",
         data: "iVBORw0KGgo=",
         mimeType: "image/png",
       });
-      expect(result.structuredContent).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: { subject: "Flight receipt" },
+      });
       expect(result.isError).toBeFalsy();
     });
   });
 
-  it("execute tool renders text-like ToolFile results as MCP text without structured content", async () => {
+  it("execute tool renders text-like emitted file output as MCP text", async () => {
     const engine = makeStubEngine({
       execute: () =>
         Effect.succeed({
-          result: ToolResult.ok(
-            toolFile({
-              name: "rows.csv",
-              mimeType: "text/csv",
-              data: "YSxiCjEsMgo=",
-              byteLength: 8,
-            }),
-          ),
+          result: null,
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "rows.csv",
+                mimeType: "text/csv",
+                data: "YSxiCjEsMgo=",
+                byteLength: 8,
+              }),
+            },
+          ],
         }),
     });
 
     await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
       const result = await client.callTool({
         name: "execute",
-        arguments: { code: "return await tools.files.org.main.getCsv({});" },
+        arguments: { code: "emit(csv.data);" },
       });
 
       const content = result.content as Array<Record<string, unknown>>;
       expect(content[0]).toMatchObject({
         type: "text",
-        text: "File output: rows.csv\ntext/csv, 8 bytes",
+        text: "File output: rows.csv (text/csv, 8 bytes)",
       });
       expect(content[1]).toMatchObject({
         type: "text",
         text: "a,b\n1,2\n",
       });
-      expect(result.structuredContent).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: null,
+      });
       expect(result.isError).toBeFalsy();
     });
   });
 
-  it("execute tool renders opaque binary ToolFile results as embedded MCP resources", async () => {
+  it("execute tool renders emitted audio file output as MCP audio", async () => {
     const engine = makeStubEngine({
       execute: () =>
         Effect.succeed({
-          result: ToolResult.ok(
-            toolFile({
-              name: "report.pdf",
-              mimeType: "application/pdf",
-              data: "JVBERg==",
-              byteLength: 4,
-            }),
-          ),
+          result: null,
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "clip.mp3",
+                mimeType: "audio/mpeg",
+                data: "SUQzBAAAAAAA",
+                byteLength: 9,
+              }),
+            },
+          ],
         }),
     });
 
     await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
       const result = await client.callTool({
         name: "execute",
-        arguments: { code: "return await tools.gmail.org.main.getAttachment({});" },
+        arguments: { code: "emit(audio.data);" },
       });
 
       const content = result.content as Array<Record<string, unknown>>;
       expect(content[0]).toMatchObject({
         type: "text",
-        text: "File output: report.pdf\napplication/pdf, 4 bytes",
+        text: "File output: clip.mp3 (audio/mpeg, 9 bytes)",
+      });
+      expect(content[1]).toMatchObject({
+        type: "audio",
+        data: "SUQzBAAAAAAA",
+        mimeType: "audio/mpeg",
+      });
+      expect(result.structuredContent).toMatchObject({
+        status: "completed",
+        result: null,
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool renders opaque binary emitted file output as embedded MCP resources", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: null,
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "report.pdf",
+                mimeType: "application/pdf",
+                data: "JVBERg==",
+                byteLength: 4,
+              }),
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(attachment.data);" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[0]).toMatchObject({
+        type: "text",
+        text: "File output: report.pdf (application/pdf, 4 bytes)",
       });
       expect(content[1]).toMatchObject({
         type: "resource",
@@ -348,18 +594,8 @@ describe("MCP host server — native elicitation mode", () => {
       });
       expect(result.structuredContent).toMatchObject({
         status: "completed",
-        result: {
-          ok: true,
-          data: {
-            _tag: "ToolFile",
-            name: "report.pdf",
-            mimeType: "application/pdf",
-            encoding: "base64",
-            byteLength: 4,
-          },
-        },
+        result: null,
       });
-      expect(JSON.stringify(result.structuredContent)).not.toContain("JVBERg==");
       expect(result.isError).toBeFalsy();
     });
   });
