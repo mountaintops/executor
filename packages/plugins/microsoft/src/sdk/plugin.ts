@@ -18,6 +18,7 @@ import {
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
+  compileOpenApiDocument,
   compileOpenApiSpec,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
@@ -124,7 +125,10 @@ const makeMicrosoftPluginExtension = (
   const addGraph = (config: MicrosoftGraphConfig) =>
     Effect.gen(function* () {
       const graph = yield* buildMicrosoftGraphOpenApiSpec(config, httpClientLayer);
-      const compiled = yield* compileOpenApiSpec(graph.specText);
+      const compiled =
+        graph.parsedDocument !== undefined
+          ? yield* compileOpenApiDocument(graph.parsedDocument)
+          : yield* compileOpenApiSpec(graph.specText);
       const slug = IntegrationSlug.make(config.slug?.trim() || DEFAULT_MICROSOFT_SLUG);
 
       const existing = yield* ctx.core.integrations.get(slug);
@@ -195,7 +199,10 @@ const makeMicrosoftPluginExtension = (
         },
         httpClientLayer,
       );
-      const compiled = yield* compileOpenApiSpec(graph.specText);
+      const compiled =
+        graph.parsedDocument !== undefined
+          ? yield* compileOpenApiDocument(graph.parsedDocument)
+          : yield* compileOpenApiSpec(graph.specText);
 
       const previousOperations = yield* ctx.storage.listOperations(rawSlug);
       const previousNames = new Set(previousOperations.map((op) => op.toolName));

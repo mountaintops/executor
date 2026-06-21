@@ -9,6 +9,7 @@ import {
   OpenApiParseError,
   type Authentication,
   type OpenApiIntegrationConfig,
+  type ParsedDocument,
 } from "@executor-js/plugin-openapi";
 
 import {
@@ -41,6 +42,7 @@ export interface MicrosoftGraphSelectionInput {
 
 export interface MicrosoftGraphSpecBuild {
   readonly specText: string;
+  readonly parsedDocument?: ParsedDocument;
   readonly specUrl: string;
   readonly baseUrl?: string;
   readonly authorizationUrl: string;
@@ -89,6 +91,8 @@ const MicrosoftGraphIntegrationConfigSchema = Schema.Struct({
 });
 
 const decodeMicrosoftConfig = Schema.decodeUnknownOption(MicrosoftGraphIntegrationConfigSchema);
+
+type MicrosoftGraphOpenApiDocument = ParsedDocument & Record<string, unknown>;
 
 export const decodeMicrosoftGraphIntegrationConfig = (
   value: unknown,
@@ -478,7 +482,7 @@ export const fetchMicrosoftGraphPermissionsReference = Effect.fn(
 
 const parseMicrosoftGraphOpenApiDocument = (
   specText: string,
-): Effect.Effect<Record<string, unknown>, OpenApiParseError> =>
+): Effect.Effect<MicrosoftGraphOpenApiDocument, OpenApiParseError> =>
   Effect.gen(function* () {
     const parsed = yield* Effect.try({
       try: () => YAML.parse(specText) as unknown,
@@ -492,11 +496,16 @@ const parseMicrosoftGraphOpenApiDocument = (
         message: "Microsoft Graph OpenAPI document must be an object",
       });
     }
-    return parsed;
+    if (typeof parsed.openapi !== "string" || !parsed.openapi.startsWith("3.")) {
+      return yield* new OpenApiParseError({
+        message: "Microsoft Graph OpenAPI document must be OpenAPI 3.x",
+      });
+    }
+    return parsed as MicrosoftGraphOpenApiDocument;
   });
 
-export const buildFilteredMicrosoftGraphOpenApiSpec = (
-  specText: string,
+export const buildFilteredMicrosoftGraphOpenApiSpecFromDocument = (
+  parsed: MicrosoftGraphOpenApiDocument,
   options: {
     readonly scopes: readonly string[];
     readonly exactPaths: readonly string[];
@@ -510,7 +519,6 @@ export const buildFilteredMicrosoftGraphOpenApiSpec = (
   },
 ): Effect.Effect<MicrosoftGraphFilterResult, OpenApiParseError> =>
   Effect.gen(function* () {
-    const parsed = yield* parseMicrosoftGraphOpenApiDocument(specText);
     const paths = parsed.paths;
     if (!isRecord(paths)) {
       return yield* new OpenApiParseError({
@@ -578,6 +586,15 @@ export const buildFilteredMicrosoftGraphOpenApiSpec = (
     return { specText: filteredSpecText, scopes };
   });
 
+export const buildFilteredMicrosoftGraphOpenApiSpec = (
+  specText: string,
+  options: Parameters<typeof buildFilteredMicrosoftGraphOpenApiSpecFromDocument>[1],
+): Effect.Effect<MicrosoftGraphFilterResult, OpenApiParseError> =>
+  Effect.gen(function* () {
+    const parsed = yield* parseMicrosoftGraphOpenApiDocument(specText);
+    return yield* buildFilteredMicrosoftGraphOpenApiSpecFromDocument(parsed, options);
+  });
+
 export const filterMicrosoftGraphOpenApiSpec = (
   specText: string,
   options: Parameters<typeof buildFilteredMicrosoftGraphOpenApiSpec>[1],
@@ -604,12 +621,32 @@ export const buildMicrosoftGraphOpenApiSpec = (
       : [];
     const parsed = yield* parseMicrosoftGraphOpenApiDocument(sourceText);
     const endpoints = resolveOAuthEndpoints(parsed, selection);
-    const filtered = yield* buildFilteredMicrosoftGraphOpenApiSpec(sourceText, {
+    const graphPaths = parsed.paths;
+    if (!isRecord(graphPaths)) {
+      return yield* new OpenApiParseError({
+        message: "Microsoft Graph OpenAPI document is missing paths",
+      });
+    }
+    if (selection.coversFullGraph === true) {
+      const scopes = selectedOAuthScopesForPaths(
+        graphPaths,
+        uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes]),
+        fullGraphScopes,
+      );
+      return {
+        ...selection,
+        specText: sourceText,
+        parsedDocument: parsed,
+        scopes,
+        authorizationUrl: endpoints.authorizationUrl,
+        tokenUrl: endpoints.tokenUrl,
+        clientCredentialsTokenUrl: endpoints.clientCredentialsTokenUrl,
+        authenticationTemplate: microsoftOAuthTemplate(scopes, endpoints),
+      };
+    }
+    const filtered = yield* buildFilteredMicrosoftGraphOpenApiSpecFromDocument(parsed, {
       ...selection,
-      scopes:
-        selection.coversFullGraph === true
-          ? uniqueStrings([...MICROSOFT_GRAPH_BASE_SCOPES, ...selection.customScopes])
-          : selection.scopes,
+      scopes: selection.scopes,
       fullGraphScopes,
     });
     return {
