@@ -1,7 +1,7 @@
 import { Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
+import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 import type {
   jsonSchemaValidator,
   JsonSchemaType,
@@ -10,7 +10,7 @@ import type {
 import { Validator } from "@cfworker/json-schema";
 import * as z from "zod/v4";
 
-import { isToolFile, isToolResult } from "@executor-js/sdk";
+import { isToolFile } from "@executor-js/sdk";
 import type {
   ElicitationResponse,
   ElicitationHandler,
@@ -272,108 +272,12 @@ type McpToolResult = {
 };
 
 type FormattedExecuteInput = Parameters<typeof formatExecuteResult>[0];
+type ExecuteOutputItem = NonNullable<FormattedExecuteInput["output"]>[number];
 
 const TEXT_FILE_CONTENT_MAX_CHARS = 64_000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-const isTextContentBlock = (value: unknown): value is Extract<ContentBlock, { type: "text" }> =>
-  isRecord(value) && value.type === "text" && typeof value.text === "string";
-
-const isImageContentBlock = (value: unknown): value is Extract<ContentBlock, { type: "image" }> =>
-  isRecord(value) &&
-  value.type === "image" &&
-  typeof value.data === "string" &&
-  typeof value.mimeType === "string";
-
-const isResourceContentBlock = (
-  value: unknown,
-): value is Extract<ContentBlock, { type: "resource" }> =>
-  isRecord(value) && value.type === "resource" && isRecord(value.resource);
-
-const isNativeMcpContentBlock = (value: unknown): value is ContentBlock =>
-  isTextContentBlock(value) || isImageContentBlock(value) || isResourceContentBlock(value);
-
-const nativeMcpContentResult = (value: unknown): McpToolResult | null => {
-  if (!isToolResult(value) || !value.ok || !isRecord(value.data)) return null;
-  const content = value.data.content;
-  if (!Array.isArray(content) || content.length === 0 || !content.every(isNativeMcpContentBlock)) {
-    return null;
-  }
-  if (!content.some((block) => block.type !== "text")) return null;
-  return {
-    content,
-    ...(isRecord(value.data.structuredContent)
-      ? { structuredContent: value.data.structuredContent }
-      : {}),
-    isError: value.data.isError === true || undefined,
-  };
-};
-
-const redactToolFileBytes = (file: ToolFileValue): Record<string, unknown> => ({
-  _tag: "ToolFile",
-  ...(file.name ? { name: file.name } : {}),
-  mimeType: file.mimeType,
-  encoding: file.encoding,
-  byteLength: file.byteLength,
-});
-
-type ToolFileExtraction = {
-  readonly value: unknown;
-  readonly files: readonly ToolFileValue[];
-};
-
-const extractToolFiles = (
-  value: unknown,
-  seen: WeakSet<object> = new WeakSet(),
-): ToolFileExtraction => {
-  if (isToolFile(value)) {
-    return { value: redactToolFileBytes(value), files: [value] };
-  }
-
-  if (isToolResult(value) && value.ok) {
-    const data = extractToolFiles(value.data, seen);
-    if (data.files.length === 0) return { value, files: [] };
-    return {
-      value: {
-        ...value,
-        data: data.value,
-      },
-      files: data.files,
-    };
-  }
-
-  if (Array.isArray(value)) {
-    const files: ToolFileValue[] = [];
-    const items = value.map((item) => {
-      const extracted = extractToolFiles(item, seen);
-      files.push(...extracted.files);
-      return extracted.value;
-    });
-    return { value: files.length > 0 ? items : value, files };
-  }
-
-  if (!isRecord(value)) return { value, files: [] };
-  if (seen.has(value)) return { value: "[Circular]", files: [] };
-  seen.add(value);
-
-  const files: ToolFileValue[] = [];
-  const entries = Object.entries(value).map(([key, item]) => {
-    const extracted = extractToolFiles(item, seen);
-    files.push(...extracted.files);
-    return [key, extracted.value] as const;
-  });
-  seen.delete(value);
-
-  return { value: files.length > 0 ? Object.fromEntries(entries) : value, files };
-};
-
-const directToolFile = (value: unknown): ToolFileValue | null => {
-  if (isToolFile(value)) return value;
-  if (isToolResult(value) && value.ok && isToolFile(value.data)) return value.data;
-  return null;
-};
 
 const toolFileName = (file: ToolFileValue): string => file.name ?? "tool-output";
 
@@ -383,9 +287,10 @@ const fileResourceUri = (file: ToolFileValue): string =>
 const normalizedMimeType = (file: ToolFileValue): string =>
   file.mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
 
-const toolFileKind = (file: ToolFileValue): "image" | "text" | "resource" => {
+const toolFileKind = (file: ToolFileValue): "image" | "audio" | "text" | "resource" => {
   const mimeType = normalizedMimeType(file);
   if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "audio";
   if (
     mimeType.startsWith("text/") ||
     mimeType === "application/json" ||
@@ -424,6 +329,9 @@ const toolFileContent = (file: ToolFileValue): ContentBlock[] => {
   if (kind === "image") {
     return [{ type: "image", data: file.data, mimeType: file.mimeType }];
   }
+  if (kind === "audio") {
+    return [{ type: "audio", data: file.data, mimeType: file.mimeType }];
+  }
   if (kind === "text") {
     return [{ type: "text", text: decodeTextFile(file) }];
   }
@@ -444,54 +352,60 @@ const toolFileSummaryLine = (file: ToolFileValue, index?: number): string => {
   return `${prefix}${toolFileName(file)} (${file.mimeType}, ${file.byteLength} bytes)`;
 };
 
-const toMcpFileResult = (
+const outputFileContent = (file: ToolFileValue): ContentBlock[] => [
+  {
+    type: "text",
+    text: `File output: ${toolFileSummaryLine(file)}`,
+  },
+  ...toolFileContent(file),
+];
+
+const isFileOutputItem = (
+  item: ExecuteOutputItem,
+): item is { readonly type: "file"; readonly file: ToolFileValue } =>
+  isRecord(item) && item.type === "file" && isToolFile(item.file);
+
+const isMcpContentBlock = (value: unknown): value is ContentBlock =>
+  ContentBlockSchema.safeParse(value).success;
+
+const isContentOutputItem = (
+  item: ExecuteOutputItem,
+): item is { readonly type: "content"; readonly content: ContentBlock } =>
+  isRecord(item) && item.type === "content" && isMcpContentBlock(item.content);
+
+const outputItemContent = (item: ExecuteOutputItem): ContentBlock[] => {
+  if (isFileOutputItem(item)) {
+    return outputFileContent(item.file);
+  }
+  if (isContentOutputItem(item)) {
+    return [item.content];
+  }
+  return [{ type: "text", text: "Invalid execution output item omitted." }];
+};
+
+const toMcpOutputResult = (
   result: FormattedExecuteInput,
-  extracted: ToolFileExtraction,
+  output: readonly ExecuteOutputItem[],
 ): McpToolResult => {
-  const files = extracted.files;
-  const hasModelNativeFile = files.some((file) => toolFileKind(file) !== "resource");
-  const redactedResult = { ...result, result: extracted.value };
-  const formatted = formatExecuteResult(redactedResult);
-  const directFile = directToolFile(result.result);
-  const logText =
-    result.logs && result.logs.length > 0 ? `\n\nLogs:\n${result.logs.join("\n")}` : "";
-  const summary =
-    directFile && files.length === 1
-      ? `File output: ${toolFileName(directFile)}\n${directFile.mimeType}, ${
-          directFile.byteLength
-        } bytes${logText}`
-      : [
-          "File outputs:",
-          ...files.map((file, index) => toolFileSummaryLine(file, index)),
-          "",
-          "Result metadata:",
-          formatted.text,
-        ].join("\n");
+  const formatted = formatExecuteResult(result);
+  const content = output.flatMap(outputItemContent);
+  const extraText: string[] = [];
+  if (result.error) {
+    extraText.push(formatted.text);
+  } else if (result.logs && result.logs.length > 0) {
+    extraText.push(`Logs:\n${result.logs.join("\n")}`);
+  }
+  content.push(...extraText.map((text): ContentBlock => ({ type: "text", text })));
 
   return {
-    content: [
-      {
-        type: "text",
-        text: summary,
-      },
-      ...files.flatMap(toolFileContent),
-    ],
-    ...(hasModelNativeFile
-      ? {}
-      : {
-          structuredContent: formatted.structured,
-        }),
+    content,
+    structuredContent: formatted.structured,
     isError: formatted.isError || undefined,
   };
 };
 
 const toMcpResult = (result: FormattedExecuteInput): McpToolResult => {
-  const nativeMcpResult = result.error ? null : nativeMcpContentResult(result.result);
-  if (nativeMcpResult) return nativeMcpResult;
-  const extracted = result.error
-    ? { value: result.result, files: [] }
-    : extractToolFiles(result.result);
-  if (extracted.files.length > 0) return toMcpFileResult(result, extracted);
+  if (result.output && result.output.length > 0) return toMcpOutputResult(result, result.output);
   const formatted = formatExecuteResult(result);
   return {
     content: [{ type: "text", text: formatted.text }],
