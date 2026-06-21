@@ -1,5 +1,5 @@
 ---
-"executor": major
+"executor": patch
 ---
 
 Replace the code-mode output helpers with a single `emit(value)` primitive.
