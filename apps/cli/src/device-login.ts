@@ -22,6 +22,12 @@ export interface CliLoginDiscovery {
   readonly tokenEndpoint: string;
   readonly clientId: string;
   readonly scope?: string;
+  /**
+   * How to encode the device-authorization + token requests. RFC 8628 mandates
+   * `form` (WorkOS), but some providers' endpoints only accept JSON (Better
+   * Auth). The server tells us via discovery; defaults to `form`.
+   */
+  readonly requestFormat: "form" | "json";
 }
 
 export interface DeviceCodeGrant {
@@ -114,14 +120,24 @@ const formBody = (fields: Record<string, string | undefined>): string => {
   return params.toString();
 };
 
-const postForm = async (url: string, fields: Record<string, string | undefined>) =>
+const definedFields = (fields: Record<string, string | undefined>): Record<string, string> =>
+  Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) as Record<
+    string,
+    string
+  >;
+
+const post = async (
+  url: string,
+  fields: Record<string, string | undefined>,
+  format: "form" | "json",
+) =>
   fetch(url, {
     method: "POST",
     headers: {
-      "content-type": "application/x-www-form-urlencoded",
+      "content-type": format === "json" ? "application/json" : "application/x-www-form-urlencoded",
       accept: "application/json",
     },
-    body: formBody(fields),
+    body: format === "json" ? JSON.stringify(definedFields(fields)) : formBody(fields),
   });
 
 const readJson = async (response: Response): Promise<Record<string, unknown>> => {
@@ -162,14 +178,16 @@ export const discoverCliLogin = async (origin: string): Promise<CliLoginDiscover
     tokenEndpoint,
     clientId,
     scope: asString(body.scope),
+    requestFormat: asString(body.requestFormat) === "json" ? "json" : "form",
   };
 };
 
 export const requestDeviceCode = async (discovery: CliLoginDiscovery): Promise<DeviceCodeGrant> => {
-  const response = await postForm(discovery.deviceAuthorizationEndpoint, {
-    client_id: discovery.clientId,
-    scope: discovery.scope,
-  });
+  const response = await post(
+    discovery.deviceAuthorizationEndpoint,
+    { client_id: discovery.clientId, scope: discovery.scope },
+    discovery.requestFormat,
+  );
   const body = await readJson(response);
   if (!response.ok) {
     throw new DeviceLoginError(
@@ -214,11 +232,15 @@ export const pollForDeviceTokens = async (
     }
     await sleep(intervalMs);
 
-    const response = await postForm(discovery.tokenEndpoint, {
-      grant_type: DEVICE_CODE_GRANT_TYPE,
-      device_code: grant.deviceCode,
-      client_id: discovery.clientId,
-    });
+    const response = await post(
+      discovery.tokenEndpoint,
+      {
+        grant_type: DEVICE_CODE_GRANT_TYPE,
+        device_code: grant.deviceCode,
+        client_id: discovery.clientId,
+      },
+      discovery.requestFormat,
+    );
     const body = await readJson(response);
 
     if (response.ok) {
@@ -257,17 +279,23 @@ export const pollForDeviceTokens = async (
   }
 };
 
-/** Exchange a refresh token for a fresh access token (silent re-auth). */
+/** Exchange a refresh token for a fresh access token (silent re-auth). Only
+ * providers that issue refresh tokens reach here (WorkOS, which is form-encoded
+ * per RFC 8628); Better Auth's device flow issues no refresh token. */
 export const refreshDeviceTokens = async (input: {
   readonly tokenEndpoint: string;
   readonly clientId: string;
   readonly refreshToken: string;
 }): Promise<DeviceTokens> => {
-  const response = await postForm(input.tokenEndpoint, {
-    grant_type: "refresh_token",
-    refresh_token: input.refreshToken,
-    client_id: input.clientId,
-  });
+  const response = await post(
+    input.tokenEndpoint,
+    {
+      grant_type: "refresh_token",
+      refresh_token: input.refreshToken,
+      client_id: input.clientId,
+    },
+    "form",
+  );
   const body = await readJson(response);
   if (!response.ok) {
     throw new DeviceLoginError(
