@@ -96,6 +96,30 @@ const ordersOpenApiSpec = (baseUrl: string): string =>
           },
         },
       },
+      "/orders/{orderId}/invoice": {
+        get: {
+          operationId: "getOrderInvoice",
+          summary: "Download an order invoice",
+          description: "Download the PDF invoice for an order.",
+          parameters: [
+            {
+              name: "orderId",
+              in: "path",
+              required: true,
+              description: "Unique order identifier (ULID).",
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "The invoice PDF.",
+              content: {
+                "application/pdf": { schema: { type: "string", format: "binary" } },
+              },
+            },
+          },
+        },
+      },
       "/orders": {
         post: {
           operationId: "createOrder",
@@ -302,7 +326,7 @@ scenario(
             authenticationTemplate: apiKeyTemplate,
           },
         });
-        expect(added.toolCount, "the OpenAPI fixture's operations became tools").toBe(2);
+        expect(added.toolCount, "the OpenAPI fixture's operations became tools").toBe(3);
 
         // Description set AT ADD (the add form's field) — no PATCH needed.
         yield* apiClient.graphql.addIntegration({
@@ -480,6 +504,31 @@ scenario(
         );
         expect(getOrder?.inputTypeScript, "input shape is compiled to TypeScript").toContain(
           "orderId",
+        );
+
+        // A file-returning operation carries the emit contract in its stored
+        // description, so it rides BOTH the catalog (tools.list / tools.search,
+        // the step a model always walks) and the schema view, without the
+        // model having to read the ToolFile output schema to discover emit().
+        const getInvoice = byName(openapiTools, "orders.getOrderInvoice");
+        expect(getInvoice?.listDescription, "the file tool keeps its own description").toContain(
+          "Download the PDF invoice for an order.",
+        );
+        expect(
+          getInvoice?.listDescription,
+          "the file tool's catalog description carries the emit contract",
+        ).toContain("emit(result.data)");
+        expect(
+          getInvoice?.schemaDescription,
+          "the file tool's schema description carries the emit contract",
+        ).toContain("emit(result.data)");
+        expect(
+          getInvoice?.outputTypeScript,
+          "the file tool's output is the ToolFile envelope",
+        ).toContain("ToolFile");
+        // Targeted, not blanket: a non-file tool's description stays clean.
+        expect(getOrder?.listDescription, "a non-file tool is untouched").not.toContain(
+          "emit(result.data)",
         );
 
         const orderQuery = byName(graphqlTools, "query.order");

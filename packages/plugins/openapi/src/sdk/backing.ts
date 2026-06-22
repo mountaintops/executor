@@ -183,6 +183,21 @@ const descriptionFor = (def: ToolDefinition): string => {
   );
 };
 
+/**
+ * Copyable contract appended to the stored description of any tool whose
+ * output is a ToolFile. Stored descriptions ride both `search` (the step a
+ * model always walks) and `describe.tool`, so baking the emit instruction
+ * here puts it in front of the agent before the first call, where the
+ * output schema alone (dropped from the hot list projection) cannot.
+ */
+const FILE_OUTPUT_HINT =
+  'Returns a ToolFile: the file bytes already decoded into { _tag: "ToolFile", mimeType, encoding, data, byteLength }. ' +
+  "To display or forward it, pass the result's data straight to emit(result.data). " +
+  "Do not rebuild the envelope or read upstream fields like size.";
+
+const withFileEmitHint = (description: string, returnsFile: boolean): string =>
+  returnsFile ? `${description}\n\n${FILE_OUTPUT_HINT}` : description;
+
 export interface CompiledOpenApiSpec {
   readonly definitions: readonly ToolDefinition[];
   readonly hoistedDefs: Record<string, unknown>;
@@ -218,21 +233,21 @@ export const compileOpenApiSpec = (
   });
 
 export const openApiToolDefsFromCompiled = (compiled: CompiledOpenApiSpec): readonly ToolDef[] =>
-  compiled.definitions.map(
-    (def): ToolDef => ({
+  compiled.definitions.map((def): ToolDef => {
+    const returnsFile = Option.match(def.operation.responseBody, {
+      onNone: () => false,
+      onSome: (responseBody) => Option.isSome(responseBody.fileHint),
+    });
+    return {
       name: ToolName.make(def.toolPath),
-      description: descriptionFor(def),
+      description: withFileEmitHint(descriptionFor(def), returnsFile),
       inputSchema: normalizeOpenApiRefs(Option.getOrUndefined(def.operation.inputSchema)),
-      outputSchema: Option.match(def.operation.responseBody, {
-        onNone: () => normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
-        onSome: (responseBody) =>
-          Option.isSome(responseBody.fileHint)
-            ? ToolFileJsonSchema
-            : normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
-      }),
+      outputSchema: returnsFile
+        ? ToolFileJsonSchema
+        : normalizeOpenApiRefs(Option.getOrUndefined(def.operation.outputSchema)),
       annotations: annotationsForOperation(def.operation.method, def.operation.pathTemplate),
-    }),
-  );
+    };
+  });
 
 export const openApiStoredOperationsFromCompiled = (
   integration: string,
