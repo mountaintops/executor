@@ -16,6 +16,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Cli, RunDir, Target } from "../src/services";
+import { enterFocus } from "../src/timeline";
 import { SELFHOST_BASE_URL } from "../targets/selfhost";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -97,6 +98,9 @@ scenario(
             await page.getByText(/Device approved/i).waitFor({ timeout: 15_000 });
           });
         });
+        // Cut the synced player back to the terminal for the "Logged in" + the
+        // authenticated /api call that follow the browser approval.
+        yield* Effect.promise(() => enterFocus(runDir, "terminal"));
       });
 
       // Reaching here means the whole `&&` chain exited 0 — including the
