@@ -502,6 +502,10 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
           yield* ctx.storage.putSpec(specHash, resolved.specText);
+          // The content-addressed defs blob lets the serve path resolve the
+          // shared `definitions` without re-parsing the spec. Same idempotent,
+          // outside-the-transaction rationale as the spec blob.
+          yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
           yield* ctx.transaction(
             Effect.gen(function* () {
@@ -565,6 +569,7 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
           // aborted config update just leaves an unreferenced blob.
           const specHash = yield* sha256Hex(resolved.specText);
           yield* ctx.storage.putSpec(specHash, resolved.specText);
+          yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
           const nextConfig: OpenApiIntegrationConfig = {
             ...current,
@@ -784,7 +789,8 @@ export const openApiPlugin = definePlugin((options?: OpenApiPluginOptions) => {
     // operation bindings invokeTool needs are persisted at addSpec time; this
     // hook only shapes the per-connection ToolDefs from the spec blob the
     // catalog config points at.
-    resolveTools: ({ config, storage }) => resolveOpenApiBackedTools({ config, storage }),
+    resolveTools: ({ integration, config, storage }) =>
+      resolveOpenApiBackedTools({ integration, config, storage }),
 
     invokeTool: ({ ctx: invokeCtx, toolRow, credential, args }) => {
       const httpClientLayer = options?.httpClientLayer ?? invokeCtx.httpClientLayer;

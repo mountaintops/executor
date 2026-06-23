@@ -38,6 +38,11 @@ const OperationStorage = Schema.Struct({
   integration: Schema.String,
   toolName: Schema.String,
   binding: Schema.Unknown,
+  // Resolved tool description (operation description / summary / method+path
+  // fallback), persisted so the serve path can rebuild the tool def without
+  // re-parsing the spec. Optional: legacy rows predate it and resolve via the
+  // parse fallback.
+  description: Schema.optional(Schema.String),
 });
 const decodeOperationStorage = Schema.decodeUnknownOption(OperationStorage);
 
@@ -47,6 +52,9 @@ export interface StoredOperation {
   /** The tool name (the `<tool>` address segment) this operation backs. */
   readonly toolName: string;
   readonly binding: OperationBinding;
+  /** Resolved tool description, persisted alongside the binding so the serve
+   *  path can rebuild the tool def without re-parsing the spec. */
+  readonly description?: string;
 }
 
 const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
@@ -61,6 +69,7 @@ const rowToOperation = (row: PluginStorageEntry): StoredOperation | null => {
         ? decodeBindingJson(operation.binding)
         : operation.binding,
     ),
+    ...(operation.description !== undefined ? { description: operation.description } : {}),
   };
 };
 
@@ -85,9 +94,22 @@ const legacyOperationKey = (integration: string, toolName: string): string =>
  *  idempotent and identical specs share one blob per partition. */
 export const specBlobKey = (specHash: string): string => `spec/${specHash}`;
 
+/** Blob key for a spec's compiled `#/$defs/*` schemas, keyed by the same
+ *  content hash as the spec. The serve path reads this instead of re-parsing
+ *  the (potentially multi-MB) spec to rebuild the shared `definitions`. */
+export const defsBlobKey = (specHash: string): string => `defs/${specHash}`;
+
 export interface OpenapiStore {
   /** Replace all stored operations for an integration. */
   readonly putOperations: (
+    integration: string,
+    operations: readonly StoredOperation[],
+  ) => Effect.Effect<void, StorageFailure>;
+  /** Append operations without clearing existing ones. The caller is
+   *  responsible for `removeOperations` first when doing a full rebuild. Used
+   *  by the streaming compile path, which persists operations chunk by chunk so
+   *  a huge spec's bindings are never all materialized at once. */
+  readonly appendOperations: (
     integration: string,
     operations: readonly StoredOperation[],
   ) => Effect.Effect<void, StorageFailure>;
@@ -108,6 +130,13 @@ export interface OpenapiStore {
   readonly putSpec: (specHash: string, specText: string) => Effect.Effect<void, StorageFailure>;
   /** Load spec text by content hash; null when no blob exists. */
   readonly getSpec: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
+  /** Persist the compiled `#/$defs/*` JSON for a spec under its content hash.
+   *  Content-addressed like the spec blob; lets the serve path serve the shared
+   *  `definitions` without re-parsing the spec. */
+  readonly putDefs: (specHash: string, defsJson: string) => Effect.Effect<void, StorageFailure>;
+  /** Load the compiled `#/$defs/*` JSON by content hash; null when no blob
+   *  exists (legacy rows added before the defs blob). */
+  readonly getDefs: (specHash: string) => Effect.Effect<string | null, StorageFailure>;
 }
 
 export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): OpenapiStore => {
@@ -115,6 +144,7 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
     integration: operation.integration,
     toolName: operation.toolName,
     binding: toJsonRecord(encodeBinding(operation.binding)),
+    ...(operation.description !== undefined ? { description: operation.description } : {}),
   });
 
   const listRows = (integration: string) =>
@@ -135,19 +165,24 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
       });
     });
 
+  const appendOperations = (integration: string, operations: readonly StoredOperation[]) =>
+    pluginStorage.putMany({
+      owner: STORE_OWNER,
+      entries: operations.map((operation) => ({
+        collection: OPERATION_COLLECTION,
+        key: operationKey(integration, operation.toolName),
+        data: operationData(operation),
+      })),
+    });
+
   return {
     putOperations: (integration, operations) =>
       Effect.gen(function* () {
         yield* removeOperations(integration);
-        yield* pluginStorage.putMany({
-          owner: STORE_OWNER,
-          entries: operations.map((operation) => ({
-            collection: OPERATION_COLLECTION,
-            key: operationKey(integration, operation.toolName),
-            data: operationData(operation),
-          })),
-        });
+        yield* appendOperations(integration, operations);
       }),
+
+    appendOperations,
 
     getOperation: (integration, toolName) =>
       Effect.gen(function* () {
@@ -176,5 +211,10 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
       blobs.put(specBlobKey(specHash), specText, { owner: STORE_OWNER }),
 
     getSpec: (specHash) => blobs.get(specBlobKey(specHash)),
+
+    putDefs: (specHash, defsJson) =>
+      blobs.put(defsBlobKey(specHash), defsJson, { owner: STORE_OWNER }),
+
+    getDefs: (specHash) => blobs.get(defsBlobKey(specHash)),
   };
 };

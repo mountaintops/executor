@@ -33,6 +33,7 @@ paths:
   /me:
     get:
       operationId: me.GetUser
+      summary: Get the signed-in user profile
       security:
         - azureAdDelegated:
             - User.Read
@@ -341,6 +342,45 @@ describe("Microsoft Graph provider", () => {
         expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
           ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
         ]);
+
+        // Full-graph add routes through the streaming `parsedDocument` persist
+        // branch (the path the real 37MB spec takes): it persists each op's
+        // binding plus a `description` and writes the content-addressed defs
+        // blob, never re-parsing on serve. Read the operations back through the
+        // live serve path to prove they landed in storage AND that the serve
+        // fast path rebuilds tools from the persisted bindings (no spec parse).
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("full"),
+          integration: IntegrationSlug.make("microsoft_graph_full"),
+          template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
+          value: "token-xyz",
+        });
+
+        const tools = yield* executor.tools.list();
+        const toolNames = tools.map((tool) => String(tool.name));
+        expect(toolNames).toContain("me.getUser");
+        expect(toolNames).toContain("me.messagesListMessages");
+        expect(toolNames).toContain("sites.listSites");
+
+        // The serve fast path must rebuild every tool's description from the
+        // persisted operation, not drop it. Each graph tool carries a non-empty
+        // description.
+        for (const tool of tools) {
+          expect(tool.description.length).toBeGreaterThan(0);
+        }
+
+        // `me.getUser`'s spec summary survives the add -> persist -> serve
+        // round-trip. The bare `${METHOD} ${path}` fallback inside the serve
+        // path would be "GET /me", so matching the summary proves the persisted
+        // `description` field is what's served.
+        const getUser = tools.find((tool) => String(tool.name) === "me.getUser");
+        expect(getUser?.description).toBe("Get the signed-in user profile");
+
+        // An op without a spec summary falls back to `${METHOD} ${path}`, also
+        // sourced from the persisted binding on the serve fast path.
+        const listSites = tools.find((tool) => String(tool.name) === "sites.listSites");
+        expect(listSites?.description).toBe("GET /sites");
       }),
     ),
   );

@@ -1,5 +1,6 @@
 import { Effect, Option } from "effect";
 
+import { planToolPaths, type OperationPathInput } from "./definitions";
 import { OpenApiExtractionError } from "./errors";
 import type { ParsedDocument } from "./parse";
 import {
@@ -19,6 +20,7 @@ import {
   ExtractionResult,
   type HttpMethod,
   MediaBinding,
+  OperationBinding,
   OperationFileHint,
   OperationId,
   OperationParameter,
@@ -299,7 +301,7 @@ const buildServerInputProperty = (
   };
 };
 
-const buildInputSchema = (
+export const buildInputSchema = (
   parameters: readonly OperationParameter[],
   requestBody: OperationRequestBody | undefined,
   servers: readonly ServerInfo[],
@@ -494,3 +496,129 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
     operations,
   });
 });
+
+// ---------------------------------------------------------------------------
+// Streaming binding extraction
+// ---------------------------------------------------------------------------
+
+/** One persisted invocation binding plus the tool name and description it
+ *  backs. The description is the resolved operation description / summary /
+ *  method+path fallback, persisted so the serve path needs no re-parse. */
+export interface OperationBindingChunk {
+  readonly toolName: string;
+  readonly description: string;
+  readonly binding: OperationBinding;
+}
+
+interface OperationRef {
+  readonly pathItem: PathItemObject;
+  readonly operation: OperationObject;
+  readonly method: HttpMethod;
+  /** Resolved path template (`x-executor-pathTemplate` override or the key). */
+  readonly pathTemplate: string;
+}
+
+/**
+ * Stream invocation bindings out of a parsed document in bounded chunks,
+ * persisting each chunk via `onChunk` before building the next.
+ *
+ * This is the memory-safe compile path for huge specs (e.g. Microsoft Graph,
+ * 16.5k operations / 37MB). It differs from `extract` + `compileToolDefinitions`
+ * in two ways that keep peak memory at parse level rather than ~doubling it:
+ *
+ *   1. It never builds `hoistedDefs` or per-operation `inputSchema`/`outputSchema`
+ *      (the add path only needs invocation bindings, which carry `$ref`s, not
+ *      inlined schemas).
+ *   2. It never holds all bindings at once. Tool-path planning needs a global
+ *      view, but only of lightweight metadata (`planToolPaths`, schema-free);
+ *      the heavy per-operation bindings are built, flushed, and dropped one
+ *      chunk at a time.
+ *
+ * Bindings reference subtrees of the parsed document rather than copying them,
+ * so `onChunk` must sever those references (its storage layer JSON-serializes
+ * the binding) before the chunk is dropped. Returns the resolved tool names in
+ * sorted order, matching `compileToolDefinitions`.
+ */
+export const streamOperationBindings = <E, R>(
+  doc: ParsedDocument,
+  chunkSize: number,
+  onChunk: (chunk: readonly OperationBindingChunk[]) => Effect.Effect<void, E, R>,
+): Effect.Effect<
+  { readonly toolCount: number; readonly toolNames: readonly string[] },
+  OpenApiExtractionError | E,
+  R
+> =>
+  Effect.gen(function* () {
+    const paths = doc.paths;
+    if (!paths) {
+      return yield* new OpenApiExtractionError({
+        message: "OpenAPI document has no paths defined",
+      });
+    }
+
+    const r = new DocResolver(doc);
+    const docServers = extractServers(doc);
+
+    // Pass 1 (light): collect schema-free path metadata + a parallel array of
+    // references back into the tree. Both are small (no schemas copied).
+    const inputs: OperationPathInput[] = [];
+    const opRefs: OperationRef[] = [];
+    for (const [pathTemplate, pathItem] of Object.entries(paths).sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      if (!pathItem) continue;
+      for (const method of HTTP_METHODS) {
+        const operation = pathItem[method];
+        if (!operation) continue;
+        const resolvedPathTemplate = explicitPathTemplate(operation) ?? pathTemplate;
+        const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
+        inputs.push({
+          operationId: deriveOperationId(method, pathTemplate, operation),
+          explicitToolPath: explicitToolPath(operation),
+          method,
+          pathTemplate: resolvedPathTemplate,
+          tag0: tags[0],
+        });
+        opRefs.push({ pathItem, operation, method, pathTemplate: resolvedPathTemplate });
+      }
+    }
+
+    // Global, schema-free collision resolution + sort. Cheap relative to the
+    // parsed tree; returns plans sorted by toolPath with an index back into
+    // `opRefs`.
+    const plans = planToolPaths(inputs);
+
+    // Pass 2 (heavy, streamed): build a binding per operation, flush a chunk
+    // once it fills, then drop it. Bindings reference tree subtrees; `onChunk`
+    // serializes them, so peak stays at parse level.
+    let chunk: OperationBindingChunk[] = [];
+    for (const plan of plans) {
+      const ref = opRefs[plan.operationIndex]!;
+      const parameters = extractParameters(ref.pathItem, ref.operation, r);
+      const requestBody = extractRequestBody(ref.operation, r);
+      const responseBody = extractResponseBody(ref.operation, r);
+      const servers = operationServers(ref.pathItem, ref.operation, docServers);
+      chunk.push({
+        toolName: plan.toolPath,
+        description:
+          ref.operation.description ??
+          ref.operation.summary ??
+          `${ref.method.toUpperCase()} ${ref.pathTemplate}`,
+        binding: OperationBinding.make({
+          method: ref.method,
+          servers,
+          pathTemplate: ref.pathTemplate,
+          parameters,
+          requestBody: Option.fromNullishOr(requestBody),
+          responseBody: Option.fromNullishOr(responseBody),
+        }),
+      });
+      if (chunk.length >= chunkSize) {
+        yield* onChunk(chunk);
+        chunk = [];
+      }
+    }
+    if (chunk.length > 0) yield* onChunk(chunk);
+
+    return { toolCount: plans.length, toolNames: plans.map((plan) => plan.toolPath) };
+  }).pipe(Effect.withSpan("OpenApi.streamOperationBindings"));

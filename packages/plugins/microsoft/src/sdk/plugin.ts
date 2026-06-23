@@ -15,21 +15,25 @@ import {
   type IntegrationConfig,
   type IntegrationRecord,
   type PluginCtx,
+  type StorageFailure,
 } from "@executor-js/sdk/core";
 import { describeApiKeyAuthMethod } from "@executor-js/sdk/http-auth";
 import {
-  compileOpenApiDocument,
-  compileOpenApiSpec,
+  compileAndPersistOpenApiOperations,
+  compileAndPersistOpenApiSpec,
   decodeOpenApiIntegrationConfig,
   invokeOpenApiBackedTool,
   makeDefaultOpenapiStore,
   normalizeOpenApiAuthInputs,
-  openApiStoredOperationsFromCompiled,
+  OpenApiExtractionError,
+  OpenApiParseError,
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
   type Authentication,
   type AuthenticationInput,
+  type OpenApiPersistResult,
   type OpenapiStore,
+  type ParsedDocument,
 } from "@executor-js/plugin-openapi";
 
 import {
@@ -122,13 +126,31 @@ const makeMicrosoftPluginExtension = (
   ctx: PluginCtx<OpenapiStore>,
   httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
 ) => {
+  const persistGraphOperations = (
+    graph: { readonly parsedDocument?: ParsedDocument; readonly specText: string },
+    integration: string,
+    specHash: string,
+  ): Effect.Effect<
+    OpenApiPersistResult,
+    OpenApiExtractionError | OpenApiParseError | StorageFailure
+  > =>
+    graph.parsedDocument !== undefined
+      ? compileAndPersistOpenApiOperations({
+          doc: graph.parsedDocument,
+          integration,
+          storage: ctx.storage,
+          specHash,
+        })
+      : compileAndPersistOpenApiSpec({
+          specText: graph.specText,
+          integration,
+          storage: ctx.storage,
+          specHash,
+        });
+
   const addGraph = (config: MicrosoftGraphConfig) =>
     Effect.gen(function* () {
       const graph = yield* buildMicrosoftGraphOpenApiSpec(config, httpClientLayer);
-      const compiled =
-        graph.parsedDocument !== undefined
-          ? yield* compileOpenApiDocument(graph.parsedDocument)
-          : yield* compileOpenApiSpec(graph.specText);
       const slug = IntegrationSlug.make(config.slug?.trim() || DEFAULT_MICROSOFT_SLUG);
 
       const existing = yield* ctx.core.integrations.get(slug);
@@ -156,7 +178,7 @@ const makeMicrosoftPluginExtension = (
 
       yield* ctx.storage.putSpec(specHash, graph.specText);
 
-      yield* ctx.transaction(
+      const persisted = yield* ctx.transaction(
         Effect.gen(function* () {
           yield* ctx.core.integrations.register({
             slug,
@@ -167,14 +189,11 @@ const makeMicrosoftPluginExtension = (
             canRemove: true,
             canRefresh: true,
           });
-          yield* ctx.storage.putOperations(
-            String(slug),
-            openApiStoredOperationsFromCompiled(String(slug), compiled),
-          );
+          return yield* persistGraphOperations(graph, String(slug), specHash);
         }),
       );
 
-      return { slug, toolCount: compiled.definitions.length };
+      return { slug, toolCount: persisted.toolCount };
     });
 
   const updateGraph = (rawSlug: string, input?: MicrosoftUpdateInput) =>
@@ -199,14 +218,8 @@ const makeMicrosoftPluginExtension = (
         },
         httpClientLayer,
       );
-      const compiled =
-        graph.parsedDocument !== undefined
-          ? yield* compileOpenApiDocument(graph.parsedDocument)
-          : yield* compileOpenApiSpec(graph.specText);
-
       const previousOperations = yield* ctx.storage.listOperations(rawSlug);
       const previousNames = new Set(previousOperations.map((op) => op.toolName));
-      const nextNames = new Set(compiled.definitions.map((def) => def.toolPath));
 
       const specHash = yield* sha256Hex(graph.specText);
       yield* ctx.storage.putSpec(specHash, graph.specText);
@@ -229,17 +242,15 @@ const makeMicrosoftPluginExtension = (
         ...(input?.baseUrl ? { baseUrl: input.baseUrl } : {}),
       };
 
-      yield* ctx.transaction(
+      const persisted = yield* ctx.transaction(
         Effect.gen(function* () {
           yield* ctx.core.integrations.update(slug, {
             config: nextConfig satisfies MicrosoftGraphIntegrationConfig as IntegrationConfig,
           });
-          yield* ctx.storage.putOperations(
-            rawSlug,
-            openApiStoredOperationsFromCompiled(rawSlug, compiled),
-          );
+          return yield* persistGraphOperations(graph, rawSlug, specHash);
         }),
       );
+      const nextNames = new Set(persisted.toolNames);
 
       const connections = yield* ctx.connections.list({ integration: slug });
       yield* Effect.forEach(
@@ -257,7 +268,7 @@ const makeMicrosoftPluginExtension = (
 
       return {
         slug,
-        toolCount: compiled.definitions.length,
+        toolCount: persisted.toolCount,
         addedTools: [...nextNames].filter((name) => !previousNames.has(name)).sort(),
         removedTools: [...previousNames].filter((name) => !nextNames.has(name)).sort(),
       };
@@ -340,7 +351,8 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
   describeAuthMethods: describeMicrosoftAuthMethods,
   describeIntegrationDisplay: describeMicrosoftIntegrationDisplay,
 
-  resolveTools: ({ config, storage }) => resolveOpenApiBackedTools({ config, storage }),
+  resolveTools: ({ integration, config, storage }) =>
+    resolveOpenApiBackedTools({ integration, config, storage }),
 
   invokeTool: ({ ctx, toolRow, credential, args }) => {
     const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;
