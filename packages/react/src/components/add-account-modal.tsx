@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
@@ -48,7 +48,7 @@ import {
 } from "../plugins/use-effective-oauth-client";
 import { cn } from "../lib/utils";
 import { buildUsageMap, connectionsUsingClient } from "../lib/oauth-client-usage";
-import { OAuthClientForm } from "./oauth-client-form";
+import { OAuthClientForm, type OAuthClientFormPrefill } from "./oauth-client-form";
 import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
@@ -734,6 +734,43 @@ export function AddAccountModal(props: {
     setMethodId(initialMethod?.id ?? allMethods[0]!.id);
   }, [allMethods, initialState?.template, methodId]);
 
+  // Non-secret prefill carried by an `oauth.clients.createHandoff` deep link.
+  // The agent fills in the endpoints/grant/client id it discovered; the client
+  // secret is deliberately absent and is typed by the human in the form below.
+  const oauthClientHandoff = initialState?.oauthClient;
+  const oauthHandoffPrefill = useMemo<OAuthClientFormPrefill | undefined>(() => {
+    if (!oauthClientHandoff) return undefined;
+    const grant =
+      oauthClientHandoff.grant === "authorization_code" ||
+      oauthClientHandoff.grant === "client_credentials"
+        ? oauthClientHandoff.grant
+        : undefined;
+    return {
+      ...(oauthClientHandoff.authorizationUrl
+        ? { authorizationUrl: oauthClientHandoff.authorizationUrl }
+        : {}),
+      ...(oauthClientHandoff.tokenUrl ? { tokenUrl: oauthClientHandoff.tokenUrl } : {}),
+      ...(oauthClientHandoff.resource ? { resource: oauthClientHandoff.resource } : {}),
+      ...(grant ? { grant } : {}),
+      ...(oauthClientHandoff.clientId ? { clientId: oauthClientHandoff.clientId } : {}),
+    };
+  }, [oauthClientHandoff]);
+
+  // Jump straight into the Register-OAuth-app sub-view when the agent handed off
+  // an OAuth-app registration. Fire once per handoff key (tracked by ref) so the
+  // user can cancel back out without it springing open again; retries on later
+  // renders only while the methods list is still empty.
+  const oauthHandoffOpenedKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialState?.oauthClient) return;
+    if (oauthHandoffOpenedKey.current === initialState.key) return;
+    const oauthMethod = allMethods.find((m: AuthMethod) => m.kind === "oauth");
+    if (!oauthMethod) return;
+    oauthHandoffOpenedKey.current = initialState.key;
+    setMethodId(oauthMethod.id);
+    setRegisteringOAuthClient(true);
+  }, [initialState, allMethods]);
+
   const isOAuth = method?.kind === "oauth";
   const isNoAuth = method?.kind === "none";
   // The distinct credential inputs the selected method needs — one per variable
@@ -1206,11 +1243,24 @@ export function AddAccountModal(props: {
                   String(app.slug),
                 )}
                 prefill={{
-                  authorizationUrl: method.oauth?.authorizationUrl,
-                  tokenUrl: method.oauth?.tokenUrl,
+                  authorizationUrl:
+                    oauthHandoffPrefill?.authorizationUrl ?? method.oauth?.authorizationUrl,
+                  tokenUrl: oauthHandoffPrefill?.tokenUrl ?? method.oauth?.tokenUrl,
                   scopes: method.oauth?.scopes,
                   registrationEndpoint: method.oauth?.registrationEndpoint,
+                  ...(oauthHandoffPrefill?.grant ? { grant: oauthHandoffPrefill.grant } : {}),
+                  ...(oauthHandoffPrefill?.clientId
+                    ? { clientId: oauthHandoffPrefill.clientId }
+                    : {}),
+                  ...(oauthHandoffPrefill?.resource != null
+                    ? { resource: oauthHandoffPrefill.resource }
+                    : {}),
                 }}
+                fixedSlug={
+                  oauthClientHandoff?.slug != null && oauthClientHandoff.slug.length > 0
+                    ? OAuthClientSlug.make(oauthClientHandoff.slug)
+                    : undefined
+                }
                 onCreated={(result: { readonly owner: Owner; readonly slug: OAuthClientSlug }) => {
                   setPickedApp(String(result.slug));
                   setRegisteringOAuthClient(false);

@@ -108,11 +108,32 @@ export function IntegrationDetailPage(props: { namespace: string }) {
     const owner = search.get("owner");
     const template = search.get("template");
     const label = search.get("label");
+    // `oauthClient=1` is the OAuth-app registration handoff
+    // (`oauth.clients.createHandoff`): pull the NON-secret prefill fields. The
+    // client secret is never in the URL; the human types it into the form.
+    const oauthClient = ((): IntegrationAccountHandoff["oauthClient"] => {
+      if (search.get("oauthClient") !== "1") return undefined;
+      const slug = search.get("clientSlug");
+      const grant = search.get("grant");
+      const clientId = search.get("clientId");
+      const authorizationUrl = search.get("authorizationUrl");
+      const tokenUrl = search.get("tokenUrl");
+      const resource = search.get("resource");
+      return {
+        ...(slug != null && slug.length > 0 ? { slug } : {}),
+        ...(grant != null && grant.length > 0 ? { grant } : {}),
+        ...(clientId != null && clientId.length > 0 ? { clientId } : {}),
+        ...(authorizationUrl != null && authorizationUrl.length > 0 ? { authorizationUrl } : {}),
+        ...(tokenUrl != null && tokenUrl.length > 0 ? { tokenUrl } : {}),
+        ...(resource != null && resource.length > 0 ? { resource } : {}),
+      };
+    })();
     return {
       key: locationSearch,
       ...(owner === "org" || owner === "user" ? { owner } : {}),
       ...(template != null && template.length > 0 ? { template } : {}),
       ...(label != null && label.length > 0 ? { label } : {}),
+      ...(oauthClient !== undefined ? { oauthClient } : {}),
     };
   }, [locationSearch]);
 

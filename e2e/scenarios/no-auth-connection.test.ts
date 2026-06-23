@@ -192,9 +192,12 @@ scenario(
     }).pipe(
       // Selfhost shares one workspace identity — leaked connections fail other
       // scenarios' zero-state assertions, so drop everything this run made.
+      // `connections.remove` is approval-gated, so the cleanup execute pauses
+      // per connection; `executeJson` auto-approves each pause so the removes
+      // actually run.
       Effect.ensuring(
         Effect.gen(function* () {
-          yield* session.call("execute", { code: removeConnectionsCode(integration) });
+          yield* executeJson(session, removeConnectionsCode(integration));
           yield* client.openapi.removeSpec({ params: { slug: integration } });
         }).pipe(Effect.ignore),
       ),

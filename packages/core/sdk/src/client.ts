@@ -113,6 +113,19 @@ export interface IntegrationAccountHandoff {
   readonly template?: string;
   /** Non-secret connection label to prefill. */
   readonly label?: string;
+  /** Present when the agent handed off a CONFIDENTIAL OAuth-app registration
+   *  (via `oauth.clients.createHandoff`): the accounts UI opens the
+   *  Register-OAuth-app form pre-filled with these NON-secret fields, and the
+   *  human types the client secret directly into the browser. */
+  readonly oauthClient?: {
+    /** Preselected client slug; when set the form's slug is fixed. */
+    readonly slug?: string;
+    readonly grant?: string;
+    readonly clientId?: string;
+    readonly authorizationUrl?: string;
+    readonly tokenUrl?: string;
+    readonly resource?: string;
+  };
 }
 
 /** Outcome of applying an edit-sheet section's staged change. `summary` is

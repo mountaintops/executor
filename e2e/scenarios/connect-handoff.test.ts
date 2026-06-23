@@ -89,13 +89,15 @@ const sent = await t({
 return { ok: sent.ok, path, result: sent.ok ? sent.data : sent.error };
 `;
 
-/** Run `execute`, auto-approving a paused execution (policy elicitation) once,
- *  and parse the sandbox's JSON return value. */
+/** Run `execute`, auto-approving any paused executions (approval-gated tools
+ *  pause once per gated call) and parse the sandbox's JSON return value. */
 const executeJson = (session: McpSession, code: string) =>
   Effect.gen(function* () {
     let result = yield* session.call("execute", { code });
-    if (result.text.includes("executionId:")) {
+    let guard = 0;
+    while (result.text.includes("executionId:") && guard < 10) {
       result = yield* session.approvePaused(result.text);
+      guard += 1;
     }
     expect(result.ok, `execute completed (got: ${result.text.slice(0, 400)})`).toBe(true);
     return JSON.parse(result.text) as Record<string, unknown>;
@@ -148,10 +150,12 @@ scenario(
       orgSlug: orgSlug!,
     }).pipe(
       // Best-effort cleanup even on failure: drop the created connection(s)
-      // over MCP, then the integration over the API.
+      // over MCP, then the integration over the API. `connections.remove` is
+      // approval-gated, so the cleanup execute pauses per connection;
+      // `executeJson` auto-approves each pause so the removes actually run.
       Effect.ensuring(
         Effect.gen(function* () {
-          yield* session.call("execute", { code: removeConnectionsCode(integration) });
+          yield* executeJson(session, removeConnectionsCode(integration));
           yield* client.openapi.removeSpec({ params: { slug: integration } });
         }).pipe(Effect.ignore),
       ),
