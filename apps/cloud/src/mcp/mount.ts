@@ -3,11 +3,11 @@
 // host-mcp serving envelope (@executor-js/host-mcp) behind cloud's two seams.
 // ---------------------------------------------------------------------------
 //
-// PRODUCTION serves /mcp through `app.ts`'s unified `ExecutorApp.make` handler
-// (the same `McpServingRoutes` envelope provided `cloudMcpAuth` +
-// `cloudMcpSessions`), dispatched by start.ts alongside /api. This module is the
-// TEST-WORKER counterpart: it exposes the two pieces `test-worker.ts` needs to
-// build the identical envelope with swapped auth seams —
+// PRODUCTION serves /mcp through `server.ts`'s hibernatable Agent bridge.
+// Discovery docs still flow through `app.ts`'s unified `ExecutorApp.make`
+// handler, dispatched by start.ts alongside /api. This module is the TEST-WORKER
+// counterpart: it exposes the two pieces `test-worker.ts` needs to build the
+// legacy envelope with swapped auth seams —
 //   - `makeMcpWebHandler` — bind `McpServingRoutes` to a web handler over a
 //     given auth provider + seam requirements + telemetry runtime, mirroring the
 //     self-host mount (`HttpRouter.toWebHandler`).
@@ -172,9 +172,8 @@ export const makeMcpWebHandler = <SeamsError = never>(options: {
   ).handler;
 };
 
-// Production no longer mounts /mcp here — `app.ts`'s unified `ExecutorApp.make`
-// handler serves it (the same `McpServingRoutes` envelope + cloud seams as
-// `cloudMcpAuth`/`cloudMcpSessions`), dispatched by start.ts alongside /api.
-// `classifyMcpPath` + `makeMcpWebHandler` remain because the workerd/miniflare
-// test worker (`test-worker.ts`) builds the same envelope with swapped auth
-// seams and classifies MCP paths with the identical predicate.
+// Production no longer mounts /mcp here. `server.ts` intercepts MCP transport
+// requests for the hibernatable Agent bridge, while `ExecutorApp.make` continues
+// serving discovery docs. `classifyMcpPath` + `makeMcpWebHandler` remain because
+// the workerd/miniflare test worker (`test-worker.ts`) builds the same envelope
+// with swapped auth seams and classifies MCP paths with the identical predicate.
