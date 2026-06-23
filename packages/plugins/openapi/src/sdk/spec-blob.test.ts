@@ -132,11 +132,14 @@ describe("OpenAPI plugin — spec blob storage", () => {
       const hash = yield* sha256Hex(text);
       const storage: OpenapiStore = {
         putOperations: () => Effect.void,
+        appendOperations: () => Effect.void,
         getOperation: () => Effect.succeed(null),
         listOperations: () => Effect.succeed([]),
         removeOperations: () => Effect.void,
         putSpec: () => Effect.void,
         getSpec: (specHash) => Effect.succeed(specHash === hash ? text : null),
+        putDefs: () => Effect.void,
+        getDefs: () => Effect.succeed(null),
       };
 
       const resolve = (config: IntegrationConfig) =>

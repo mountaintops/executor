@@ -21,7 +21,7 @@ import {
   type OpenApiIntegrationConfig,
 } from "./config";
 import { OpenApiExtractionError, OpenApiParseError } from "./errors";
-import { extract } from "./extract";
+import { buildInputSchema, extract, streamOperationBindings } from "./extract";
 import { compileToolDefinitions, type ToolDefinition } from "./definitions";
 import { annotationsForOperation, invokeWithLayer } from "./invoke";
 import { parse, type ParsedDocument } from "./parse";
@@ -257,7 +257,140 @@ export const openApiStoredOperationsFromCompiled = (
     integration,
     toolName: def.toolPath,
     binding: toBinding(def),
+    description: descriptionFor(def),
   }));
+
+/**
+ * Serialize a document's `components.schemas` into the content-addressed defs
+ * blob JSON (`{ "<Name>": <normalized schema>, ... }`), one schema at a time.
+ * Normalizing + stringifying per entry keeps the whole normalized definition
+ * tree from ever being co-resident with the parsed document, so the streaming
+ * add path's peak stays near parse level. The serve path JSON-parses this blob
+ * to rebuild the shared `definitions` instead of re-parsing the spec.
+ */
+export const buildDefsJson = (doc: ParsedDocument): string => {
+  const schemas = doc.components?.schemas;
+  if (!schemas) return "{}";
+  let json = "{";
+  let first = true;
+  for (const [name, schema] of Object.entries(schemas)) {
+    const serialized = JSON.stringify(normalizeOpenApiRefs(schema));
+    if (serialized === undefined) continue;
+    json += `${first ? "" : ","}${JSON.stringify(name)}:${serialized}`;
+    first = false;
+  }
+  return `${json}}`;
+};
+
+const DefsJson = Schema.Record(Schema.String, Schema.Unknown);
+/** Decode the content-addressed defs blob back into the shared `definitions`
+ *  map. Returns `None` on a corrupt/non-object blob so the serve path falls
+ *  back to the spec re-parse rather than failing `tools/list`. */
+const decodeDefsJson = Schema.decodeUnknownOption(Schema.fromJsonString(DefsJson));
+
+/** Rebuild a tool def from a stored operation binding, no spec parse. Mirrors
+ *  `openApiToolDefsFromCompiled` but sources its schemas from the persisted
+ *  binding (params/body/response carry `$ref`s into the shared defs blob). */
+const toolDefFromStoredOperation = (op: StoredOperation): ToolDef => {
+  const binding = op.binding;
+  return {
+    name: ToolName.make(op.toolName),
+    description: op.description ?? `${binding.method.toUpperCase()} ${binding.pathTemplate}`,
+    inputSchema: normalizeOpenApiRefs(
+      buildInputSchema(
+        binding.parameters,
+        Option.getOrUndefined(binding.requestBody),
+        binding.servers ?? [],
+      ),
+    ),
+    outputSchema: Option.match(binding.responseBody, {
+      onNone: () => undefined,
+      onSome: (responseBody) =>
+        Option.isSome(responseBody.fileHint)
+          ? ToolFileJsonSchema
+          : normalizeOpenApiRefs(Option.getOrUndefined(responseBody.schema)),
+    }),
+    annotations: annotationsForOperation(binding.method, binding.pathTemplate),
+  };
+};
+
+export interface OpenApiPersistResult {
+  readonly toolCount: number;
+  readonly toolNames: readonly string[];
+}
+
+/**
+ * Compile a parsed document straight to persisted operation bindings, streaming
+ * in bounded chunks so a huge spec's bindings are never all co-resident with
+ * the parsed tree. This is the memory-safe replacement for
+ * `compileOpenApiDocument` + `openApiStoredOperationsFromCompiled` + `putOperations`
+ * on the add/update path: it skips per-op input/output schema assembly (the
+ * serve path rebuilds those on demand from the bindings). Clears existing
+ * operations first, then appends each chunk. When `specHash` is given, also
+ * stream-serializes the document's `#/$defs/*` into the content-addressed defs
+ * blob so the serve path can resolve the shared `definitions` without
+ * re-parsing the spec.
+ */
+export const compileAndPersistOpenApiOperations = ({
+  doc,
+  integration,
+  storage,
+  specHash,
+  chunkSize,
+}: {
+  readonly doc: ParsedDocument;
+  readonly integration: string;
+  readonly storage: OpenapiStore;
+  readonly specHash?: string;
+  readonly chunkSize?: number;
+}): Effect.Effect<OpenApiPersistResult, OpenApiExtractionError | StorageFailure> =>
+  Effect.gen(function* () {
+    yield* storage.removeOperations(integration);
+    const result = yield* streamOperationBindings(doc, chunkSize ?? 500, (chunk) =>
+      storage.appendOperations(
+        integration,
+        chunk.map((item) => ({
+          integration,
+          toolName: item.toolName,
+          binding: item.binding,
+          description: item.description,
+        })),
+      ),
+    );
+    if (specHash != null) {
+      yield* storage.putDefs(specHash, buildDefsJson(doc));
+    }
+    return result;
+  });
+
+/** Parse spec text, then stream-compile + persist its bindings (and, when
+ *  `specHash` is given, the content-addressed defs blob). */
+export const compileAndPersistOpenApiSpec = ({
+  specText,
+  integration,
+  storage,
+  specHash,
+  chunkSize,
+}: {
+  readonly specText: string;
+  readonly integration: string;
+  readonly storage: OpenapiStore;
+  readonly specHash?: string;
+  readonly chunkSize?: number;
+}): Effect.Effect<
+  OpenApiPersistResult,
+  OpenApiParseError | OpenApiExtractionError | StorageFailure
+> =>
+  Effect.gen(function* () {
+    const doc = yield* parse(specText);
+    return yield* compileAndPersistOpenApiOperations({
+      doc,
+      integration,
+      storage,
+      specHash,
+      chunkSize,
+    });
+  });
 
 export const loadOpenApiSpecText = (
   storage: OpenapiStore,
@@ -265,16 +398,38 @@ export const loadOpenApiSpecText = (
 ): Effect.Effect<string | null, StorageFailure> =>
   config.specHash != null ? storage.getSpec(config.specHash) : Effect.succeed(null);
 
+/**
+ * Resolve the tool defs + shared definitions for a connection refresh
+ * (`tools/list`). Fast path: serve from the persisted operation bindings plus
+ * the content-addressed defs blob, rebuilding each tool's input/output schema
+ * on demand, so a 37MB spec is never re-parsed (the 2nd OOM site). The defs
+ * blob is global per `specHash`, so the heavy normalize work is done once at
+ * add time and shared across every tenant on the same spec. Falls back to the
+ * spec re-parse for legacy rows persisted before the defs blob existed (or if
+ * the blob is missing/corrupt).
+ */
 export const resolveOpenApiBackedTools = ({
+  integration,
   config,
   storage,
 }: {
+  readonly integration: { readonly slug: string };
   readonly config: unknown;
   readonly storage: OpenapiStore;
 }): Effect.Effect<ResolveToolsResult, StorageFailure> =>
   Effect.gen(function* () {
     const openApiConfig = decodeOpenApiIntegrationConfig(config);
     if (!openApiConfig) return { tools: [], definitions: {} };
+    if (openApiConfig.specHash != null) {
+      const defsJson = yield* storage.getDefs(openApiConfig.specHash);
+      if (defsJson != null) {
+        const definitions = Option.getOrNull(decodeDefsJson(defsJson));
+        if (definitions != null) {
+          const ops = yield* storage.listOperations(String(integration.slug));
+          return { tools: ops.map(toolDefFromStoredOperation), definitions };
+        }
+      }
+    }
     const specText = yield* loadOpenApiSpecText(storage, openApiConfig);
     if (specText == null) return { tools: [], definitions: {} };
     const compiled = yield* compileOpenApiSpec(specText).pipe(

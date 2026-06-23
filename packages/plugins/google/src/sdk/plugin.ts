@@ -143,6 +143,7 @@ const makeGooglePluginExtension = (
       };
 
       yield* ctx.storage.putSpec(specHash, conversion.specText);
+      yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
       yield* ctx.transaction(
         Effect.gen(function* () {
@@ -183,6 +184,7 @@ const makeGooglePluginExtension = (
 
       const specHash = yield* sha256Hex(conversion.specText);
       yield* ctx.storage.putSpec(specHash, conversion.specText);
+      yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
 
       const nextConfig: GoogleIntegrationConfig = {
         ...current,
@@ -298,7 +300,8 @@ export const googlePlugin = definePlugin((options?: GooglePluginOptions) => ({
   describeAuthMethods: describeGoogleAuthMethods,
   describeIntegrationDisplay: describeGoogleIntegrationDisplay,
 
-  resolveTools: ({ config, storage }) => resolveOpenApiBackedTools({ config, storage }),
+  resolveTools: ({ integration, config, storage }) =>
+    resolveOpenApiBackedTools({ integration, config, storage }),
 
   invokeTool: ({ ctx, toolRow, credential, args }) => {
     const httpClientLayer = options?.httpClientLayer ?? ctx.httpClientLayer;

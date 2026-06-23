@@ -2,6 +2,8 @@ export { parse, resolveSpecText, fetchSpecText } from "./parse";
 export { extract } from "./extract";
 export { invoke, invokeWithLayer, annotationsForOperation } from "./invoke";
 export {
+  compileAndPersistOpenApiOperations,
+  compileAndPersistOpenApiSpec,
   compileOpenApiDocument,
   compileOpenApiSpec,
   extractOpenApiUpstreamMessage,
@@ -13,6 +15,7 @@ export {
   resolveOpenApiBackedAnnotations,
   resolveOpenApiBackedTools,
   type CompiledOpenApiSpec,
+  type OpenApiPersistResult,
 } from "./backing";
 export type { ParsedDocument } from "./parse";
 export {
