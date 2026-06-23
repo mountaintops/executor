@@ -1920,6 +1920,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           .resolveTools({
             integration: rowToIntegration(integrationRow),
             config: decodeJsonColumn(integrationRow.config),
+            httpClientLayer: runtime.ctx.httpClientLayer,
             connection: ref,
             template: existingRow ? AuthTemplateSlug.make(existingRow.template) : null,
             storage: runtime.storage,
