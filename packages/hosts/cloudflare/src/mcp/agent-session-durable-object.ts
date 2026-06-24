@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Option, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Option, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import type { Connection, ConnectionContext } from "agents";
 import { McpAgent } from "agents/mcp";
@@ -149,11 +149,27 @@ const readActivePostRequestIds = (request: Request): readonly JsonRpcRequestId[]
   if (request.headers.get(MCP_HTTP_METHOD_HEADER) !== "POST") return [];
   const encoded = request.headers.get(MCP_MESSAGE_HEADER);
   if (!encoded) return [];
-  const parsed = decodeJsonRpcPostPayload(atob(encoded));
+  const decoded = Effect.runSyncExit(
+    Effect.try({
+      try: () => atob(encoded),
+      catch: () => "invalid_base64" as const,
+    }),
+  );
+  if (Exit.isFailure(decoded)) {
+    console.warn(
+      JSON.stringify({
+        event: "mcp_active_post_response_wait_parse_failed",
+        reason: "invalid_base64",
+      }),
+    );
+    return [];
+  }
+  const parsed = decodeJsonRpcPostPayload(decoded.value);
   if (Option.isNone(parsed)) {
     console.warn(
       JSON.stringify({
         event: "mcp_active_post_response_wait_parse_failed",
+        reason: "invalid_json",
       }),
     );
     return [];
@@ -700,6 +716,7 @@ export abstract class McpAgentSessionDOBase<
       lease.expiring = true;
       if (lease.timeout) clearTimeout(lease.timeout);
       lease.timeout = null;
+      if (self.approvalResponses.has(executionId)) return;
 
       const response = {
         action: "decline",
@@ -709,7 +726,7 @@ export abstract class McpAgentSessionDOBase<
         console.info(JSON.stringify({ event: "mcp_pending_approval_lease_expire", executionId }));
       });
       yield* self.recordApprovalResponse(executionId, response);
-      if (self.engine) {
+      if (self.engine && !self.approvalWaiters.has(executionId)) {
         yield* self.engine.resume(executionId, response).pipe(Effect.ignore);
       }
     }).pipe(
