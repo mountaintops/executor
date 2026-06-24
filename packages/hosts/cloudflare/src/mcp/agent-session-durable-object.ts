@@ -233,23 +233,8 @@ export abstract class McpAgentSessionDOBase<
     }
 
     await this.keepAliveWhile(async () => {
-      console.info(
-        JSON.stringify({
-          event: "mcp_active_post_response_wait_start",
-          sessionId: this.sessionId,
-          streamId: conn.id,
-          requestIds,
-        }),
-      );
       await super.onConnect(conn, context);
       await this.waitForActivePostResponseDrain(conn.id);
-      console.info(
-        JSON.stringify({
-          event: "mcp_active_post_response_wait_finish",
-          sessionId: this.sessionId,
-          streamId: conn.id,
-        }),
-      );
     });
   }
 
@@ -606,9 +591,6 @@ export abstract class McpAgentSessionDOBase<
     return Effect.gen(function* () {
       if (self.pendingApprovalLeases.has(executionId)) return;
 
-      yield* Effect.sync(() => {
-        console.info(JSON.stringify({ event: "mcp_pending_approval_lease_start", executionId }));
-      });
       yield* Effect.promise(() => self.markActivity()).pipe(
         Effect.withSpan("McpSessionDO.markActivity"),
       );
@@ -617,9 +599,6 @@ export abstract class McpAgentSessionDOBase<
         self.queuePendingApprovalLeaseExpiration(executionId);
       }, PAUSED_APPROVAL_TIMEOUT_MS);
       self.pendingApprovalLeases.set(executionId, { disposeKeepAlive, timeout, expiring: false });
-      yield* Effect.sync(() => {
-        console.info(JSON.stringify({ event: "mcp_pending_approval_lease_started", executionId }));
-      });
     }).pipe(
       Effect.withSpan("McpSessionDO.pending_approval_lease.start", {
         attributes: { "mcp.execution.id": executionId },
@@ -635,7 +614,6 @@ export abstract class McpAgentSessionDOBase<
   }
 
   private queuePendingApprovalLeaseStart(executionId: string): void {
-    console.info(JSON.stringify({ event: "mcp_pending_approval_lease_queued", executionId }));
     this.ctx.waitUntil(Effect.runPromise(this.startPendingApprovalLease(executionId)));
   }
 

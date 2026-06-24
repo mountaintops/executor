@@ -495,14 +495,6 @@ const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
   };
 };
 
-const logMcpPauseEvent = (event: string, data: Record<string, unknown>): void => {
-  console.info(JSON.stringify({ event, ...data }));
-};
-
-const logMcpToolEvent = (event: string, data: Record<string, unknown>): void => {
-  console.info(JSON.stringify({ event, ...data }));
-};
-
 // A paused execution lives in the session runtime's memory: it expires when
 // the user takes too long to answer, and dies early when the runtime is
 // rebuilt (host restart, redeploy). Either way the recovery is the same and
@@ -619,16 +611,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           });
           return toMcpResult(result);
         }
-        logMcpToolEvent("mcp_tool_execute_with_pause_start", {
-          codeLength: code.length,
-          elicitationMode: elicitationMode.mode,
-        });
         const outcome = yield* engine.executeWithPause(code);
-        logMcpToolEvent("mcp_tool_execute_with_pause_result", {
-          status: outcome.status,
-          executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
-          elicitationMode: elicitationMode.mode,
-        });
         debugLog("execute.paused_flow_result", {
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
@@ -638,17 +621,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         if (outcome.status === "paused") {
-          logMcpPauseEvent("mcp_pause_created", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "execute",
+          yield* Effect.annotateCurrentSpan({
+            "mcp.execute.paused": true,
+            "mcp.execute.paused_execution_id": outcome.execution.id,
+            "mcp.execute.pause_source": "execute",
           });
           yield* onExecutionPaused(outcome.execution.id);
-          logMcpPauseEvent("mcp_pause_returning", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "execute",
-          });
         }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
@@ -691,17 +669,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               : undefined,
         });
         if (outcome.status === "paused") {
-          logMcpPauseEvent("mcp_pause_created", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "resume",
+          yield* Effect.annotateCurrentSpan({
+            "mcp.execute.paused": true,
+            "mcp.execute.paused_execution_id": outcome.execution.id,
+            "mcp.execute.pause_source": "resume",
           });
           yield* onExecutionPaused(outcome.execution.id);
-          logMcpPauseEvent("mcp_pause_returning", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "resume",
-          });
         }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
@@ -767,17 +740,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           return missingExecutionResult(executionId);
         }
         if (outcome.status === "paused") {
-          logMcpPauseEvent("mcp_pause_created", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "browser_resume",
+          yield* Effect.annotateCurrentSpan({
+            "mcp.execute.paused": true,
+            "mcp.execute.paused_execution_id": outcome.execution.id,
+            "mcp.execute.pause_source": "browser_resume",
           });
           yield* onExecutionPaused(outcome.execution.id);
-          logMcpPauseEvent("mcp_pause_returning", {
-            executionId: outcome.execution.id,
-            mode: elicitationMode.mode,
-            source: "browser_resume",
-          });
         }
         return outcome.status === "completed"
           ? toMcpResult(outcome.result)
@@ -800,13 +768,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           description,
           inputSchema: { code: z.string().trim().min(1) },
         },
-        ({ code }) => {
-          logMcpToolEvent("mcp_tool_execute_entry", {
-            codeLength: code.length,
-            elicitationMode: elicitationMode.mode,
-          });
-          return runToolEffect(executeCode(code));
-        },
+        ({ code }) => runToolEffect(executeCode(code)),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
@@ -838,16 +800,8 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
                 .default("{}"),
             },
           },
-          ({ executionId, action, content: rawContent }) => {
-            logMcpToolEvent("mcp_tool_resume_entry", {
-              executionId,
-              action,
-              elicitationMode: elicitationMode.mode,
-            });
-            return runToolEffect(
-              resumeExecution(executionId, action, parseJsonContent(rawContent)),
-            );
-          },
+          ({ executionId, action, content: rawContent }) =>
+            runToolEffect(resumeExecution(executionId, action, parseJsonContent(rawContent))),
         );
       }
 
@@ -863,14 +817,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             executionId: z.string().describe("The execution ID from the paused result"),
           },
         },
-        ({ executionId }) => {
-          logMcpToolEvent("mcp_tool_resume_entry", {
-            executionId,
-            action: "browser_wait",
-            elicitationMode: elicitationMode.mode,
-          });
-          return runToolEffect(resumeAfterBrowserApproval(executionId));
-        },
+        ({ executionId }) => runToolEffect(resumeAfterBrowserApproval(executionId)),
       );
     }).pipe(
       Effect.withSpan("mcp.host.register_tool", {
