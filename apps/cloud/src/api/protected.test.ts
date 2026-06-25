@@ -18,7 +18,7 @@ const makeBaseEngine = (): ExecutionEngine =>
       }),
     getPausedExecution: () => Effect.succeed(null),
     getDescription: Effect.succeed("desc"),
-    listTools: Effect.succeed([]),
+    searchTools: () => Effect.succeed({ items: [], total: 0, hasMore: false, nextOffset: null }),
     invokeTool: () => Effect.succeed({ result: "ok", logs: [] }),
     invokeToolWithPause: () =>
       Effect.succeed({

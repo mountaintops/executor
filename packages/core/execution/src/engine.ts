@@ -13,7 +13,7 @@ import { CodeExecutionError } from "@executor-js/codemode-core";
 import type { CodeExecutor, ExecuteResult, SandboxToolInvoker } from "@executor-js/codemode-core";
 
 import {
-  addressToPath,
+  pathToAddress,
   defaultToolDiscoveryProvider,
   makeExecutorToolInvoker,
   listExecutorSources,
@@ -52,6 +52,28 @@ export type ToolListing = {
   readonly description?: string;
   readonly inputSchema: unknown;
 };
+
+/** One ranked search hit for the non-code-mode `search` tool: a directly
+ *  invocable `name` plus enough schema to call it. Same shape as a
+ *  {@link ToolListing}, returned for only the matched page rather than the
+ *  whole catalog. */
+export type ToolSearchResult = ToolListing;
+
+/** A page of {@link ToolSearchResult}s. `total` is the match count before
+ *  pagination so the caller can tell it was truncated; `nextOffset` is the
+ *  offset to pass back for the next page, or null at the end. */
+export type ToolSearchPage = {
+  readonly items: readonly ToolSearchResult[];
+  readonly total: number;
+  readonly hasMore: boolean;
+  readonly nextOffset: number | null;
+};
+
+/** Default and ceiling for `search` page size. Search returns each hit's full
+ *  self-contained schema, so the page is bounded to keep the response small
+ *  even when the catalog has tens of thousands of tools. */
+export const DEFAULT_SEARCH_LIMIT = 10;
+export const MAX_SEARCH_LIMIT = 25;
 
 /** Internal representation with Effect runtime state for pause/resume. */
 type InternalPausedExecution<E> = PausedExecution & {
@@ -439,11 +461,16 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   readonly getDescription: Effect.Effect<string>;
 
   /**
-   * Enumerate every directly-callable tool with a self-contained input schema.
-   * Backs the non-code-mode MCP surface that exposes each tool individually
-   * instead of behind the single `execute` tool.
+   * Ranked, paginated tool search backing the non-code-mode `search` tool.
+   * Returns only the matched page (each hit with its self-contained input
+   * schema), so it scales to catalogs far too large to enumerate in one
+   * `listTools`. The lazy-loading counterpart to {@link listTools}.
    */
-  readonly listTools: Effect.Effect<readonly ToolListing[]>;
+  readonly searchTools: (input: {
+    readonly query: string;
+    readonly limit?: number;
+    readonly offset?: number;
+  }) => Effect.Effect<ToolSearchPage>;
 
   /**
    * Invoke a single tool by its wire name with elicitation handled inline by
@@ -719,26 +746,47 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   });
 
   /**
-   * Enumerate every directly-callable tool with a self-contained input schema.
-   * Storage failures are unrecoverable here (the surface can't function without
-   * the catalog), so they die rather than surfacing a typed error the caller
-   * must thread.
+   * Ranked, paginated search over the catalog. Reuses the same discovery
+   * provider the code-mode `tools.search()` uses (one consistent ranking),
+   * then enriches the matched page with each hit's self-contained input
+   * schema so a client can invoke directly without a second round-trip. The
+   * page is bounded by {@link MAX_SEARCH_LIMIT}, so the response stays small no
+   * matter how large the catalog is. Storage failures die for the same reason
+   * as {@link listTools}.
    */
-  const listTools: Effect.Effect<readonly ToolListing[]> = executor.tools
-    .list({ includeSchemas: true })
-    .pipe(
-      Effect.map((tools) =>
-        tools.map(
-          (tool): ToolListing => ({
-            name: addressToPath(String(tool.address)),
-            description: tool.description,
-            inputSchema: tool.inputSchema ?? { type: "object" },
-          }),
-        ),
-      ),
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.listTools exposes no error channel; a catalog read the listing surface can't recover from dies rather than forcing every caller to thread a typed error
+  const searchTools = (input: {
+    readonly query: string;
+    readonly limit?: number;
+    readonly offset?: number;
+  }): Effect.Effect<ToolSearchPage> =>
+    Effect.gen(function* () {
+      const limit = Math.min(Math.max(input.limit ?? DEFAULT_SEARCH_LIMIT, 1), MAX_SEARCH_LIMIT);
+      const offset = Math.max(input.offset ?? 0, 0);
+      const page = yield* toolDiscoveryProvider.searchTools({
+        executor,
+        query: input.query,
+        limit,
+        offset,
+      });
+      const items = yield* Effect.forEach(
+        page.items,
+        (hit) =>
+          executor.tools.schema(pathToAddress(hit.path)).pipe(
+            Effect.map(
+              (schema): ToolSearchResult => ({
+                name: hit.path,
+                description: hit.description,
+                inputSchema: schema?.inputSchema ?? { type: "object" },
+              }),
+            ),
+          ),
+        { concurrency: "unbounded" },
+      );
+      return { items, total: page.total, hasMore: page.hasMore, nextOffset: page.nextOffset };
+    }).pipe(
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.searchTools exposes no error channel; a catalog read the search surface can't recover from dies rather than forcing every caller to thread a typed error
       Effect.orDie,
-      Effect.withSpan("mcp.list_tools"),
+      Effect.withSpan("mcp.search_tools", { attributes: { "mcp.search.query": input.query } }),
     );
 
   return {
@@ -748,7 +796,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     getPausedExecution: (executionId) =>
       Effect.sync(() => pausedExecutions.get(executionId) ?? null),
     getDescription: buildExecuteDescription(executor),
-    listTools,
+    searchTools,
     invokeTool: invokeToolInline,
     invokeToolWithPause,
   };

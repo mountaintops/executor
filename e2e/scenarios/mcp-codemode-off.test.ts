@@ -1,23 +1,24 @@
-// Transparent connection mode (`?codemode=false`). By default an Executor MCP
+// Non-code connection mode (`?codemode=false`). By default an Executor MCP
 // session runs in "code mode": one `execute` tool the model writes TypeScript
 // against, discovering connections through `tools.search()` /
 // `tools.describe.tool()` and calling them as `tools.<...>()` inside the
-// sandbox. Some clients instead want every tool enumerated directly (lazy /
-// on-demand tool loading), so the session accepts `?codemode=false` and dumps
-// the whole catalog as individually-callable MCP tools. This mirrors the
-// `?codemode=false` switch in Cloudflare's MCP server.
+// sandbox. Some clients can't drive a code sandbox and instead want to discover
+// and call tools through plain MCP tool calls, so the session accepts
+// `?codemode=false` and exposes two meta-tools, `search` and `invoke`, instead
+// of `execute`.
 //
-// The seam under test: the SAME connected identity, opened with the query
-// param, advertises its tools by name instead of behind `execute`, and a
-// by-name call routes straight to the tool invoker and returns the tool's real
-// result. A default (code-mode) session of the same identity is the contrast:
-// it still advertises only `execute`.
+// Why not just dump every tool directly (the obvious reading of the Cloudflare
+// `?codemode=false` switch)? Because a real catalog is enormous: the full
+// Microsoft Graph connection alone is ~16.5k tools / hundreds of MB of inlined
+// schema, which no client can load in one `tools/list`. `search`+`invoke` is the
+// lazy-loading shape: the client searches for the handful of tools it needs and
+// invokes them by name, so it scales to any catalog. (See mcp-codemode-scale.)
 //
-// Cross-target: runs on every host that threads the codeMode flag through to the
-// MCP server (cloud's Durable Object, self-host's in-process server, Cloudflare's
-// DO). The connection tools are seeded from an OpenAPI fixture whose baseUrl is
-// never contacted, and the verifiable direct call uses a built-in core tool, so
-// the scenario is fully hermetic.
+// The seam under test: the SAME connected identity, opened with the query param,
+// advertises `search`/`invoke` instead of `execute`; `search` finds a seeded
+// connection's tools, and `invoke` runs one and returns its real result. A
+// default (code-mode) session of the same identity is the contrast: it still
+// advertises only `execute`.
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -36,15 +37,20 @@ import { Api, Mcp, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
-// A built-in core tool present on every target. In transparent mode it is
-// callable directly by this wire name (a static core tool's address has no
-// `tools.` prefix, so it survives `addressToPath` unchanged), and it returns
-// real data (the policy listing) we can verify.
+// A built-in core tool present on every target. In non-code mode it is invoked
+// by this wire name through the `invoke` meta-tool (a static core tool's address
+// has no `tools.` prefix, so it survives `addressToPath` unchanged), and it
+// returns real data (the policy listing) we can verify.
 const CORE_TOOL = "executor.coreTools.policies.list";
+
+// The approval-gated core tool used by the pause+resume scenario below. It gates
+// on its own `requiresApproval` annotation (no policy needed), so invoking it
+// pauses, and resuming exercises the non-code resume formatter.
+const POLICY_CREATE_TOOL = "executor.coreTools.policies.create";
 
 // Minimal three-operation spec: three operations become three connection tools.
 // The baseUrl is never contacted; we only need the tools to exist in the
-// catalog so transparent mode has something to dump.
+// catalog so `search` has something to find.
 const ordersOpenApiSpec = (baseUrl: string): string =>
   JSON.stringify({
     openapi: "3.0.3",
@@ -74,9 +80,9 @@ const ordersOpenApiSpec = (baseUrl: string): string =>
     },
   });
 
-// The engine advertises each tool under `addressToPath(address)`: a leading
-// proxy-root `tools.` is stripped, everything else is left as-is. Deriving the
-// expected name from the same catalog the engine reads keeps the assertion from
+// `search`/`invoke` use the same `addressToPath(address)` the engine does: a
+// leading proxy-root `tools.` is stripped, everything else is left as-is.
+// Deriving the expected name from the same catalog keeps the assertion from
 // drifting if the address format changes.
 const wireName = (address: string): string =>
   address.startsWith("tools.") ? address.slice("tools.".length) : address;
@@ -89,13 +95,16 @@ const apiKeyTemplate = [
   },
 ] as const;
 
-// The approval-gated core tool used by the pause+resume scenario below. It
-// gates on its own `requiresApproval` annotation (no policy needed), so a direct
-// transparent-mode call pauses, and resuming it exercises the resume formatter.
-const POLICY_CREATE_TOOL = "executor.coreTools.policies.create";
+type SearchPage = {
+  readonly items?: ReadonlyArray<{ readonly name?: string; readonly inputSchema?: unknown }>;
+  readonly total?: number;
+};
+
+const searchPageOf = (raw: unknown): SearchPage =>
+  ((raw as { structuredContent?: SearchPage }).structuredContent ?? {}) as SearchPage;
 
 scenario(
-  "MCP · ?codemode=false dumps every tool directly instead of `execute`",
+  "MCP · ?codemode=false exposes search + invoke instead of `execute`",
   { timeout: 120_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -127,7 +136,7 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Seed an integration + connection so there are connection tools to dump.
+        // Seed an integration + connection so `search` has tools to find.
         const added = yield* apiClient.openapi.addSpec({
           payload: {
             spec: { kind: "blob", value: ordersOpenApiSpec(specBaseUrl) },
@@ -149,8 +158,7 @@ scenario(
           },
         });
 
-        // Derive the exact wire names transparent mode must advertise from the
-        // catalog itself, applying the same `tools.`-strip the engine does.
+        // The exact wire names `search` should surface, derived from the catalog.
         const catalog = yield* apiClient.tools.list({
           query: { integration: IntegrationSlug.make(slug) },
         });
@@ -161,52 +169,54 @@ scenario(
         ).toBe(3);
 
         // A policy with an unrelated pattern: it does NOT gate `policies.list`,
-        // so the direct call below runs ungated. Its id only has to appear in
-        // the listing to prove the tool actually executed and returned data.
+        // so the invoke below runs ungated. Its id only has to appear in the
+        // listing to prove the tool actually executed and returned data.
         const policy = yield* apiClient.policies.create({
           payload: { owner: "org", pattern: `codemode.gate.${nonce}`, action: "block" },
         });
 
         yield* Effect.ensuring(
           Effect.gen(function* () {
-            // 1) Transparent mode: the tool list IS the tools, not `execute`.
-            const transparent = mcp.session(identity, { codeMode: false });
-            const transparentTools = yield* transparent.listTools();
+            const noncode = mcp.session(identity, { codeMode: false });
 
-            expect(transparentTools, "code mode's `execute` is gone").not.toContain("execute");
+            // 1) The advertised tools are the meta-tools, NOT `execute` and NOT a
+            //    dumped catalog.
+            const tools = yield* noncode.listTools();
+            expect(tools, "search is advertised").toContain("search");
+            expect(tools, "invoke is advertised").toContain("invoke");
+            expect(tools, "code mode's `execute` is gone").not.toContain("execute");
             expect(
-              transparentTools,
-              "the code-mode meta-tool `search` is not advertised",
-            ).not.toContain("search");
-            expect(
-              transparentTools,
-              "the code-mode meta-tool `describe.tool` is not advertised",
-            ).not.toContain("describe.tool");
+              tools,
+              "the catalog is NOT dumped directly (that is the whole point)",
+            ).not.toContain(expectedConnectionTools[0]!);
 
+            // 2) `search` finds the seeded connection's tools, each with a schema.
+            const search = yield* noncode.call("search", { query: slug });
+            expect(search.ok, "search completed without error").toBe(true);
+            const page = searchPageOf(search.raw);
+            const found = (page.items ?? []).map((item) => item.name);
             for (const name of expectedConnectionTools) {
-              expect(transparentTools, `connection tool ${name} is advertised directly`).toContain(
-                name,
-              );
+              expect(found, `search surfaced connection tool ${name}`).toContain(name);
             }
-            expect(transparentTools, "built-in core tools are dumped too").toContain(CORE_TOOL);
-
-            // 2) A direct call by name runs the tool and returns its real result.
-            const result = yield* transparent.call(CORE_TOOL, {});
-            expect(result.ok, "the direct tool call completed without error").toBe(true);
             expect(
-              result.text,
+              (page.items ?? []).every((item) => item.inputSchema != null),
+              "each search hit carries its input schema, so it can be invoked directly",
+            ).toBe(true);
+
+            // 3) `invoke` runs a tool by name and returns its real result.
+            const invoked = yield* noncode.call("invoke", { name: CORE_TOOL, arguments: {} });
+            expect(invoked.ok, "the invoke completed without error").toBe(true);
+            expect(
+              invoked.text,
               "the listing the tool returned includes the policy we created",
             ).toContain(policy.id);
 
-            // 3) Contrast: the same identity in default (code) mode still gets
-            // the single `execute` tool and does NOT dump the connection tools.
-            // The query param is the only thing that flips behavior.
+            // 4) Contrast: the same identity in default (code) mode still gets the
+            //    single `execute` tool and not the meta-tools.
             const codeModeSession = mcp.session(identity);
             const codeModeTools = yield* codeModeSession.listTools();
             expect(codeModeTools, "code mode still advertises `execute`").toContain("execute");
-            expect(codeModeTools, "code mode does not dump the connection tools").not.toContain(
-              expectedConnectionTools[0]!,
-            );
+            expect(codeModeTools, "code mode does not advertise `search`").not.toContain("search");
           }),
           apiClient.policies
             .remove({ params: { policyId: policy.id }, payload: { owner: "org" } })
@@ -218,15 +228,15 @@ scenario(
   }),
 );
 
-// Result-shape parity across the pause boundary. A transparent-mode tool that
-// pauses for approval and then resumes must return the SAME shape it would have
+// Result-shape parity across the pause boundary. An `invoke`d tool that pauses
+// for approval and then resumes must return the SAME shape it would have
 // returned without pausing: the tool's own result, unwrapped from the
 // `ToolResult` envelope. The `resume` machinery is shared with code mode, where a
 // completion is an `execute` envelope (`{ status, result, logs }`); a regression
-// here formatted the resumed direct-tool result that same way, so a transparent
-// client got the code-mode envelope instead of the policy fields. This drives the
-// approval-gated `policies.create` through pause -> approve -> resume and asserts
-// the resumed structured content is the policy itself.
+// here formatted the resumed direct-tool result that same way, so a non-code
+// client got the code-mode envelope instead of the tool's fields. This drives
+// the approval-gated `policies.create` through invoke -> pause -> approve ->
+// resume and asserts the resumed structured content is the policy itself.
 scenario(
   "MCP · ?codemode=false keeps the unwrapped tool result across an approval pause+resume",
   { timeout: 120_000 },
@@ -257,22 +267,21 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        const transparent = mcp.session(identity, { codeMode: false });
-        yield* transparent.listTools();
+        const noncode = mcp.session(identity, { codeMode: false });
+        yield* noncode.listTools();
 
-        // Direct by-name call to the approval-gated tool. No policy is in play, so
-        // the only thing that can pause it is its own `requiresApproval`
-        // annotation. The paused result carries the executionId to resume.
-        const paused = yield* transparent.call(POLICY_CREATE_TOOL, {
-          owner: "org",
-          pattern,
-          action: "block",
+        // Invoke the approval-gated tool by name. No policy is in play, so the
+        // only thing that can pause it is its own `requiresApproval` annotation.
+        // The paused result carries the executionId to resume.
+        const paused = yield* noncode.call("invoke", {
+          name: POLICY_CREATE_TOOL,
+          arguments: { owner: "org", pattern, action: "block" },
         });
         expect(paused.text, "the gated tool paused for approval").toContain("Execution paused");
         expect(paused.text, "the paused result carries an executionId").toContain("executionId:");
 
         // Approve and resume.
-        const resumed = yield* transparent.approvePaused(paused.text);
+        const resumed = yield* noncode.approvePaused(paused.text);
         expect(resumed.ok, "the resumed call completed without error").toBe(true);
 
         const structured = (resumed.raw as { structuredContent?: Record<string, unknown> })
@@ -286,7 +295,7 @@ scenario(
         ).toBe(pattern);
         expect(
           structured?.result,
-          "the code-mode execute envelope (status/result/logs) is not used in transparent mode",
+          "the code-mode execute envelope (status/result/logs) is not used in non-code mode",
         ).toBeUndefined();
       }),
       cleanup,

@@ -20,8 +20,8 @@ export const withExecutionUsageTracking = <E extends Cause.YieldableError>(
   resume: (executionId, response) => engine.resume(executionId, response),
   getPausedExecution: (executionId) => engine.getPausedExecution(executionId),
   getDescription: engine.getDescription,
-  // listTools is discovery, not an execution, so it doesn't count as usage.
-  listTools: engine.listTools,
+  // searchTools is discovery, not an execution, so it doesn't count as usage.
+  searchTools: (input) => engine.searchTools(input),
   // A direct tool invocation is an execution, so it counts the same as execute.
   invokeTool: (name, args, options) =>
     engine

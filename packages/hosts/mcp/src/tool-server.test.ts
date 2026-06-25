@@ -30,7 +30,7 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   execute?: ExecutionEngine<E>["execute"];
   executeWithPause?: ExecutionEngine<E>["executeWithPause"];
   resume?: ExecutionEngine<E>["resume"];
-  listTools?: ExecutionEngine<E>["listTools"];
+  searchTools?: ExecutionEngine<E>["searchTools"];
   invokeTool?: ExecutionEngine<E>["invokeTool"];
   invokeToolWithPause?: ExecutionEngine<E>["invokeToolWithPause"];
   description?: string;
@@ -42,7 +42,9 @@ const makeStubEngine = <E extends Cause.YieldableError = never>(overrides: {
   resume: overrides.resume ?? (() => Effect.succeed(null)),
   getPausedExecution: () => Effect.succeed(null),
   getDescription: Effect.succeed(overrides.description ?? "test executor"),
-  listTools: overrides.listTools ?? Effect.succeed([]),
+  searchTools:
+    overrides.searchTools ??
+    (() => Effect.succeed({ items: [], total: 0, hasMore: false, nextOffset: null })),
   invokeTool: overrides.invokeTool ?? (() => Effect.succeed({ result: "default" })),
   invokeToolWithPause:
     overrides.invokeToolWithPause ??

@@ -29,9 +29,12 @@ import {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ResumeResponse,
+  type ToolSearchPage,
 } from "@executor-js/execution";
 
 // ---------------------------------------------------------------------------
@@ -98,12 +101,13 @@ type SharedMcpServerConfig = {
       };
   readonly browserApprovalStore?: BrowserApprovalStore;
   /**
-   * When `false`, run in transparent (non-code) mode: every available tool is
-   * enumerated as a directly-callable MCP tool instead of being reached through
-   * the single `execute` code tool. Defaults to `true` (code mode). Selected by
-   * a `?codemode=false` query param on the MCP endpoint, mirroring the same
-   * switch Cloudflare's MCP exposes — for clients that lazily load tools and
-   * need them listed individually.
+   * When `false`, run in non-code mode: instead of the single `execute` code
+   * tool, expose two meta-tools, `search` (find tools, ranked + paginated) and
+   * `invoke` (call a tool by name). This is the lazy-loading surface for clients
+   * that can't drive a code sandbox; it scales to any catalog size because
+   * `search` only ever returns a bounded page (dumping a large catalog directly
+   * does not). Defaults to `true` (code mode). Selected by a `?codemode=false`
+   * query param on the MCP endpoint.
    */
   readonly codeMode?: boolean;
 };
@@ -448,24 +452,6 @@ const toMcpPausedResult = (formatted: ReturnType<typeof formatPausedExecution>):
 const renderToolValueText = (value: unknown): string =>
   typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2);
 
-// Transparent mode advertises every tool's input schema verbatim over the wire,
-// and the MCP client validates each `inputSchema` root against `type: "object"`.
-// A tool whose top-level input is a union (e.g. `executor.mcp.addServer`)
-// compiles to `{ anyOf: [...] }` with no root `type`, which makes the client
-// reject the ENTIRE `tools/list` response. Executor always invokes tools with a
-// named-args object, so it is safe to stamp `type: "object"` onto any root that
-// lacks one while preserving the rest of the schema (the union variants stay in
-// `anyOf`; MCP's `.passthrough()` keeps the extra keys, and the tool invoker
-// still enforces the real schema).
-const toMcpInputSchema = (schema: unknown): Record<string, unknown> => {
-  if (schema !== null && typeof schema === "object" && !Array.isArray(schema)) {
-    const record = schema as Record<string, unknown>;
-    if (record.type === "object") return record;
-    if (record.type === undefined) return { ...record, type: "object" };
-  }
-  return { type: "object" };
-};
-
 const toolErrorText = (error: ToolError): string => {
   const status = error.status != null ? ` (status ${error.status})` : "";
   // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: ToolError is a typed struct whose `message` is a schema field, not an unknown error
@@ -479,6 +465,29 @@ const renderToolData = (data: unknown): McpToolResult => {
     ...(isRecord(data) ? { structuredContent: data } : {}),
   };
 };
+
+// A `search` result page: render the matches as text plus structured content so
+// the model can read either. The page (items + total + nextOffset) is a record,
+// so it rides `structuredContent` directly.
+const renderSearchResult = (page: ToolSearchPage): McpToolResult => ({
+  content: [{ type: "text", text: JSON.stringify(page, null, 2) }],
+  structuredContent: { ...page },
+});
+
+// A call for a name that is neither `search`, `invoke`, nor `resume`. In
+// search+invoke mode only those meta-tools are advertised; everything else is
+// reached by name through `invoke`, so a direct call to a tool name is a client
+// mistake worth naming explicitly.
+const unknownMetaToolResult = (name: string): McpToolResult => ({
+  content: [
+    {
+      type: "text",
+      text: `Error: unknown tool "${name}". This connection exposes "search" (find tools) and "invoke" (call a tool by name).`,
+    },
+  ],
+  structuredContent: { status: "error", error: `unknown tool: ${name}` },
+  isError: true,
+});
 
 const toNonCodeMcpResult = (result: FormattedExecuteInput): McpToolResult => {
   // Engine-level failure (declined approval, opaque defect surfaced as a
@@ -925,7 +934,56 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }),
       );
     } else {
-      const toolListings = yield* engine.listTools;
+      // Non-code mode: instead of dumping the whole catalog (a large catalog
+      // produces a tools/list far too big for clients to load or the runtime to
+      // hold), expose two meta-tools, `search` and `invoke`. The client searches
+      // for the handful of tools it needs and invokes them by name. This is the
+      // lazy-loading counterpart to code mode's `execute`, and it scales to any
+      // catalog size because `search` only ever returns a bounded page.
+      const searchWireTool = {
+        name: "search",
+        description: [
+          "Search the available tools by keyword. Returns ranked matches, each with its input schema, so you can call it with `invoke`.",
+          `Page with \`limit\` (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}) and \`offset\`; \`total\` and \`nextOffset\` in the result tell you whether there is more.`,
+        ].join("\n"),
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            query: {
+              type: "string",
+              description:
+                "Keywords matched against tool names and descriptions. Empty returns the top tools.",
+            },
+            limit: {
+              type: "number",
+              description: `Maximum matches to return (default ${DEFAULT_SEARCH_LIMIT}, max ${MAX_SEARCH_LIMIT}).`,
+            },
+            offset: {
+              type: "number",
+              description: "Offset into the ranked results, for pagination.",
+            },
+          },
+        },
+      };
+      const invokeWireTool = {
+        name: "invoke",
+        description: [
+          "Invoke a tool by name with its arguments.",
+          "Get the tool `name` and its input schema from `search` first, then pass `arguments` matching that schema.",
+        ].join("\n"),
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string", description: "The tool name exactly as returned by `search`." },
+            arguments: {
+              type: "object",
+              description: "Arguments object matching the tool's input schema.",
+              additionalProperties: true,
+            },
+          },
+          required: ["name"],
+        },
+      };
       const resumeWireTool =
         elicitationMode.mode === "native"
           ? undefined
@@ -977,16 +1035,13 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               };
 
       const wireTools = [
-        ...toolListings.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: toMcpInputSchema(tool.inputSchema),
-        })),
+        searchWireTool,
+        invokeWireTool,
         ...(resumeWireTool ? [resumeWireTool] : []),
       ];
 
       yield* Effect.sync(() => {
-        // `registerTool` normally declares this; transparent mode bypasses it.
+        // `registerTool` normally declares this; the low-level handlers bypass it.
         server.server.registerCapabilities({ tools: { listChanged: false } });
 
         server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: wireTools }));
@@ -1006,10 +1061,26 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               ),
             );
           }
-          return runToolEffect(invokeSingleTool(name, args));
+          if (name === "search") {
+            return runToolEffect(
+              engine
+                .searchTools({
+                  query: typeof args.query === "string" ? args.query : "",
+                  limit: typeof args.limit === "number" ? args.limit : undefined,
+                  offset: typeof args.offset === "number" ? args.offset : undefined,
+                })
+                .pipe(Effect.map(renderSearchResult)),
+            );
+          }
+          if (name === "invoke") {
+            const toolName = readArgString(args.name);
+            const toolArgs = isRecord(args.arguments) ? args.arguments : {};
+            return runToolEffect(invokeSingleTool(toolName, toolArgs));
+          }
+          return runToolEffect(Effect.succeed(unknownMetaToolResult(name)));
         });
       }).pipe(
-        Effect.withSpan("mcp.host.register_transparent_tools", {
+        Effect.withSpan("mcp.host.register_search_invoke", {
           attributes: { "mcp.tool.count": wireTools.length },
         }),
       );
