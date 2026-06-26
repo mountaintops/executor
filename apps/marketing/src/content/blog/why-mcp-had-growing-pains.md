@@ -1,5 +1,5 @@
 ---
-title: "Why MCP didn't work, what's next"
+title: "Why MCP had so many growing pains"
 description: "MCP shipped before anyone knew how to wire tools to agents, and it caught the blame for it. What actually went wrong, why CLIs aren't the answer, and where MCP goes from here."
 date: 2026-06-25
 author: "Rhys Sullivan"
