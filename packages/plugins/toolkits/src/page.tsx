@@ -737,7 +737,7 @@ function ToolkitToolsPanel(props: {
   return (
     <div
       role="region"
-      aria-label="Tools"
+      aria-label="Toolkit tools"
       className="flex min-h-0 shrink-0 flex-col border-r border-border/60"
       style={toolkitToolTreeStyle}
     >
@@ -939,54 +939,54 @@ function AddConnectionDialog(props: {
 function ToolkitHeader(props: {
   toolkit: ToolkitResponse;
   showOwnerLabels: boolean;
-  toolCount: number;
   mcpUrl: string;
   onBack: () => void;
   onManageConnections: () => void;
   onRemove: () => void;
 }) {
   return (
-    <div className="shrink-0 border-b border-border/60 bg-background/95 px-4 py-3">
-      <Button
-        type="button"
-        variant="ghost"
-        size="xs"
-        onClick={props.onBack}
-        className="mb-2 -ml-1 text-muted-foreground"
-      >
-        <ArrowLeftIcon className="size-3.5" />
-        Toolkits
-      </Button>
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
+    <div className="shrink-0 border-b border-border/60 bg-background/95 px-5 py-3">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-0 flex-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            onClick={props.onBack}
+            className="-ml-1 h-6 px-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeftIcon className="size-3.5" />
+            Toolkits
+          </Button>
+          <div className="mt-1 flex min-w-0 items-center gap-2">
             <h2 className="truncate text-sm font-semibold text-foreground">{props.toolkit.name}</h2>
             {props.showOwnerLabels ? (
               <Badge variant="outline" className="text-[10px]">
                 {ownerLabel(props.toolkit.owner)}
               </Badge>
             ) : null}
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {props.toolCount} {props.toolCount === 1 ? "tool" : "tools"}
-            </span>
           </div>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5">
-            <code className="min-w-0 truncate rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+          <div className="mt-2 flex max-w-3xl min-w-0 items-center gap-2 rounded-md bg-muted/20 px-2 py-1 text-xs text-muted-foreground ring-1 ring-border/40">
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+              MCP
+            </span>
+            <code className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
               {props.mcpUrl}
             </code>
-            <CopyButton value={props.mcpUrl} label="Copy toolkit MCP URL" />
+            <CopyButton value={props.mcpUrl} className="-mr-1" />
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1 pt-0.5">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="sm"
             aria-label="Manage toolkit connections"
             onClick={props.onManageConnections}
-            className="h-8"
+            className="h-8 text-muted-foreground hover:text-foreground"
           >
-            Manage
+            <PlugIcon className="size-3.5" />
+            Connections
           </Button>
           <AlertDialog>
             <AlertDialogTrigger asChild>
@@ -1103,11 +1103,6 @@ function ToolkitWorkspace(props: {
       }),
     [accessPolicies, configuredTools],
   );
-  const exposedToolIds = useMemo(
-    () =>
-      new Set(toolkitTools.filter((tool) => tool.policy.action !== "block").map((tool) => tool.id)),
-    [toolkitTools],
-  );
   const selectedTool = selectedToolId
     ? (configuredTools.find((tool) => toolMatchId(tool) === selectedToolId) ?? null)
     : null;
@@ -1120,7 +1115,6 @@ function ToolkitWorkspace(props: {
       <ToolkitHeader
         toolkit={props.toolkit}
         showOwnerLabels={props.showOwnerLabels}
-        toolCount={exposedToolIds.size}
         mcpUrl={props.mcpUrl}
         onBack={props.onBack}
         onManageConnections={() => setAddOpen(true)}
