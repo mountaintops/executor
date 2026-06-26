@@ -232,7 +232,7 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "Linear MCP",
-        existingSlugs: [],
+        existingClients: [],
         redirectUri: "https://localhost:5394/api/oauth/callback",
         integration: TEST_INTEGRATION,
       },
@@ -259,6 +259,101 @@ describe("runDcrConnect", () => {
     expect(startArgs!.owner).toBe("user");
   });
 
+  it("reuses an existing client minted for this integration instead of minting a duplicate", async () => {
+    // Regression guard for "Datadog, Datadog 2, … Datadog 10": a prior DCR client
+    // for THIS integration (same owner, same token host) must be reused, so a
+    // second connect runs only `start` — never `register`.
+    const calls: string[] = [];
+    let startArgs: StartArgs | null = null;
+    const outcome = await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> => {
+          calls.push("probe");
+          return Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            registrationEndpoint: "https://auth.example.com/register",
+          });
+        },
+        register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
+          calls.push("register");
+          return Promise.resolve(args.slug);
+        },
+        start: (args: StartArgs): void => {
+          calls.push("start");
+          startArgs = args;
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        owner: "user",
+        integrationName: "Linear MCP",
+        existingClients: [
+          {
+            owner: "user",
+            slug: OAuthClientSlug.make("linear-mcp"),
+            grant: "authorization_code",
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            clientId: "minted-earlier",
+            origin: { kind: "dynamic_client_registration", integration: TEST_INTEGRATION },
+          },
+        ],
+        integration: TEST_INTEGRATION,
+      },
+    );
+
+    expect(outcome.kind).toBe("started");
+    // Probed (to confirm the same server), then reused — NO second registration.
+    expect(calls).toEqual(["probe", "start"]);
+    expect(String(startArgs!.client)).toBe("linear-mcp");
+  });
+
+  it("does not reuse a client belonging to a DIFFERENT integration", async () => {
+    // A Datadog DCR client must never be reused for an Atlassian connect, even
+    // though both went through DCR — provenance is keyed by integration.
+    const calls: string[] = [];
+    await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.atlassian.com/authorize",
+            tokenUrl: "https://auth.atlassian.com/token",
+            registrationEndpoint: "https://auth.atlassian.com/register",
+          }),
+        register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
+          calls.push("register");
+          return Promise.resolve(args.slug);
+        },
+        start: (): void => {
+          calls.push("start");
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.atlassian.com/mcp",
+        owner: "user",
+        integrationName: "Atlassian",
+        existingClients: [
+          {
+            owner: "user",
+            slug: OAuthClientSlug.make("datadog"),
+            grant: "authorization_code",
+            authorizationUrl: "https://app.datadoghq.com/oauth2/authorize",
+            tokenUrl: "https://api.datadoghq.com/oauth2/token",
+            clientId: "datadog-client",
+            origin: {
+              kind: "dynamic_client_registration",
+              integration: IntegrationSlug.make("datadog"),
+            },
+          },
+        ],
+        integration: TEST_INTEGRATION,
+      },
+    );
+    // No Atlassian client exists yet → it mints a fresh one, not reuse Datadog.
+    expect(calls).toContain("register");
+  });
+
   it("prefers declared scopes over probed scopes when present", async () => {
     let registerArgs: RegisterArgs | null = null;
     const outcome = await runDcrConnect(
@@ -280,7 +375,7 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
+        existingClients: [],
         declaredScopes: ["declared.scope"],
         integration: TEST_INTEGRATION,
       },
@@ -313,7 +408,7 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
+        existingClients: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -344,7 +439,7 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
+        existingClients: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -374,7 +469,7 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
+        existingClients: [],
         integration: TEST_INTEGRATION,
       },
     );

@@ -981,6 +981,25 @@ const runForegroundSession = (input: {
         console.log(`Web:     ${baseUrl}`);
         console.log(`MCP:     ${baseUrl}/mcp`);
         console.log(`OpenAPI: ${baseUrl}/api/docs`);
+        // The HTTP /mcp endpoint is bearer-gated, and external agents have no way
+        // to discover the token (there is no OAuth server on the local app, so a
+        // client that tries OAuth auto-detection just errors). Surface the exact
+        // header — and a ready opencode block that pins `oauth: false` so it sends
+        // the header instead of probing for an authorization server.
+        console.log(`\nConnect an HTTP MCP client (e.g. opencode):`);
+        console.log(`  Header: Authorization: Bearer ${server.authToken}`);
+        console.log(
+          `  opencode.json: ${JSON.stringify({
+            mcp: {
+              executor: {
+                type: "remote",
+                url: `${baseUrl}/mcp`,
+                headers: { Authorization: `Bearer ${server.authToken}` },
+                oauth: false,
+              },
+            },
+          })}`,
+        );
         if (input.hostname !== "127.0.0.1" && input.hostname !== "localhost") {
           console.log(
             `\n⚠  Listening on ${input.hostname}. Executor runs arbitrary commands — only expose on trusted networks.`,
@@ -2352,6 +2371,19 @@ const webCommand = Command.make(
   ({ foreground, port, scope, hostname, allowedHost, authToken }) =>
     Effect.gen(function* () {
       if (!foreground) {
+        // `--scope` can ONLY be honored by a foreground server we boot here.
+        // Without `--foreground` we just open whatever background service is
+        // already running, which uses the scope IT was started with — so a
+        // `--scope` here would be silently ignored and the user could land on a
+        // different workspace ("where did my config go?"). Say so loudly and
+        // point at the flag that actually applies it.
+        if (Option.isSome(scope)) {
+          console.warn(
+            `Ignoring --scope ${scope.value}: it only applies with --foreground. ` +
+              `The running web app uses the scope it was started with. ` +
+              `Run \`executor web --foreground --scope ${scope.value}\` to serve that workspace.`,
+          );
+        }
         yield* openRunningLocalWebApp();
         return;
       }
