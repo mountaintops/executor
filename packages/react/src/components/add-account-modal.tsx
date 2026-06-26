@@ -42,6 +42,7 @@ import { oauthCallbackUrl, useOAuthPopupFlow } from "../plugins/oauth-sign-in";
 import {
   clientDisplayName,
   clientHost,
+  getRootDomain,
   uniqueClientSlug,
   useOAuthClientsForIntegration,
   type OAuthClientOption,
@@ -471,8 +472,10 @@ type RunDcrConnectInput = {
   readonly discoveryUrl: string;
   readonly owner: Owner;
   readonly integrationName: string;
-  /** The owner's existing client slugs, so the minted slug stays unique. */
-  readonly existingSlugs: readonly string[];
+  /** The owner's existing apps (UNFILTERED). Used both to keep a minted slug
+   *  unique across all apps AND to reuse a client already minted for this
+   *  integration instead of minting a duplicate on every connect. */
+  readonly existingClients: readonly OAuthClientOption[];
   /** Scopes declared by the integration's method (override the probed ones). */
   readonly declaredScopes?: readonly string[];
   /** Browser-facing callback URL registered with DCR when available. */
@@ -504,7 +507,28 @@ export async function runDcrConnect(
   const registrationEndpoint = probe.registrationEndpoint;
   if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint" };
 
-  const slug = uniqueClientSlug(input.integrationName, input.existingSlugs);
+  // Reuse a client already minted for THIS integration (same owner, same
+  // discovered token host) instead of minting a duplicate every connect — the
+  // cause of "Datadog", "Datadog 2", … "Datadog 10" piling up. A fresh probe of
+  // the same server yields the same endpoints, so an existing DCR client is
+  // still valid; we re-run only the authorize/token flow with it.
+  const probedTokenRoot = getRootDomain(probe.tokenUrl);
+  const reusable = input.existingClients.find(
+    (app) =>
+      app.owner === input.owner &&
+      app.origin?.integration != null &&
+      String(app.origin.integration) === String(input.integration) &&
+      getRootDomain(app.tokenUrl) === probedTokenRoot,
+  );
+  if (reusable) {
+    deps.start({ client: reusable.slug, owner: input.owner });
+    return { kind: "started" };
+  }
+
+  const slug = uniqueClientSlug(
+    input.integrationName,
+    input.existingClients.map((app) => String(app.slug)),
+  );
   const scopes =
     input.declaredScopes && input.declaredScopes.length > 0
       ? input.declaredScopes
@@ -1145,9 +1169,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         discoveryUrl,
         owner: dcrOwner,
         integrationName,
-        existingSlugs: [...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
-          String(app.slug),
-        ),
+        existingClients: oauthAllClients,
         declaredScopes: method.oauth?.scopes,
         redirectUri: oauthCallbackUrl(),
         integration,
