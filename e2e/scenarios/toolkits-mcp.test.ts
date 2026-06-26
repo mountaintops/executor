@@ -56,8 +56,8 @@ const pingSpec = (baseUrl: string): string =>
   });
 
 const closeServer = (server: Server): Promise<void> =>
-  new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+  new Promise((resolve) => {
+    server.close(() => resolve());
   });
 
 const servePingApi = Effect.acquireRelease(

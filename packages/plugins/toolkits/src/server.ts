@@ -249,9 +249,13 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
   const getEntry = (toolkitId: string) => storage.toolkits.get({ key: toolkitId });
 
   const getBySlugEntry = (slug: string) =>
-    storage.toolkits.query({ where: { slug } }).pipe(
-      Effect.map((entries) => entries.find((entry) => entry.owner === "org") ?? entries[0] ?? null),
-    );
+    storage.toolkits
+      .query({ where: { slug } })
+      .pipe(
+        Effect.map(
+          (entries) => entries.find((entry) => entry.owner === "org") ?? entries[0] ?? null,
+        ),
+      );
 
   const requireToolkit = (toolkitId: string) =>
     getEntry(toolkitId).pipe(

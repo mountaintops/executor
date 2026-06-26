@@ -53,9 +53,7 @@ const closeServerHandlers = async (handlers: ServerHandlers): Promise<void> => {
   );
 };
 
-export const createServerHandlers = async (
-  token: string,
-): Promise<ServerHandlers> => {
+export const createServerHandlers = async (token: string): Promise<ServerHandlers> => {
   // The typed `/api` web-handler comes from `ExecutorApp.make` (./app.ts). The
   // boot bearer token is the authoritative `/api` gate (see `identity.ts`).
   const apiHandler: ServerHandlers["api"] = await makeLocalApiHandler(token);
@@ -90,18 +88,15 @@ export const createServerHandlers = async (
   return { api: apiHandler, mcp };
 };
 
-export class ServerHandlersService extends Context.Service<
-  ServerHandlersService,
-  ServerHandlers
->()("@executor-js/local/ServerHandlersService") {}
+export class ServerHandlersService extends Context.Service<ServerHandlersService, ServerHandlers>()(
+  "@executor-js/local/ServerHandlersService",
+) {}
 
 // The handlers are built once per process and memoized. The boot token is
 // captured on the first call (serve.ts / the vite dev middleware both pass the
 // SAME token loaded from `auth.json`), so memoization on first-call is correct.
-let serverHandlersRuntime: ManagedRuntime.ManagedRuntime<
-  ServerHandlersService,
-  never
-> | null = null;
+let serverHandlersRuntime: ManagedRuntime.ManagedRuntime<ServerHandlersService, never> | null =
+  null;
 
 const getServerHandlersRuntime = (
   token: string,

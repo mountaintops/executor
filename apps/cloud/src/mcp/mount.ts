@@ -78,11 +78,7 @@ const matchMcpSuffix = (segments: readonly string[]): MatchedMcpSuffix | undefin
     const organizationId = orgSelectorSegment(segments[0]);
     return organizationId ? { organizationId } : undefined;
   }
-  if (
-    segments.length === 4 &&
-    segments[1] === "mcp" &&
-    segments[2] === "toolkits"
-  ) {
+  if (segments.length === 4 && segments[1] === "mcp" && segments[2] === "toolkits") {
     const organizationId = orgSelectorSegment(segments[0]);
     const toolkitSlug = segments[3];
     return organizationId && toolkitSlug ? { organizationId, toolkitSlug } : undefined;
@@ -114,9 +110,7 @@ export const classifyMcpPath = (pathname: string): McpRoute => {
   const prmPrefix = "/.well-known/oauth-protected-resource";
   if (pathname.startsWith(`${prmPrefix}/`)) {
     const matched = matchMcpSuffix(segments.slice(2));
-    return matched === undefined
-      ? null
-      : { kind: "oauth-protected-resource", ...matched };
+    return matched === undefined ? null : { kind: "oauth-protected-resource", ...matched };
   }
 
   // MCP transport: `/mcp` or `/<org>/mcp`.

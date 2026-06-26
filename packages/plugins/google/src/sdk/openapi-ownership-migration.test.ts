@@ -49,17 +49,7 @@ const insertIntegrationRawConfig = (
     sql: `INSERT INTO integration
       (row_id, tenant, slug, plugin_id, name, description, config, can_remove, can_refresh, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
-    args: [
-      row.rowId,
-      row.tenant,
-      row.slug,
-      row.pluginId,
-      row.slug,
-      row.slug,
-      row.config,
-      now,
-      now,
-    ],
+    args: [row.rowId, row.tenant, row.slug, row.pluginId, row.slug, row.slug, row.config, now, now],
   });
 
 const insertBlob = (
@@ -121,14 +111,7 @@ const insertTool = (
     sql: `INSERT INTO tool
       (tenant, owner, subject, integration, connection, plugin_id, name, description, input_schema, output_schema, annotations, created_at, updated_at, row_id)
       VALUES (?, 'org', '', ?, 'default', ?, 'items.list', 'List items', NULL, NULL, NULL, ?, ?, ?)`,
-    args: [
-      row.tenant,
-      row.integration,
-      row.pluginId,
-      now,
-      now,
-      `tool-${row.integration}`,
-    ],
+    args: [row.tenant, row.integration, row.pluginId, now, now, `tool-${row.integration}`],
   });
 
 const insertDefinition = (
@@ -143,21 +126,13 @@ const insertDefinition = (
     sql: `INSERT INTO definition
       (tenant, owner, subject, integration, connection, plugin_id, name, schema, created_at, row_id)
       VALUES (?, 'org', '', ?, 'default', ?, 'Item', '{}', ?, ?)`,
-    args: [
-      row.tenant,
-      row.integration,
-      row.pluginId,
-      now,
-      `definition-${row.integration}`,
-    ],
+    args: [row.tenant, row.integration, row.pluginId, now, `definition-${row.integration}`],
   });
 
 describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
   it.effect("skips malformed legacy integration config rows", () =>
     Effect.gen(function* () {
-      const db = yield* Effect.promise(() =>
-        createSqliteTestFumaDb({ tables: collectTables() }),
-      );
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
 
       yield* Effect.promise(() =>
         insertIntegrationRawConfig(db.client, {
@@ -169,16 +144,12 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
         }),
       );
 
-      expect(yield* runSqliteGoogleOpenApiOwnershipMigration(db.client)).toBe(
-        0,
-      );
+      expect(yield* runSqliteGoogleOpenApiOwnershipMigration(db.client)).toBe(0);
 
       const integrations = yield* Effect.promise(() =>
         db.client.execute("SELECT slug, plugin_id, config FROM integration"),
       );
-      expect(integrations.rows).toEqual([
-        { slug: "broken", plugin_id: "openapi", config: "" },
-      ]);
+      expect(integrations.rows).toEqual([{ slug: "broken", plugin_id: "openapi", config: "" }]);
 
       yield* Effect.promise(() => db.close());
     }),
@@ -186,9 +157,7 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
 
   it.effect("moves OpenAPI-owned Google bundle rows to the Google plugin", () =>
     Effect.gen(function* () {
-      const db = yield* Effect.promise(() =>
-        createSqliteTestFumaDb({ tables: collectTables() }),
-      );
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
       const client = db.client;
 
       yield* Effect.promise(() =>
@@ -199,9 +168,7 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
           pluginId: "openapi",
           config: {
             specHash: "googlehash",
-            googleDiscoveryUrls: [
-              "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
-            ],
+            googleDiscoveryUrls: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"],
           },
         }),
       );
@@ -277,14 +244,9 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
       expect(googleBlob.rows).toEqual([{ value: "google spec" }]);
 
       const openApiBlobs = yield* Effect.promise(() =>
-        client.execute(
-          "SELECT key FROM blob WHERE namespace = 'o:org_1/openapi' ORDER BY key",
-        ),
+        client.execute("SELECT key FROM blob WHERE namespace = 'o:org_1/openapi' ORDER BY key"),
       );
-      expect(openApiBlobs.rows).toEqual([
-        { key: "spec/googlehash" },
-        { key: "spec/stripehash" },
-      ]);
+      expect(openApiBlobs.rows).toEqual([{ key: "spec/googlehash" }, { key: "spec/stripehash" }]);
 
       const storage = yield* Effect.promise(() =>
         client.execute(
@@ -297,9 +259,7 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
       ]);
 
       const tools = yield* Effect.promise(() =>
-        client.execute(
-          "SELECT integration, plugin_id FROM tool ORDER BY integration",
-        ),
+        client.execute("SELECT integration, plugin_id FROM tool ORDER BY integration"),
       );
       expect(tools.rows).toEqual([
         { integration: "google", plugin_id: "google" },
@@ -307,9 +267,7 @@ describe("runSqliteGoogleOpenApiOwnershipMigration", () => {
       ]);
 
       const definitions = yield* Effect.promise(() =>
-        client.execute(
-          "SELECT integration, plugin_id FROM definition ORDER BY integration",
-        ),
+        client.execute("SELECT integration, plugin_id FROM definition ORDER BY integration"),
       );
       expect(definitions.rows).toEqual([
         { integration: "google", plugin_id: "google" },

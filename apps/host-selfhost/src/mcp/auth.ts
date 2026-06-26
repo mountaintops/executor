@@ -46,8 +46,7 @@ import { BetterAuth } from "../auth/better-auth";
 // ---------------------------------------------------------------------------
 
 const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
-const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH =
-  `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:toolkitSlug`;
+const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:toolkitSlug`;
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 const TOOLKIT_MCP_SEGMENT = "/mcp/toolkits/";
 

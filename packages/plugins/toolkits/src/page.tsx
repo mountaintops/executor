@@ -530,11 +530,12 @@ function CreateToolkitDialog(props: {
 function AddToolkitCard(props: { owner: Owner; onClick: () => void }) {
   const scopeLabel = addToolkitScopeLabel(props.owner);
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
       onClick={props.onClick}
       aria-label={`Add ${scopeLabel} toolkit`}
-      className="group flex min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 text-muted-foreground transition-[border-color,background-color,box-shadow,color] hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
+      className="group flex h-auto min-h-36 min-w-0 self-start items-center justify-center rounded-md border border-dashed border-border/75 bg-card/40 p-0 text-muted-foreground transition-[border-color,background-color,box-shadow,color] hover:border-foreground/25 hover:bg-muted/20 hover:text-foreground hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/30 focus-visible:outline-none"
       style={toolkitCardStyle}
     >
       <span
@@ -546,7 +547,7 @@ function AddToolkitCard(props: { owner: Owner; onClick: () => void }) {
       >
         <PlusIcon className="size-6" />
       </span>
-    </button>
+    </Button>
   );
 }
 
@@ -1047,11 +1048,7 @@ function ToolkitWorkspace(props: {
   );
   const exposedToolIds = useMemo(
     () =>
-      new Set(
-        toolkitTools
-          .filter((tool) => tool.policy.action !== "block")
-          .map((tool) => tool.id),
-      ),
+      new Set(toolkitTools.filter((tool) => tool.policy.action !== "block").map((tool) => tool.id)),
     [toolkitTools],
   );
   const selectedTool = selectedToolId
@@ -1231,9 +1228,7 @@ export function ToolkitsPage(props: PluginPageProps) {
 
   const toolkitRows = AsyncResult.isSuccess(toolkits) ? toolkits.value.toolkits : [];
   const selectedToolkit =
-    selectedToolkitSlug === null
-      ? null
-      : toolkitByRouteSlug(toolkitRows, selectedToolkitSlug);
+    selectedToolkitSlug === null ? null : toolkitByRouteSlug(toolkitRows, selectedToolkitSlug);
 
   const toolRows = AsyncResult.isSuccess(tools) ? (tools.value as readonly ToolRow[]) : [];
   const integrationRows = AsyncResult.isSuccess(integrations)

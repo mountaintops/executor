@@ -1,10 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import {
-  protectedResourceMetadataUrlFor,
-  resourceUrlFor,
-  toolkitSlugFromRequest,
-} from "./auth";
+import { protectedResourceMetadataUrlFor, resourceUrlFor, toolkitSlugFromRequest } from "./auth";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mount";
 
 describe("cloud MCP toolkit route normalization", () => {
@@ -50,9 +46,7 @@ describe("cloud MCP toolkit route normalization", () => {
 
   it("builds toolkit-specific resource and metadata URLs", () => {
     expect(resourceUrlFor(null, "deploy")).toBe("https://executor.sh/mcp/toolkits/deploy");
-    expect(resourceUrlFor("acme", "deploy")).toBe(
-      "https://executor.sh/acme/mcp/toolkits/deploy",
-    );
+    expect(resourceUrlFor("acme", "deploy")).toBe("https://executor.sh/acme/mcp/toolkits/deploy");
     expect(protectedResourceMetadataUrlFor(null, "deploy")).toBe(
       "https://executor.sh/.well-known/oauth-protected-resource/mcp/toolkits/deploy",
     );

@@ -37,8 +37,7 @@ export default defineExecutorConfig({
       onepasswordHttpPlugin(),
       desktopSettingsPlugin({
         webBaseUrl:
-          process.env.EXECUTOR_WEB_BASE_URL ??
-          `http://localhost:${process.env.PORT ?? "4788"}`,
+          process.env.EXECUTOR_WEB_BASE_URL ?? `http://localhost:${process.env.PORT ?? "4788"}`,
       }),
     ] as const,
 });

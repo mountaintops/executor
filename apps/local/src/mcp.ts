@@ -67,9 +67,7 @@ const formatBoundaryError = (error: unknown): unknown => {
   return error;
 };
 
-const ignoreClose = (
-  close: (() => Promise<void>) | undefined,
-): Promise<void> =>
+const ignoreClose = (close: (() => Promise<void>) | undefined): Promise<void> =>
   close
     ? Effect.runPromise(
         Effect.ignore(
@@ -81,10 +79,8 @@ const ignoreClose = (
       )
     : Promise.resolve();
 
-const pausedRequestPattern =
-  /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
-const approvalRequestPattern =
-  /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
+const pausedRequestPattern = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)$/;
+const approvalRequestPattern = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/resume$/;
 
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), {
@@ -97,15 +93,10 @@ const readResumeResponse = (request: Request): Promise<ResumeResponse | null> =>
     Effect.tryPromise({
       try: () => request.json(),
       catch: () => null,
-    }).pipe(
-      Effect.map((raw) => (raw === null ? null : decodeResumeResponse(raw))),
-    ),
+    }).pipe(Effect.map((raw) => (raw === null ? null : decodeResumeResponse(raw)))),
   );
 
-const resumeApprovalResult = (
-  executionId: string,
-  response: ResumeResponse,
-) => ({
+const resumeApprovalResult = (executionId: string, response: ResumeResponse) => ({
   status: "completed",
   ...formatResumeAcknowledgement(executionId, response),
   isError: false,
@@ -121,23 +112,18 @@ const resourceFromRequest = (request: Request): McpResource | null => {
   return { kind: "toolkit", slug: decodeURIComponent(match[1]) };
 };
 
-const engineFromConfig = (
-  config: ExecutorMcpServerConfig,
-): AnyExecutionEngine | null => ("engine" in config ? config.engine : null);
+const engineFromConfig = (config: ExecutorMcpServerConfig): AnyExecutionEngine | null =>
+  "engine" in config ? config.engine : null;
 
 const normalizeHandlerConfig = (
   input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
-): LocalMcpRequestHandlerConfig =>
-  "defaultConfig" in input ? input : { defaultConfig: input };
+): LocalMcpRequestHandlerConfig => ("defaultConfig" in input ? input : { defaultConfig: input });
 
 export const createMcpRequestHandler = (
   input: ExecutorMcpServerConfig | LocalMcpRequestHandlerConfig,
 ): McpRequestHandler => {
   const handlerConfig = normalizeHandlerConfig(input);
-  const transports = new Map<
-    string,
-    WebStandardStreamableHTTPServerTransport
-  >();
+  const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
   const servers = new Map<string, McpServer>();
   const resources = new Map<string, McpResource>();
   const sessionEngines = new Map<string, AnyExecutionEngine>();
@@ -151,29 +137,19 @@ export const createMcpRequestHandler = (
   ): Promise<ReturnType<typeof formatPausedExecution> | null> =>
     (sessionEngines.get(sessionId) ?? defaultEngine)
       ? Effect.runPromise(
-          (sessionEngines.get(sessionId) ?? defaultEngine)!
-            .getPausedExecution(executionId)
-            .pipe(
-              Effect.map((paused) =>
-                paused ? formatPausedExecution(paused) : null,
-              ),
-              Effect.orElseSucceed(() => null),
-            ),
+          (sessionEngines.get(sessionId) ?? defaultEngine)!.getPausedExecution(executionId).pipe(
+            Effect.map((paused) => (paused ? formatPausedExecution(paused) : null)),
+            Effect.orElseSucceed(() => null),
+          ),
         )
       : Promise.resolve(null);
 
-  const configForResource = async (
-    resource: McpResource,
-  ): Promise<LocalMcpServerConfig> => {
-    if (!handlerConfig.createConfigForResource)
-      return { config: handlerConfig.defaultConfig };
+  const configForResource = async (resource: McpResource): Promise<LocalMcpServerConfig> => {
+    if (!handlerConfig.createConfigForResource) return { config: handlerConfig.defaultConfig };
     return handlerConfig.createConfigForResource(resource);
   };
 
-  const dispose = async (
-    id: string,
-    opts: { transport?: boolean; server?: boolean } = {},
-  ) => {
+  const dispose = async (id: string, opts: { transport?: boolean; server?: boolean } = {}) => {
     const t = transports.get(id);
     const s = servers.get(id);
     const close = sessionClosers.get(id);
@@ -197,15 +173,8 @@ export const createMcpRequestHandler = (
         const transport = transports.get(sessionId);
         if (!transport) return jsonError(404, -32001, "Session not found");
         const sessionResource = resources.get(sessionId);
-        if (
-          !sessionResource ||
-          mcpResourceKey(sessionResource) !== mcpResourceKey(resource)
-        ) {
-          return jsonError(
-            403,
-            -32003,
-            "Session belongs to a different MCP resource",
-          );
+        if (!sessionResource || mcpResourceKey(sessionResource) !== mcpResourceKey(resource)) {
+          return jsonError(403, -32003, "Session belongs to a different MCP resource");
         }
         return transport.handleRequest(request);
       }
@@ -221,12 +190,9 @@ export const createMcpRequestHandler = (
           transports.set(sid, transport);
           if (created) servers.set(sid, created);
           resources.set(sid, resource);
-          const engine = resourceConfig
-            ? engineFromConfig(resourceConfig.config)
-            : null;
+          const engine = resourceConfig ? engineFromConfig(resourceConfig.config) : null;
           if (engine) sessionEngines.set(sid, engine);
-          if (resourceConfig?.close)
-            sessionClosers.set(sid, resourceConfig.close);
+          if (resourceConfig?.close) sessionClosers.set(sid, resourceConfig.close);
         },
         onsessionclosed: (sid) => void dispose(sid, { server: true }),
       });
@@ -249,11 +215,7 @@ export const createMcpRequestHandler = (
                 ? {
                     mode: "browser" as const,
                     approvalUrl: (executionId) =>
-                      approvalUrlForRequest(
-                        request,
-                        executionId,
-                        createdSessionId,
-                      ),
+                      approvalUrlForRequest(request, executionId, createdSessionId),
                   }
                 : { mode: elicitationMode },
           }),
@@ -283,13 +245,9 @@ export const createMcpRequestHandler = (
     handlePausedRequest: async (request) => {
       const match = pausedRequestPattern.exec(new URL(request.url).pathname);
       if (!match) return json({ error: "Not found" }, 404);
-      if (request.method !== "GET")
-        return json({ error: "Method not allowed" }, 405);
+      if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
 
-      const paused = await pausedDetail(
-        decodeURIComponent(match[1]),
-        decodeURIComponent(match[2]),
-      );
+      const paused = await pausedDetail(decodeURIComponent(match[1]), decodeURIComponent(match[2]));
       if (!paused) return json({ error: "Paused execution not found" }, 404);
       return json({ text: paused.text, structured: paused.structured });
     },
@@ -297,8 +255,7 @@ export const createMcpRequestHandler = (
     handleApprovalRequest: async (request) => {
       const match = approvalRequestPattern.exec(new URL(request.url).pathname);
       if (!match) return json({ error: "Not found" }, 404);
-      if (request.method !== "POST")
-        return json({ error: "Method not allowed" }, 405);
+      if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
       const sessionId = decodeURIComponent(match[1]);
       const executionId = decodeURIComponent(match[2]);
@@ -316,9 +273,7 @@ export const createMcpRequestHandler = (
 
     close: async () => {
       const ids = new Set([...transports.keys(), ...servers.keys()]);
-      await Promise.all(
-        [...ids].map((id) => dispose(id, { transport: true, server: true })),
-      );
+      await Promise.all([...ids].map((id) => dispose(id, { transport: true, server: true })));
     },
   };
 };
@@ -327,9 +282,7 @@ export const createMcpRequestHandler = (
 // Stdio transport
 // ---------------------------------------------------------------------------
 
-export const runMcpStdioServer = async (
-  config: ExecutorMcpServerConfig,
-): Promise<void> => {
+export const runMcpStdioServer = async (config: ExecutorMcpServerConfig): Promise<void> => {
   startIntegrationsRefresh();
 
   const server = await Effect.runPromise(createExecutorMcpServer(config));
