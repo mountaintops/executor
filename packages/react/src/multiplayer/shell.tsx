@@ -21,7 +21,7 @@ import {
   integrationPresetIconUrl,
 } from "../components/integration-favicon";
 import { CommandPalette } from "../components/command-palette";
-import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { useAuth } from "./auth-context";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,7 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
   { to: "/policies", label: "Policies" },
+  { to: "/toolkits", label: "Toolkits" },
 ];
 
 /** Canonical public docs (Mintlify). Same-origin on cloud (executor.sh proxies
@@ -62,6 +63,16 @@ export const DEFAULT_DOCS_URL = "https://executor.sh/docs";
 // typed on purpose: host-specific items ("/admin", "/billing") resolve against
 // the host's own route tree, which this package can't see.
 const orgScopedTo = (to: string): string => (to === "/" ? "/{-$orgSlug}" : `/{-$orgSlug}${to}`);
+
+const normalizePluginPagePath = (path: string): string => {
+  if (!path || path === "/") return "/";
+  return path.startsWith("/") ? path : `/${path}`;
+};
+
+const pluginPageNavPath = (pluginId: string, path: string): string => {
+  const normalized = normalizePluginPagePath(path);
+  return normalized === "/" ? `/plugins/${pluginId}/` : `/plugins/${pluginId}${normalized}`;
+};
 
 /** The pathname with the active org-slug prefix stripped, for active-state
  *  comparisons against scope-relative paths. */
@@ -311,7 +322,20 @@ function UserFooter(props: Pick<ShellProps, "onSignOut" | "orgMenuSlot">) {
 function SidebarContent(
   props: ShellProps & { pathname: string; onNavigate?: () => void; showBrand?: boolean },
 ) {
-  const navItems = props.navItems ?? defaultShellNavItems;
+  const plugins = useClientPlugins();
+  const pluginNavItems = plugins.flatMap((plugin) =>
+    (plugin.pages ?? []).flatMap((page) =>
+      page.nav
+        ? [
+            {
+              to: pluginPageNavPath(plugin.id, page.path),
+              label: page.nav.label,
+            },
+          ]
+        : [],
+    ),
+  );
+  const navItems = [...(props.navItems ?? defaultShellNavItems), ...pluginNavItems];
   return (
     <>
       {props.showBrand !== false && (

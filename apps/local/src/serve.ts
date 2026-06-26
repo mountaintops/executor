@@ -69,7 +69,9 @@ function collectStaticRoutes(dir: string, prefix = ""): Record<string, StaticHan
           routePath === "/index.html"
             ? htmlResponse(file)
             : new Response(file, {
-                headers: { "content-type": file.type || "application/octet-stream" },
+                headers: {
+                  "content-type": file.type || "application/octet-stream",
+                },
               });
       }
     }
@@ -89,7 +91,9 @@ function embeddedToStaticRoutes(embedded: Record<string, string>): Record<string
       key === "index.html"
         ? htmlResponse(file)
         : new Response(file, {
-            headers: { "content-type": file.type || "application/octet-stream" },
+            headers: {
+              "content-type": file.type || "application/octet-stream",
+            },
           });
   }
   return routes;
@@ -109,7 +113,11 @@ interface ViteChild {
 }
 
 async function allocatePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  const probe = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response(),
+  });
   const port = probe.port ?? 0;
   probe.stop(true);
   return port;
@@ -362,7 +370,8 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
       // provider, which cannot carry our local bearer. Everything else under
       // /api and /mcp requires the bearer.
       const skipAuth = isUnauthenticatedOAuthPath(url.pathname);
-      const isGatedSurface = url.pathname.startsWith("/api") || url.pathname.startsWith("/mcp");
+      const isMcpPath = url.pathname === "/mcp" || url.pathname.startsWith("/mcp/");
+      const isGatedSurface = url.pathname.startsWith("/api") || isMcpPath;
 
       if (isGatedSurface && !skipAuth && !isAuthorized(req)) {
         return withCors(
@@ -377,7 +386,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         return withCors(oauthClientMetadataResponse(`${url.pathname}${url.search}`, req));
       }
 
-      if (url.pathname.startsWith("/mcp")) {
+      if (isMcpPath) {
         return withCors(await handlers.mcp.handleRequest(req));
       }
 

@@ -172,6 +172,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         organizationName: org.name,
         organizationSlug: org.slug,
         userId: token.userId,
+        resource: token.resource,
         elicitationMode: token.elicitationMode,
       } satisfies SessionMeta;
     }).pipe(
@@ -193,6 +194,7 @@ export class McpSessionDO extends McpSessionDOBase<CloudSessionDbHandle> {
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
+        { mcpResource: sessionMeta.resource },
       ).pipe(
         Effect.provide(CloudExecutionStackLayer),
         Effect.withSpan("McpSessionDO.makeExecutionStack"),

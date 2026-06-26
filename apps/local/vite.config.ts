@@ -16,7 +16,11 @@ import {
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const rootPackage = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
-) as { version: string; homepage?: string; repository?: string | { url?: string } };
+) as {
+  version: string;
+  homepage?: string;
+  repository?: string | { url?: string };
+};
 
 // oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads package metadata from package.json
 const cliPackage = JSON.parse(
@@ -94,8 +98,9 @@ function executorApiPlugin(): Plugin {
       });
       server.middlewares.use(async (req, res, next) => {
         const rawUrl = req.url ?? "/";
-        const isApi = rawUrl.startsWith("/api/") || rawUrl === "/api";
-        const isMcp = rawUrl.startsWith("/mcp");
+        const pathOnly = rawUrl.split("?")[0] ?? "/";
+        const isApi = pathOnly.startsWith("/api/") || pathOnly === "/api";
+        const isMcp = pathOnly === "/mcp" || pathOnly.startsWith("/mcp/");
 
         if (!isApi && !isMcp) return next();
 
@@ -106,7 +111,6 @@ function executorApiPlugin(): Plugin {
         // callback. The SPA carries the token from its `?_token`/localStorage
         // bootstrap, so the UI is unaffected; external MCP clients use the
         // daemon port.
-        const pathOnly = rawUrl.split("?")[0] ?? "/";
         const authExempt = pathOnly === "/api/health" || isUnauthenticatedOAuthPath(pathOnly);
         if (!authExempt) {
           const presented = req.headers.authorization;
@@ -151,7 +155,9 @@ function executorApiPlugin(): Plugin {
           } else if (isMcp) {
             response = await handlers.mcp.handleRequest(webRequest(rawUrl));
           } else if (pathOnly === "/api/health" && req.method === "GET") {
-            response = new Response("ok", { headers: { "content-type": "text/plain" } });
+            response = new Response("ok", {
+              headers: { "content-type": "text/plain" },
+            });
           } else if (pathOnly.startsWith("/api/mcp-sessions/")) {
             const handler =
               req.method === "GET"
