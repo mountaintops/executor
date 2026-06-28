@@ -991,4 +991,27 @@ describe("graphqlPlugin generates valid operations against rich schemas (#1146)"
       });
     }),
   );
+
+  it.effect("rejects a malformed `select` locally, before any network call", () =>
+    Effect.gen(function* () {
+      const { server, executor } = yield* setup("gitlab_syntax");
+      // Warm the binding cache (the first invoke introspects to materialize
+      // bindings) so the malformed call below has no legitimate reason to hit the
+      // wire: if it does, validation failed to short-circuit.
+      yield* executor.execute(toolAddr("gitlab_syntax", "main", "query.currentUser"), {});
+      yield* server.clearRequests;
+
+      const result = yield* executor.execute(
+        toolAddr("gitlab_syntax", "main", "query.currentUser"),
+        { select: "active mergeRequests { nodes {" },
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "graphql_invalid_selection" },
+      });
+      // Parse-check happens before the request is built, so nothing reached the server.
+      expect((yield* server.requests).length).toBe(0);
+    }),
+  );
 });

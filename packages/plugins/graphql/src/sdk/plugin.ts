@@ -47,7 +47,8 @@ import {
   GraphqlIntrospectionError,
   GraphqlInvocationError,
 } from "./errors";
-import { invokeWithLayer } from "./invoke";
+import { effectiveOperationString, invokeWithLayer } from "./invoke";
+import { validateOperationString } from "./validate-selection";
 import { graphqlPresets } from "./presets";
 import { makeDefaultGraphqlStore, type GraphqlStore, type StoredOperation } from "./store";
 import {
@@ -1044,6 +1045,27 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
             message: `No GraphQL operation found for tool "${integration}.${toolName}"`,
             statusCode: Option.none(),
           });
+        }
+
+        // Parse-check a caller-supplied `select` locally, before any network
+        // call: reject a malformed selection (and any attempt to break out of the
+        // field's selection set) with a precise error instead of a confusing
+        // server response. Field- and argument-level validity is left to the
+        // server, which returns verbatim errors.
+        const selectArg = (args as Record<string, unknown> | undefined)?.select;
+        if (typeof selectArg === "string" && selectArg.trim().length > 0) {
+          const operationString = effectiveOperationString(
+            op.binding,
+            (args ?? {}) as Record<string, unknown>,
+          );
+          const selectionErrors = validateOperationString(operationString);
+          if (selectionErrors.length > 0) {
+            return ToolResult.fail({
+              code: "graphql_invalid_selection",
+              message: selectionErrors[0]!,
+              details: { errors: selectionErrors },
+            });
+          }
         }
 
         const headers: Record<string, string> = { ...(config.headers ?? {}) };
