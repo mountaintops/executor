@@ -50,6 +50,8 @@ export type ExecutionEngine = {
     response: ResumeResponse,
   ) => Promise<ExecutionResult | null>;
   readonly getPausedExecution: (executionId: string) => Promise<PausedExecution | null>;
+  readonly pausedExecutionCount: () => Promise<number>;
+  readonly hasPausedExecutions: () => Promise<boolean>;
   readonly getDescription: () => Promise<string>;
 };
 
@@ -155,6 +157,8 @@ export const toPromiseExecutionEngine = <E extends Cause.YieldableError>(
   executeWithPause: (code, options) => Effect.runPromise(engine.executeWithPause(code, options)),
   resume: (executionId, response) => Effect.runPromise(engine.resume(executionId, response)),
   getPausedExecution: (executionId) => Effect.runPromise(engine.getPausedExecution(executionId)),
+  pausedExecutionCount: () => Effect.runPromise(engine.pausedExecutionCount()),
+  hasPausedExecutions: () => Effect.runPromise(engine.hasPausedExecutions()),
   getDescription: () => Effect.runPromise(engine.getDescription),
 });
 

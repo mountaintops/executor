@@ -401,6 +401,12 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
    */
   readonly getPausedExecution: (executionId: string) => Effect.Effect<PausedExecution | null>;
 
+  /** Count of executions currently paused awaiting resume. */
+  readonly pausedExecutionCount: () => Effect.Effect<number>;
+
+  /** Whether any executions are paused awaiting resume. */
+  readonly hasPausedExecutions: () => Effect.Effect<boolean>;
+
   /**
    * Get the dynamic tool description (workflow + namespaces).
    */
@@ -633,6 +639,8 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     resume: resumeExecution,
     getPausedExecution: (executionId) =>
       Effect.sync(() => pausedExecutions.get(executionId) ?? null),
+    pausedExecutionCount: () => Effect.sync(() => pausedExecutions.size),
+    hasPausedExecutions: () => Effect.sync(() => pausedExecutions.size > 0),
     getDescription: buildExecuteDescription(executor),
   };
 };
