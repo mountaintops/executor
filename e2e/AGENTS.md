@@ -130,6 +130,48 @@ When handing results to the user, follow the evidence contract in the root
 [AGENTS.md](../AGENTS.md) (direct run links + a live instance + what to try);
 [RUNNING.md](../RUNNING.md) has the current sharing/demo mechanics.
 
+## Desktop targets (the app on real OSes, filmed)
+
+The packaged desktop app runs as its own targets, each landing in its own
+`runs/<target>/` bucket with a video. One shared scenario (`desktop-vm/`) and the
+shared driver (`src/vm/desktop.ts`) + setup plumbing (`setup/desktop-vm.ts`); one
+project + globalsetup per guest OS.
+
+- **`desktop-packaged`** — the real electron-builder bundle on THIS machine's
+  display (the supervised-daemon attach path). Needs a logged-in GUI session.
+- **`desktop-macos` / `desktop-linux`** — the same bundle inside a guest VM,
+  driven over CDP from the host and filmed. The globalsetup boots the guest
+  (tart), builds + pushes the bundle, brings the app up with
+  `--remote-debugging-port`, forwards it, and the scenario connects + drives +
+  records. Provisioned automatically — or attach to a running guest with
+  `E2E_DESKTOP_VM_IP=<ip>`:
+
+  ```sh
+  vitest run --project desktop-macos      # or desktop-linux
+  ```
+
+The guests run tart `--no-graphics` (no host window, never steals focus) but
+still have a usable display:
+
+- **macOS**: the base image's autologin reaches a real Aqua session
+  (WindowServer/Dock/Finder). Launch the app INTO it with `sudo launchctl asuser
+  <uid> …` (a plain SSH spawn lands in a non-GUI session); the unsigned arm64
+  bundle is ad-hoc `codesign`'d in the guest; `screencapture` films it.
+- **linux**: no window server, so the app renders into an `Xvfb` display with a
+  minimal WM (`openbox` — without it the electron window never maps); the window
+  maps tiny (10x10) so the globalsetup `xdotool`-resizes it to fill, and ffmpeg
+  `x11grab` films it. `--no-sandbox` (the chrome-sandbox needs setuid root).
+
+Base images (`admin`/`admin`): `executor-macos-base` (cirruslabs sequoia, autologin)
+and `executor-linux-base` (cirruslabs ubuntu + Xvfb/ffmpeg/openbox/xdotool +
+electron runtime libs). The bundle's `executor` binary is cross-compiled for the
+guest (`BUN_TARGET`), and electron-builder's `dir` target assembles the unpacked
+app on macOS — so both bundles build on this Mac.
+
+Note: `desktop-packaged`'s `guiAvailable()` probe (`launchctl managername`) reads
+"Background" over SSH even when Aqua is up, so it's host-only; the VM targets gate
+on a CDP page target instead.
+
 ## Discovering endpoints
 
 - The full OpenAPI spec: `curl http://127.0.0.1:<cloud port>/api/openapi.json`
