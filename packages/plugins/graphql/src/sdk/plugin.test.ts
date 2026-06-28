@@ -889,68 +889,106 @@ describe("graphqlPlugin detect URL-token fallback", () => {
 
 // Issue #1146: against a large, real-world schema (GitLab) the auto-generated
 // operations were invalid GraphQL and every call against a rich object type
-// failed validation. These drive the real plugin (live introspection -> operation
-// generation -> invocation) against a GitLab-shaped graphql-yoga server, which
-// validates with graphql-js exactly like the @emulators/gitlab surface. A clean
-// `ok: true` therefore proves the generated operation is valid GraphQL.
+// failed validation. The plugin now defaults to a scalar-leaf selection (always
+// valid, always cheap) and lets the caller pass an explicit `select` for nested
+// or list data. These drive the real plugin (live introspection -> generation ->
+// invocation) against a GitLab-shaped graphql-yoga server, which validates with
+// graphql-js exactly like the @emulators/gitlab surface, so a clean `ok: true`
+// proves the operation that went over the wire is valid GraphQL.
 describe("graphqlPlugin generates valid operations against rich schemas (#1146)", () => {
   const gitlabServer = serveGraphqlTestServer({ schema: makeGitlab1146Schema() });
 
   const lastQuery = (requests: { readonly payload: { readonly query?: string } }[]): string =>
     requests[requests.length - 1]?.payload.query ?? "";
 
-  it.effect("query.metadata: drops the nested field whose required argument it cannot fill", () =>
+  const setup = (slug: string) =>
     Effect.gen(function* () {
       const server = yield* gitlabServer;
       const executor = yield* makeExecutor();
-
-      yield* executor.graphql.addIntegration({ endpoint: server.endpoint, slug: "gitlab" });
+      yield* executor.graphql.addIntegration({ endpoint: server.endpoint, slug });
       yield* createOrgConnection(executor, {
-        integration: "gitlab",
+        integration: slug,
         name: "main",
         template: "none",
         value: "unused",
       });
-
       yield* server.clearRequests;
-      const result = yield* executor.execute(toolAddr("gitlab", "main", "query.metadata"), {});
+      return { server, executor };
+    });
 
-      // Valid GraphQL: the server accepts and resolves it (no validation errors).
-      expect(result).toMatchObject({ ok: true });
-      // `featureFlags(names: [String!]!)` has a required arg the generator cannot
-      // supply, so it is omitted rather than emitted without arguments.
-      const query = lastQuery(yield* server.requests);
-      expect(query).not.toContain("featureFlags");
-      // Fields it CAN select are still present (no over-pruning).
-      expect(query).toContain("kas {");
+  it.effect("default selection is scalar leaves only: valid, and never bare composites", () =>
+    Effect.gen(function* () {
+      const { server, executor } = yield* setup("gitlab_default");
+
+      // metadata: scalar leaves only. `featureFlags` (required arg) and `kas`
+      // (composite) are omitted rather than emitted invalidly.
+      const meta = yield* executor.execute(
+        toolAddr("gitlab_default", "main", "query.metadata"),
+        {},
+      );
+      expect(meta).toMatchObject({ ok: true });
+      const metaQuery = lastQuery(yield* server.requests);
+      expect(metaQuery).toContain("version");
+      expect(metaQuery).not.toContain("featureFlags");
+      expect(metaQuery).not.toContain("kas");
+
+      // currentUser: scalar leaves only. No `mergeRequests` (composite) bare.
+      yield* server.clearRequests;
+      const user = yield* executor.execute(
+        toolAddr("gitlab_default", "main", "query.currentUser"),
+        {},
+      );
+      expect(user).toMatchObject({ ok: true });
+      const userQuery = lastQuery(yield* server.requests);
+      expect(userQuery).toContain("active");
+      expect(userQuery).not.toContain("mergeRequests");
     }),
   );
 
-  it.effect("query.currentUser: never emits a composite field without a sub-selection", () =>
+  it.effect("a caller-supplied `select` fetches nested/list data and stays valid", () =>
     Effect.gen(function* () {
-      const server = yield* gitlabServer;
-      const executor = yield* makeExecutor();
+      const { server, executor } = yield* setup("gitlab_select");
 
-      yield* executor.graphql.addIntegration({ endpoint: server.endpoint, slug: "gitlab2" });
-      yield* createOrgConnection(executor, {
-        integration: "gitlab2",
-        name: "main",
-        template: "none",
-        value: "unused",
-      });
-
-      yield* server.clearRequests;
-      const result = yield* executor.execute(toolAddr("gitlab2", "main", "query.currentUser"), {});
+      const result = yield* executor.execute(
+        toolAddr("gitlab_select", "main", "query.currentUser"),
+        { select: "active mergeRequests { count nodes { id title author { name } } }" },
+      );
 
       expect(result).toMatchObject({ ok: true });
       const query = lastQuery(yield* server.requests);
-      // The connection is traversed (proves recursion still works)...
-      expect(query).toContain("mergeRequests {");
       expect(query).toContain("nodes {");
-      // ...but composite leaves past the depth cap (`author`, `assignees`) are
-      // dropped instead of being emitted bare, which the server would reject.
-      expect(query).not.toContain("author");
-      expect(query).not.toContain("assignees");
+      expect(query).toContain("author {");
+    }),
+  );
+
+  it.effect("`select` can supply a nested field's required argument", () =>
+    Effect.gen(function* () {
+      const { server, executor } = yield* setup("gitlab_ff");
+
+      const result = yield* executor.execute(toolAddr("gitlab_ff", "main", "query.metadata"), {
+        select: 'version featureFlags(names: ["flag_a"]) { name enabled }',
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      expect(lastQuery(yield* server.requests)).toContain("featureFlags(names:");
+    }),
+  );
+
+  it.effect("an invalid `select` surfaces the server's validation error verbatim", () =>
+    Effect.gen(function* () {
+      const { executor } = yield* setup("gitlab_bad");
+
+      // `author` is a composite emitted bare: the plugin passes the selection
+      // through and surfaces the server's rejection rather than silently fixing
+      // or swallowing it.
+      const result = yield* executor.execute(toolAddr("gitlab_bad", "main", "query.currentUser"), {
+        select: "mergeRequests { nodes { id author } }",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "graphql_errors" },
+      });
     }),
   );
 });

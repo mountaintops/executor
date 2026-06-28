@@ -71,10 +71,23 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
     Object.assign(variables, args.variables);
   }
 
+  // A caller-supplied `select` overrides the default scalar-leaf selection: it is
+  // spliced into the field's selection set so nested/list data can be requested
+  // per call. `select` is a control input, not a GraphQL variable, so it never
+  // enters `variables`. Falls back to the stored default operation when absent or
+  // when the binding predates the prefix/suffix split.
+  const customSelect = typeof args.select === "string" ? args.select.trim() : "";
+  const operationString =
+    customSelect.length > 0 &&
+    operation.operationPrefix != null &&
+    operation.operationSuffix != null
+      ? `${operation.operationPrefix} { ${customSelect} }${operation.operationSuffix}`
+      : operation.operationString;
+
   let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
     HttpClientRequest.bodyJsonUnsafe({
-      query: operation.operationString,
+      query: operationString,
       variables: Object.keys(variables).length > 0 ? variables : undefined,
     }),
   );

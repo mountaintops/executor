@@ -218,12 +218,6 @@ const unwrapTypeName = (ref: IntrospectionTypeRef): string => {
   return "Unknown";
 };
 
-// Bound the auto-generated selection so a huge schema (GitLab has 4000+ types)
-// does not produce an unbounded operation: cap recursion depth and the number
-// of fields emitted per level.
-const MAX_SELECTION_DEPTH = 2;
-const MAX_FIELDS_PER_LEVEL = 12;
-
 // Composite (output) types require a sub-selection; leaves (scalars/enums) must
 // not have one. Anything we cannot resolve in the type map is treated as a leaf
 // (custom scalars live in the map as SCALAR; truly-unknown types are rare).
@@ -235,58 +229,48 @@ const isCompositeType = (
   return kind === "OBJECT" || kind === "INTERFACE" || kind === "UNION";
 };
 
-// A nested field whose argument is non-null without a default cannot be selected
-// by the generator: it has no value to pass and emitting the field without the
-// argument is invalid (e.g. GitLab's `metadata.featureFlags(names:)`). Required
-// root-field arguments are different: those are threaded as operation variables
-// (and surfaced on the tool's input schema) in `buildOperationStringForField`.
+// A field whose argument is non-null without a default cannot be selected by the
+// generator: it has no value to pass and emitting the field without the argument
+// is invalid (e.g. GitLab's `metadata.featureFlags(names:)`). Root-field required
+// arguments are different: those are threaded as operation variables (and
+// surfaced on the tool's input schema) in `buildOperationStringForField`.
 const hasRequiredArgWithoutDefault = (field: IntrospectionField): boolean =>
   field.args.some(
     (arg: IntrospectionInputValue) => arg.type.kind === "NON_NULL" && arg.defaultValue == null,
   );
 
-const buildSelectionSet = (
+// Build the DEFAULT selection set for a field's return type: every scalar/enum
+// leaf the generator can select without arguments. It deliberately does NOT
+// recurse into composite fields or guess at nested selections, for two reasons:
+//   - A real schema (GitLab has 4000+ types) makes any recursive auto-expansion
+//     either arbitrary (which N fields? how deep?) or so large the server
+//     rejects it for exceeding its query-complexity budget.
+//   - A bounded-but-arbitrary selection silently freezes a partial view at sync
+//     time. Instead, callers that want nested or list data pass an explicit
+//     `select` (see buildOperationStringForField / invoke), so the choice of
+//     deeper fields is the caller's, not a guess baked into the tool.
+// The result is always valid: selecting only leaves never needs a sub-selection,
+// and a composite type with no selectable leaves falls back to `__typename`.
+const buildDefaultSelectionSet = (
   ref: IntrospectionTypeRef,
   types: ReadonlyMap<string, IntrospectionType>,
-  depth: number,
-  seen: Set<string>,
 ): string => {
-  if (depth > MAX_SELECTION_DEPTH) return "";
+  const objectType = types.get(unwrapTypeName(ref));
+  if (!objectType?.fields) return ""; // scalar / enum / unknown: no selection
+  if (objectType.kind === "SCALAR" || objectType.kind === "ENUM") return "";
 
-  const leafName = unwrapTypeName(ref);
-  if (seen.has(leafName)) return "";
+  const leaves = objectType.fields
+    .filter(
+      (f: IntrospectionField) =>
+        !f.name.startsWith("__") &&
+        !hasRequiredArgWithoutDefault(f) &&
+        !isCompositeType(f.type, types),
+    )
+    .map((f: IntrospectionField) => f.name);
 
-  const objectType = types.get(leafName);
-  if (!objectType?.fields) return "";
-
-  const kind = objectType.kind;
-  if (kind === "SCALAR" || kind === "ENUM") return "";
-
-  seen.add(leafName);
-
-  const subFields: string[] = [];
-  for (const f of objectType.fields) {
-    if (subFields.length >= MAX_FIELDS_PER_LEVEL) break;
-    if (f.name.startsWith("__")) continue;
-    // Cannot synthesize a value for a required nested argument: skip the field
-    // rather than emit an invalid selection.
-    if (hasRequiredArgWithoutDefault(f)) continue;
-
-    if (isCompositeType(f.type, types)) {
-      // A composite field MUST have a sub-selection. When the recursion yields
-      // nothing (depth cap, cycle guard, or every child skipped) we drop the
-      // field instead of emitting it bare (which the server rejects).
-      const sub = buildSelectionSet(f.type, types, depth + 1, seen);
-      if (sub) subFields.push(`${f.name} ${sub}`);
-    } else {
-      // Scalar / enum leaf: select it directly.
-      subFields.push(f.name);
-    }
-  }
-
-  seen.delete(leafName);
-
-  return subFields.length > 0 ? `{ ${subFields.join(" ")} }` : "";
+  // A composite type MUST have a non-empty selection; `__typename` is a leaf
+  // that exists on every composite, so it is a safe minimal fallback.
+  return leaves.length > 0 ? `{ ${leaves.join(" ")} }` : "{ __typename }";
 };
 
 // Name every generated operation: some servers reject anonymous operations, and
@@ -295,11 +279,23 @@ const buildSelectionSet = (
 const operationNameForField = (fieldName: string): string =>
   fieldName.charAt(0).toUpperCase() + fieldName.slice(1);
 
+interface BuiltOperation {
+  /** The operation with the default (scalar-leaf) selection. */
+  readonly operationString: string;
+  /** Everything up to (not including) the field's selection set:
+   *  `query Op($a: T) { field(a: $a)`. A caller-supplied `select` is wrapped as
+   *  `{ <select> }` and spliced between this prefix and the suffix at invoke
+   *  time, so the selection can be chosen per call without re-introspecting. */
+  readonly operationPrefix: string;
+  /** Closes the operation: ` }`. */
+  readonly operationSuffix: string;
+}
+
 const buildOperationStringForField = (
   kind: GraphqlOperationKind,
   field: IntrospectionField,
   types: ReadonlyMap<string, IntrospectionType>,
-): string => {
+): BuiltOperation => {
   const opType = kind === "query" ? "query" : "mutation";
   const opName = operationNameForField(field.name);
 
@@ -309,12 +305,16 @@ const buildOperationStringForField = (
   });
 
   const argPasses = field.args.map((arg) => `${arg.name}: $${arg.name}`);
-  const selectionSet = buildSelectionSet(field.type, types, 0, new Set());
+  const defaultSelection = buildDefaultSelectionSet(field.type, types);
 
   const varDefsStr = varDefs.length > 0 ? `(${varDefs.join(", ")})` : "";
   const argPassStr = argPasses.length > 0 ? `(${argPasses.join(", ")})` : "";
 
-  return `${opType} ${opName}${varDefsStr} { ${field.name}${argPassStr}${selectionSet ? ` ${selectionSet}` : ""} }`;
+  const operationPrefix = `${opType} ${opName}${varDefsStr} { ${field.name}${argPassStr}`;
+  const operationSuffix = ` }`;
+  const operationString = `${operationPrefix}${defaultSelection ? ` ${defaultSelection}` : ""}${operationSuffix}`;
+
+  return { operationString, operationPrefix, operationSuffix };
 };
 
 interface PreparedOperation {
@@ -323,6 +323,28 @@ interface PreparedOperation {
   readonly inputSchema: unknown;
   readonly binding: OperationBinding;
 }
+
+// Surface an optional `select` input on every tool so a caller can choose the
+// return fields per call. The default operation selects only scalar leaves; to
+// fetch nested or list data the caller passes a GraphQL selection set here, which
+// is spliced into the operation at invoke time. A real field argument named
+// `select` (rare) is left untouched.
+const withSelectInput = (inputSchema: unknown, returnTypeName: string): unknown => {
+  const base =
+    inputSchema && typeof inputSchema === "object"
+      ? (inputSchema as Record<string, unknown>)
+      : { type: "object", properties: {} };
+  const properties = {
+    ...((base.properties as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (!("select" in properties)) {
+    properties.select = {
+      type: "string",
+      description: `Optional GraphQL selection set for the \`${returnTypeName}\` return type. Overrides the default, which selects only scalar fields. Provide the fields to return, with sub-selections for nested objects and arguments where required, e.g. "id name items { id title }". Omit for the default.`,
+    };
+  }
+  return { ...base, type: "object", properties };
+};
 
 const prepareOperations = (
   fields: readonly ExtractedField[],
@@ -360,21 +382,31 @@ const prepareOperations = (
 
     const key = `${extracted.kind}.${extracted.fieldName}`;
     const entry = fieldMap.get(key);
-    const operationString = entry
+    const built = entry
       ? buildOperationStringForField(entry.kind, entry.field, typeMap)
-      : `${extracted.kind} ${operationNameForField(extracted.fieldName)} { ${extracted.fieldName} }`;
+      : {
+          operationString: `${extracted.kind} ${operationNameForField(extracted.fieldName)} { ${extracted.fieldName} }`,
+          operationPrefix: undefined,
+          operationSuffix: undefined,
+        };
 
     const binding = OperationBinding.make({
       kind: extracted.kind,
       fieldName: extracted.fieldName,
-      operationString,
+      operationString: built.operationString,
       variableNames: extracted.arguments.map((a) => a.name),
+      ...(built.operationPrefix !== undefined && built.operationSuffix !== undefined
+        ? { operationPrefix: built.operationPrefix, operationSuffix: built.operationSuffix }
+        : {}),
     });
 
     return {
       toolName,
       description,
-      inputSchema: Option.getOrUndefined(extracted.inputSchema),
+      inputSchema: withSelectInput(
+        Option.getOrUndefined(extracted.inputSchema),
+        extracted.returnTypeName,
+      ),
       binding,
     };
   });
