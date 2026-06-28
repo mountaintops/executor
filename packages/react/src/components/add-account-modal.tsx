@@ -1552,7 +1552,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                         size="sm"
                                         onClick={() => setRegisteringOAuthClient(true)}
                                       >
-                                        Register app
+                                        {dcrFallbackMessage
+                                          ? "Manually register an app"
+                                          : "Register app"}
                                       </Button>
                                       {oauthOtherApps.length > 0 && !showOtherApps ? (
                                         <Button
