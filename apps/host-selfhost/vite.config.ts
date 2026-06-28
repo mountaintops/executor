@@ -76,6 +76,12 @@ function executorApiPlugin(): Plugin {
           path.startsWith("/mcp/") ||
           path === "/docs" ||
           path.startsWith("/docs/") ||
+          // Un-prefixed app-level routes (e.g. `/v1/app/npm/dist-tags`, which the
+          // shell's update check fetches). Served by the Effect router in prod;
+          // without this the SPA index.html fallback answers 200-with-HTML and
+          // the JSON parse fails, so the UpdateCard never appears.
+          path === "/v1" ||
+          path.startsWith("/v1/") ||
           // RFC 9728 / RFC 8414 OAuth discovery the MCP client fetches before
           // auth. Served by the Effect router in prod; without this the SPA
           // index.html fallback answers 200-with-HTML and breaks discovery.
@@ -135,6 +141,9 @@ export default defineConfig({
   },
   define: {
     "import.meta.env.VITE_APP_VERSION": JSON.stringify("0.0.0-selfhost"),
+    // Self-host upgrades by pulling/rebuilding the image (or git + rebuild), not
+    // npm, so the update card links to the upgrade guide instead of a command.
+    "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("selfhost"),
     "import.meta.env.VITE_GITHUB_URL": JSON.stringify("https://github.com/RhysSullivan/executor"),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "development"),
   },
