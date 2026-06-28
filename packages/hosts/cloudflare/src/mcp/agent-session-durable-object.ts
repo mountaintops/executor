@@ -14,6 +14,7 @@ import {
   PAUSED_APPROVAL_TIMEOUT_MS,
   type PausedExecutionHooks,
 } from "@executor-js/host-mcp/tool-server";
+import type { McpResource } from "@executor-js/host-mcp";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import {
@@ -28,6 +29,9 @@ export interface McpSessionInit {
   readonly organizationId: string;
   readonly userId: string;
   readonly elicitationMode: McpElicitationMode;
+  /** The MCP resource the session was minted against (`/mcp` default vs a
+   *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
+  readonly resource: McpResource;
   readonly webOrigin?: string;
 }
 
@@ -81,6 +85,9 @@ export interface SessionMeta {
   readonly organizationSlug?: string;
   readonly userId: string;
   readonly elicitationMode?: "browser" | "model" | "native";
+  /** The MCP resource the session serves (carried from {@link McpSessionInit});
+   *  `buildMcpServer` scopes the tool catalog to it. */
+  readonly resource: McpResource;
   readonly webOrigin?: string;
 }
 

@@ -14,8 +14,10 @@ import {
   connectionLabel,
   connectionLabelForHost,
   createCredentialPayloadOrigin,
+  dcrClientNameForIntegration,
   DEFAULT_CONNECTION_OWNER,
   mergeCustomMethods,
+  runCimdConnect,
   runDcrConnect,
 } from "./add-account-modal";
 
@@ -52,6 +54,19 @@ type RegisterArgs = {
 };
 
 type StartArgs = { readonly client: OAuthClientSlug; readonly owner: Owner };
+
+type CimdCreateArgs = {
+  readonly owner: Owner;
+  readonly slug: OAuthClientSlug;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly resource?: string | null;
+  readonly grant: "authorization_code";
+  readonly clientId: string;
+  readonly clientSecret: "";
+};
+
+type CimdStartArgs = { readonly client: OAuthClientSlug; readonly owner: Owner };
 
 const TEST_INTEGRATION = IntegrationSlug.make("linear_mcp");
 
@@ -193,7 +208,96 @@ describe("createCredentialPayloadOrigin", () => {
   });
 });
 
+describe("runCimdConnect", () => {
+  it("creates a public metadata-document OAuth client and starts OAuth", async () => {
+    let createArgs: CimdCreateArgs | null = null;
+    let startArgs: CimdStartArgs | null = null;
+
+    const outcome = await runCimdConnect(
+      {
+        createClient: (args: CimdCreateArgs): Promise<OAuthClientSlug | null> => {
+          createArgs = args;
+          return Promise.resolve(args.slug);
+        },
+        start: (args: CimdStartArgs): void => {
+          startArgs = args;
+        },
+      },
+      {
+        owner: "user",
+        integrationName: "PostHog API",
+        authorizationUrl: "https://us.posthog.com/oauth/authorize/",
+        tokenUrl: "https://us.posthog.com/oauth/token/",
+        resource: "https://us.posthog.com",
+        clientIdMetadataDocumentUrl:
+          "https://executor.example/api/oauth/client-id-metadata/acme.json",
+        existingClients: [],
+      },
+    );
+
+    expect(outcome.kind).toBe("started");
+    expect(createArgs).toMatchObject({
+      owner: "user",
+      authorizationUrl: "https://us.posthog.com/oauth/authorize/",
+      tokenUrl: "https://us.posthog.com/oauth/token/",
+      resource: "https://us.posthog.com",
+      grant: "authorization_code",
+      clientId: "https://executor.example/api/oauth/client-id-metadata/acme.json",
+      clientSecret: "",
+    });
+    expect(String(createArgs!.slug)).toBe("posthog-api-cimd");
+    expect(String(startArgs!.client)).toBe("posthog-api-cimd");
+    expect(startArgs!.owner).toBe("user");
+  });
+
+  it("reuses an existing matching metadata-document client", async () => {
+    const existingSlug = OAuthClientSlug.make("posthog-api-cimd");
+    let created = false;
+    let startArgs: CimdStartArgs | null = null;
+
+    const outcome = await runCimdConnect(
+      {
+        createClient: (): Promise<OAuthClientSlug | null> => {
+          created = true;
+          return Promise.resolve(OAuthClientSlug.make("new-client"));
+        },
+        start: (args: CimdStartArgs): void => {
+          startArgs = args;
+        },
+      },
+      {
+        owner: "user",
+        integrationName: "PostHog API",
+        authorizationUrl: "https://us.posthog.com/oauth/authorize/",
+        tokenUrl: "https://us.posthog.com/oauth/token/",
+        resource: "https://us.posthog.com",
+        clientIdMetadataDocumentUrl: "https://executor.example/api/oauth/client-id-metadata.json",
+        existingClients: [
+          {
+            owner: "user",
+            slug: existingSlug,
+            grant: "authorization_code",
+            authorizationUrl: "https://us.posthog.com/oauth/authorize/",
+            tokenUrl: "https://us.posthog.com/oauth/token/",
+            resource: "https://us.posthog.com",
+            clientId: "https://executor.example/api/oauth/client-id-metadata.json",
+          },
+        ],
+      },
+    );
+
+    expect(outcome).toEqual({ kind: "started", client: existingSlug, reused: true });
+    expect(created).toBe(false);
+    expect(startArgs).toEqual({ client: existingSlug, owner: "user" });
+  });
+});
+
 describe("runDcrConnect", () => {
+  it("names dynamically registered OAuth apps as Executor clients", () => {
+    expect(dcrClientNameForIntegration("PostHog MCP")).toBe("Executor for PostHog MCP");
+    expect(dcrClientNameForIntegration("   ")).toBe("Executor");
+  });
+
   it("auto-registers (no picker) then starts: probe → register → start in order", async () => {
     const calls: string[] = [];
     let registerArgs: RegisterArgs | null = null;
@@ -243,6 +347,7 @@ describe("runDcrConnect", () => {
     expect(registerArgs!.tokenUrl).toBe("https://auth.example.com/token");
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
     expect(registerArgs!.tokenEndpointAuthMethodsSupported).toEqual(["none"]);
+    expect(registerArgs!.clientName).toBe("Executor for Linear MCP");
     expect(registerArgs!.scopes).toEqual(["mcp.read"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
     expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);
@@ -271,6 +376,7 @@ describe("runDcrConnect", () => {
       },
       {
         discoveryUrl: "https://mcp.example.com/mcp",
+        resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
         existingSlugs: [],
@@ -280,6 +386,42 @@ describe("runDcrConnect", () => {
     );
     expect(outcome.kind).toBe("started");
     expect(registerArgs!.scopes).toEqual(["declared.scope"]);
+    // PRM named no `resource`, so the genuine discovery URL (MCP) seeds the
+    // RFC 8707 resource indicator.
+    expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");
+  });
+
+  it("never seeds the resource indicator from the token endpoint (non-MCP DCR)", async () => {
+    // A DCR integration with no discovery URL: `discoveryUrl` falls back to the
+    // token endpoint for probing, but the token endpoint is not an RFC 8707
+    // resource identifier, so it must NOT become the resource. With no genuine
+    // discovery URL and no PRM-named resource, the indicator stays null.
+    let registerArgs: RegisterArgs | null = null;
+    const outcome = await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            registrationEndpoint: "https://auth.example.com/register",
+          }),
+        register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
+          registerArgs = args;
+          return Promise.resolve(OAuthClientSlug.make("app"));
+        },
+        start: (): void => {},
+      },
+      {
+        // discoveryUrl collapsed to the token endpoint (no real discovery URL).
+        discoveryUrl: "https://auth.example.com/token",
+        owner: "user",
+        integrationName: "App",
+        existingSlugs: [],
+        integration: TEST_INTEGRATION,
+      },
+    );
+    expect(outcome.kind).toBe("started");
+    expect(registerArgs!.resource).toBeNull();
   });
 
   it("falls back to BYO when there is no registration endpoint (no register/start)", async () => {
@@ -310,9 +452,13 @@ describe("runDcrConnect", () => {
         integration: TEST_INTEGRATION,
       },
     );
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       kind: "fallback",
       reason: "no-registration-endpoint",
+      probe: {
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+      },
     });
     expect(calls).toEqual(["probe"]);
   });
@@ -371,7 +517,57 @@ describe("runDcrConnect", () => {
         integration: TEST_INTEGRATION,
       },
     );
-    expect(outcome.kind).toBe("fallback");
+    expect(outcome).toMatchObject({
+      kind: "fallback",
+      reason: "registration-failed",
+      probe: {
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+      },
+    });
     expect(calls).toEqual(["register"]);
+  });
+
+  it("threads the register failure message into the fallback (registration-failed)", async () => {
+    const message =
+      "Automatic OAuth setup failed: this server only approves loopback redirect URLs " +
+      "(http://localhost or http://127.0.0.1) for automatic registration, but Executor is " +
+      "using https://app.example.com/api/oauth/callback. Register an OAuth app manually with " +
+      "that redirect URL approved by the server, or run Executor on http://localhost.";
+    let started = false;
+    const outcome = await runDcrConnect(
+      {
+        probe: (): Promise<ProbeResult | null> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            registrationEndpoint: "https://auth.example.com/register",
+          }),
+        register: (): Promise<{ readonly error: string }> => Promise.resolve({ error: message }),
+        start: (): void => {
+          started = true;
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        owner: "user",
+        integrationName: "App",
+        existingSlugs: [],
+        integration: TEST_INTEGRATION,
+      },
+    );
+    // The redirect-URI rejection reaches the caller verbatim so the BYO fallback
+    // can show why instead of the generic copy, and the OAuth start is skipped.
+    expect(outcome).toEqual({
+      kind: "fallback",
+      reason: "registration-failed",
+      probe: {
+        authorizationUrl: "https://auth.example.com/authorize",
+        tokenUrl: "https://auth.example.com/token",
+        registrationEndpoint: "https://auth.example.com/register",
+      },
+      message,
+    });
+    expect(started).toBe(false);
   });
 });

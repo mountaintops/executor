@@ -14,15 +14,14 @@ import {
 } from "@executor-js/sdk";
 import { collectTables } from "@executor-js/api/server";
 import { loadPluginsFromJsonc } from "@executor-js/config";
+import type { McpPluginExtension } from "@executor-js/plugin-mcp";
 
 import executorConfig from "../executor.config";
 import { localDataMigrations } from "./db/data-migrations";
-import { createSqliteFumaDb } from "./db/sqlite-fumadb";
-import { migrateLocalV1ToV2IfNeeded } from "./db/v1-v2-migration";
+import { openOwnedLocalDatabase } from "./db/owned-database";
 
 interface ResolvedStorage {
   readonly dataDir: string;
-  readonly sqlitePath: string;
 }
 
 const localNamespace = "executor_local";
@@ -35,10 +34,7 @@ const LOCAL_SUBJECT = "local";
 const resolveStorage = (): ResolvedStorage => {
   const dataDir = process.env.EXECUTOR_DATA_DIR ?? join(homedir(), ".executor");
   fs.mkdirSync(dataDir, { recursive: true });
-  return {
-    dataDir,
-    sqlitePath: join(dataDir, "data.db"),
-  };
+  return { dataDir };
 };
 
 // Hash suffix disambiguates same-basename folders so two projects with
@@ -57,33 +53,40 @@ const resolvePluginConfigPath = (scopeDir: string): string => join(scopeDir, "ex
 // Static config wins on conflict, matching the Vite plugin.
 type LocalPlugins = readonly AnyPlugin[];
 
-const loadLocalPlugins = Effect.gen(function* () {
-  const cwd = process.env.EXECUTOR_SCOPE_DIR || process.cwd();
-  const staticPlugins = executorConfig.plugins();
-  const dynamicPlugins =
-    (yield* Effect.promise(() => loadPluginsFromJsonc({ path: resolvePluginConfigPath(cwd) }))) ??
-    [];
+export interface LocalExecutorOptions {
+  readonly activeToolkitSlug?: string;
+}
 
-  const staticPackageNames = new Set(
-    staticPlugins.map((plugin) => plugin.packageName).filter((name): name is string => !!name),
-  );
-  const dedupedDynamic = dynamicPlugins.filter((plugin) => {
-    if (plugin.packageName && staticPackageNames.has(plugin.packageName)) {
-      console.warn(
-        `[executor] plugin "${plugin.packageName}" appears in both ` +
-          `executor.config.ts and executor.jsonc#plugins. The static ` +
-          `entry wins; the jsonc entry is ignored.`,
-      );
-      return false;
-    }
-    return true;
+const loadLocalPlugins = (options: LocalExecutorOptions = {}) =>
+  Effect.gen(function* () {
+    const cwd = process.env.EXECUTOR_SCOPE_DIR || process.cwd();
+    const staticPlugins = executorConfig.plugins({
+      activeToolkitSlug: options.activeToolkitSlug,
+    });
+    const dynamicPlugins =
+      (yield* Effect.promise(() => loadPluginsFromJsonc({ path: resolvePluginConfigPath(cwd) }))) ??
+      [];
+
+    const staticPackageNames = new Set(
+      staticPlugins.map((plugin) => plugin.packageName).filter((name): name is string => !!name),
+    );
+    const dedupedDynamic = dynamicPlugins.filter((plugin) => {
+      if (plugin.packageName && staticPackageNames.has(plugin.packageName)) {
+        console.warn(
+          `[executor] plugin "${plugin.packageName}" appears in both ` +
+            `executor.config.ts and executor.jsonc#plugins. The static ` +
+            `entry wins; the jsonc entry is ignored.`,
+        );
+        return false;
+      }
+      return true;
+    });
+
+    return {
+      cwd,
+      plugins: [...staticPlugins, ...dedupedDynamic] as LocalPlugins,
+    };
   });
-
-  return {
-    cwd,
-    plugins: [...staticPlugins, ...dedupedDynamic] as LocalPlugins,
-  };
-});
 
 interface LocalExecutorBundle {
   readonly executor: Executor<LocalPlugins>;
@@ -134,37 +137,23 @@ const handleOrNull = (promise: ReturnType<typeof createExecutorHandle>) =>
     ),
   );
 
-const createLocalExecutorLayer = () => {
+const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
   const storage = resolveStorage();
 
   return Layer.effect(LocalExecutorTag)(
     Effect.gen(function* () {
-      const { cwd, plugins } = yield* loadLocalPlugins;
+      const { cwd, plugins } = yield* loadLocalPlugins(options);
       const tenantId = makeTenantId(cwd);
       const tables = collectTables();
 
-      const migration = yield* Effect.tryPromise({
-        try: () =>
-          migrateLocalV1ToV2IfNeeded({
-            sqlitePath: storage.sqlitePath,
-            tables,
-            namespace: localNamespace,
-            tenantId,
-          }),
-        catch: (cause) =>
-          new LocalExecutorCreateError({
-            message: CREATE_SQLITE_ERROR_MESSAGE,
-            cause,
-          }),
-      });
-
-      const sqlite = yield* Effect.acquireRelease(
+      const owned = yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () =>
-            createSqliteFumaDb({
+            openOwnedLocalDatabase({
+              dataDir: storage.dataDir,
               tables,
               namespace: localNamespace,
-              path: storage.sqlitePath,
+              tenantId,
             }),
           catch: (cause) =>
             new LocalExecutorCreateError({
@@ -172,15 +161,21 @@ const createLocalExecutorLayer = () => {
               cause,
             }),
         }),
-        (db) => Effect.promise(() => db.close()).pipe(Effect.ignore),
+        (database) => Effect.promise(() => database.close()).pipe(Effect.ignore),
       );
+      const sqlite = owned.db;
+      const migration = owned.migration;
 
       // Boot-time data migrations: each registry entry runs once and is
       // stamped in the `data_migration` ledger; stamped entries are skipped
       // without touching the data.
       yield* runSqliteDataMigrations(sqlite.client, localDataMigrations).pipe(
         Effect.mapError(
-          (cause) => new LocalExecutorCreateError({ message: CREATE_SQLITE_ERROR_MESSAGE, cause }),
+          (cause) =>
+            new LocalExecutorCreateError({
+              message: CREATE_SQLITE_ERROR_MESSAGE,
+              cause,
+            }),
         ),
       );
 
@@ -218,13 +213,33 @@ const createLocalExecutorLayer = () => {
         }
       }
 
+      // Heal stdio MCP integrations added before auto-connect existed (they
+      // landed with zero connections ⇒ zero tools) and move any legacy inline
+      // env into the secret store. No-op on a fresh install; never fails boot.
+      // Local is the only app that enables stdio, so this only runs here.
+      // oxlint-disable-next-line executor/no-double-cast -- typed boundary: the executor IS its own plugin-extension map (executor[pluginId]) but LocalExecutor doesn't surface per-plugin extensions statically
+      const mcpExtension = (executor as unknown as { readonly mcp?: McpPluginExtension }).mcp;
+      if (mcpExtension) {
+        yield* mcpExtension
+          .reconcileStdioConnections()
+          .pipe(
+            Effect.catch(() =>
+              Effect.sync(() =>
+                console.warn(
+                  "[executor] stdio connection reconcile failed; existing stdio servers may show no tools until re-added",
+                ),
+              ),
+            ),
+          );
+      }
+
       return { executor, plugins };
     }),
   );
 };
 
-export const createExecutorHandle = async () => {
-  const layer = createLocalExecutorLayer();
+export const createExecutorHandle = async (options: LocalExecutorOptions = {}) => {
+  const layer = createLocalExecutorLayer(options);
   const runtime = ManagedRuntime.make(layer);
   const bundle = await runtime.runPromise(LocalExecutorTag.asEffect());
 
@@ -238,15 +253,47 @@ export const createExecutorHandle = async () => {
   };
 };
 
+class SharedHandleCreateError extends Data.TaggedError("SharedHandleCreateError")<{
+  readonly cause: unknown;
+}> {}
+
 export type ExecutorHandle = Awaited<ReturnType<typeof createExecutorHandle>>;
 
 let sharedHandlePromise: ReturnType<typeof createExecutorHandle> | null = null;
+let sharedHandleLifecycle: Promise<void> = Promise.resolve();
 
-const loadSharedHandle = () => {
-  if (!sharedHandlePromise) {
-    sharedHandlePromise = createExecutorHandle();
+const loadSharedHandle = (): Promise<ExecutorHandle> => {
+  if (sharedHandlePromise) {
+    return sharedHandlePromise;
   }
-  return sharedHandlePromise;
+
+  // Capture the lifecycle tail at call time so creation stays ordered behind
+  // in-flight dispose
+  const lifecycle = sharedHandleLifecycle;
+
+  // Identity token the heal closure compares against. Using a `let` declared
+  // up front avoids any reference-before-init ambiguity in the closure.
+  let slot: Promise<ExecutorHandle>;
+
+  const acquire = Effect.tryPromise({
+    try: () => lifecycle.then(() => createExecutorHandle()),
+    catch: (cause) => new SharedHandleCreateError({ cause }),
+  }).pipe(
+    // Self-heal: a failed creation must not poison the memo. Clear the slot on
+    // any non-success outcome so the next getExecutor() retries, but only if a
+    // dispose/reload hasn't already swapped in a newer promise (identity guard).
+    Effect.onError(() =>
+      Effect.sync(() => {
+        if (sharedHandlePromise === slot) {
+          sharedHandlePromise = null;
+        }
+      }),
+    ),
+  );
+
+  slot = Effect.runPromise(acquire);
+  sharedHandlePromise = slot;
+  return slot;
 };
 
 export const getExecutor = () => loadSharedHandle().then((handle) => handle.executor);
@@ -256,13 +303,22 @@ export const disposeExecutor = async (): Promise<void> => {
   const currentHandlePromise = sharedHandlePromise;
   sharedHandlePromise = null;
 
-  const handle = currentHandlePromise ? await handleOrNull(currentHandlePromise) : null;
-  if (handle) {
-    await ignorePromiseFailure("disposeExecutor", () => handle.dispose());
-  }
+  const disposeCurrent = async (): Promise<void> => {
+    const handle = currentHandlePromise ? await handleOrNull(currentHandlePromise) : null;
+    if (handle) {
+      await ignorePromiseFailure("disposeExecutor", () => handle.dispose());
+    }
+  };
+
+  const nextLifecycle = sharedHandleLifecycle.then(disposeCurrent, disposeCurrent);
+  sharedHandleLifecycle = nextLifecycle.then(
+    () => undefined,
+    () => undefined,
+  );
+  await nextLifecycle;
 };
 
-export const reloadExecutor = () => {
-  disposeExecutor();
+export const reloadExecutor = async () => {
+  await disposeExecutor();
   return getExecutor();
 };

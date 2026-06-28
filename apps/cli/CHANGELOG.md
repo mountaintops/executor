@@ -1,5 +1,86 @@
 # executor
 
+## 1.5.22
+
+### Patch Changes
+
+- [#1167](https://github.com/RhysSullivan/executor/pull/1167) [`add2e40`](https://github.com/RhysSullivan/executor/commit/add2e405fca8a5e20aea43d216bc8289c15e2187) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the desktop app's main-area title-bar strip pushing page content down so page headers no longer lined up with the sidebar header. The drag strip now overlays the top of the main area (behind page content) instead of reserving its own row, and the Toolkits header uses a fixed title-bar height so its bottom border aligns with the sidebar header again.
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.22
+  - @executor-js/runtime-quickjs@1.5.22
+  - @executor-js/api@1.4.42
+
+## 1.5.21
+
+### Patch Changes
+
+- [#1134](https://github.com/RhysSullivan/executor/pull/1134) [`78aa871`](https://github.com/RhysSullivan/executor/commit/78aa8710d774d552d6030eca060c5e72f0899461) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix OAuth callbacks in cloud so they preserve the URL-selected organization when the session cookie points at another org.
+
+- Updated dependencies []:
+  - @executor-js/local@1.4.4
+  - @executor-js/sdk@1.5.21
+  - @executor-js/runtime-quickjs@1.5.21
+  - @executor-js/api@1.4.41
+
+## 1.5.20
+
+### Patch Changes
+
+- [#1132](https://github.com/RhysSullivan/executor/pull/1132) [`580fc7f`](https://github.com/RhysSullivan/executor/commit/580fc7f8b2615a0d7760b3a4daddf8d45673ef3f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Fix the PostHog custom MCP OAuth setup flow so Add connection opens PostHog authorization instead of falling back to manual OAuth app registration.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.20
+  - @executor-js/runtime-quickjs@1.5.20
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.40
+
+## 1.5.19
+
+### Patch Changes
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Google media downloads (Drive file contents, exports, and other binary
+  endpoints) are now returned as binary responses instead of being decoded as
+  text, so files come back intact. Emit them with `emit(result.data)`.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - The CLI now validates that a URL is `http`/`https` before handing it to the
+  operating system's browser opener, and on Windows opens it via
+  `rundll32 url.dll,FileProtocolHandler` instead of `cmd /c start`. This removes a
+  path where a crafted URL could be interpreted as a shell command. `executor
+login` and the "open in browser" prompts behave the same for normal URLs.
+
+- [#1115](https://github.com/RhysSullivan/executor/pull/1115) [`92bd86c`](https://github.com/RhysSullivan/executor/commit/92bd86cb975ce867b3002ae9bcb6bf60da67cc48) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hardened the hosted egress guard. Outbound requests from OAuth token exchanges,
+  MCP transports, and GraphQL/Google/Microsoft discovery now all route through the
+  guard, and the guard resolves DNS before connecting so a hostname that points at
+  a private or loopback address is blocked rather than only literal private IPs.
+  This tightens SSRF protection for hosted and cloud execution.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.19
+  - @executor-js/runtime-quickjs@1.5.19
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.39
+
+## 1.5.18
+
+### Patch Changes
+
+- [#1093](https://github.com/RhysSullivan/executor/pull/1093) [`bc24d1a`](https://github.com/RhysSullivan/executor/commit/bc24d1a4924ed8b3f09d64c639b0fe7fe02ed53d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - `connections.create` now accepts no-auth connections (the `none` template with
+  no credential), which previously failed validation with "Expected exactly one
+  provider credential origin". Agents can wire up public, no-auth integrations
+  (public MCP servers, public REST APIs) programmatically instead of bouncing
+  through the web UI. Templates that take a credential still require exactly one.
+
+- [#1093](https://github.com/RhysSullivan/executor/pull/1093) [`bc24d1a`](https://github.com/RhysSullivan/executor/commit/bc24d1a4924ed8b3f09d64c639b0fe7fe02ed53d) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - OpenAPI tools that return a file now spell out how to emit it directly in the
+  tool's description, so an agent sees the `emit(result.data)` contract before its
+  first call instead of only discovering it after a failed attempt or by reading
+  `describe.tool`. Non-file tools are unchanged.
+- Updated dependencies []:
+  - @executor-js/sdk@1.5.18
+  - @executor-js/runtime-quickjs@1.5.18
+  - @executor-js/local@1.4.4
+  - @executor-js/api@1.4.38
+
 ## 1.5.17
 
 ### Patch Changes

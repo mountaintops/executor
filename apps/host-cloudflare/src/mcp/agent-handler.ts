@@ -3,6 +3,7 @@ import { Effect, Predicate } from "effect";
 import {
   McpAuthProvider,
   jsonRpcErrorBody,
+  defaultMcpResource,
   type AuthOutcome,
   type Principal,
 } from "@executor-js/host-mcp";
@@ -90,6 +91,10 @@ const propsForPrincipal = (
         organizationId: principal.organizationId,
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        // host-cloudflare only routes the bare `/mcp` endpoint to the Agent
+        // bridge (see worker.ts), so the session always serves the default
+        // resource.
+        resource: defaultMcpResource,
         webOrigin: new URL(request.url).origin,
       },
       propagation,
@@ -135,10 +140,14 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
 
     const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(request, {
-      accountId: outcome.principal.accountId,
-      organizationId: outcome.principal.organizationId,
-    });
+    const forwarded = withVerifiedIdentityHeaders(
+      request,
+      {
+        accountId: outcome.principal.accountId,
+        organizationId: outcome.principal.organizationId,
+      },
+      defaultMcpResource,
+    );
     return serve.fetch(forwarded, env, ctx);
   };
 };

@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import {
   addConnectionOptimistic,
   connectionsAllAtom,
+  createOAuthClientOptimistic,
   oauthClientsOptimisticAtom,
   probeOAuth,
   providerItemsAtom,
@@ -38,7 +39,11 @@ import {
   resolveOAuthConnectionOwnerForHost,
   type ConnectionOwnerOption,
 } from "../plugins/connection-owner";
-import { oauthCallbackUrl, useOAuthPopupFlow } from "../plugins/oauth-sign-in";
+import {
+  oauthCallbackUrl,
+  oauthClientIdMetadataDocumentUrl,
+  useOAuthPopupFlow,
+} from "../plugins/oauth-sign-in";
 import {
   clientDisplayName,
   clientHost,
@@ -48,7 +53,11 @@ import {
 } from "../plugins/use-effective-oauth-client";
 import { cn } from "../lib/utils";
 import { buildUsageMap, connectionsUsingClient } from "../lib/oauth-client-usage";
-import { OAuthClientForm, type OAuthClientFormPrefill } from "./oauth-client-form";
+import {
+  OAuthClientForm,
+  registrationScopes,
+  type OAuthClientFormPrefill,
+} from "./oauth-client-form";
 import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
@@ -147,20 +156,60 @@ function isOnePasswordRegistered(
 function PasteCredentialInputs(props: {
   readonly inputs: readonly CredentialInput[];
   readonly singleInput: boolean;
+  /** Force the per-input label even for a single input (env vars name their
+   *  field rather than relying on a generic "value / token" placeholder). */
+  readonly showLabels?: boolean;
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Record<string, string>) => void;
 }) {
+  if (!props.singleInput) {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2">
+        {props.inputs.map((input) => (
+          <div key={input.variable} className="min-w-0 space-y-1.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <Label
+                htmlFor={`credential-input-${input.variable}`}
+                className="min-w-0 truncate font-mono text-xs font-medium text-muted-foreground"
+              >
+                {input.label}
+              </Label>
+            </div>
+            <Input
+              id={`credential-input-${input.variable}`}
+              type="password"
+              autoComplete="new-password"
+              placeholder={`paste ${input.label}`}
+              value={props.values[input.variable] ?? ""}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                props.onChange({
+                  ...props.values,
+                  [input.variable]: e.target.value,
+                })
+              }
+              className="h-9 font-mono text-sm"
+              data-ph-block
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Past the multi-input grid above, singleInput is always true, so labelled
+  // reduces to showLabels: env vars opt in to naming their single field.
+  const labelled = props.showLabels ?? false;
   return (
     <div className="space-y-2">
       {props.inputs.map((input) => (
         <div key={input.variable} className="space-y-1">
-          {!props.singleInput && (
-            <Label className="text-xs text-muted-foreground">{input.label}</Label>
+          {labelled && (
+            <Label className="font-mono text-xs text-muted-foreground">{input.label}</Label>
           )}
           <Input
             type="password"
             autoComplete="new-password"
-            placeholder={props.singleInput ? "paste the value / token" : `paste ${input.label}`}
+            placeholder={labelled ? "secret value" : "paste the value / token"}
             value={props.values[input.variable] ?? ""}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
               props.onChange({
@@ -247,6 +296,13 @@ function OnePasswordItemSelect(props: {
 function CredentialValueFields(props: {
   readonly inputs: readonly CredentialInput[];
   readonly singleInput: boolean;
+  readonly showLabels?: boolean;
+  /** Allow an external provider (1Password) origin. Off for env methods: the
+   *  wire's external `from` is keyed under the canonical `token` variable, but
+   *  an env credential must be keyed under its env var name, so a 1Password
+   *  origin would persist the secret under the wrong key and the subprocess
+   *  would launch without it. Paste stays correctly keyed per variable. */
+  readonly allowExternalProvider?: boolean;
   readonly values: Readonly<Record<string, string>>;
   readonly onValuesChange: (values: Record<string, string>) => void;
   readonly origin: CredentialOrigin;
@@ -255,7 +311,10 @@ function CredentialValueFields(props: {
   readonly onOnePasswordItemIdChange: (value: string) => void;
 }) {
   const providers = useAtomValue(providersAtom);
-  const onePasswordAvailable = props.singleInput && isOnePasswordRegistered(providers);
+  const onePasswordAvailable =
+    props.singleInput &&
+    (props.allowExternalProvider ?? true) &&
+    isOnePasswordRegistered(providers);
 
   return (
     <div className="space-y-3">
@@ -291,6 +350,7 @@ function CredentialValueFields(props: {
         <PasteCredentialInputs
           inputs={props.inputs}
           singleInput={props.singleInput}
+          showLabels={props.showLabels}
           values={props.values}
           onChange={props.onValuesChange}
         />
@@ -404,6 +464,94 @@ export const connectionNameFrom = (
   connectionIdentifier(connectionLabelForHost(label, owner, integrationName, organizationId));
 
 // ---------------------------------------------------------------------------
+// Transparent CIMD connect orchestration.
+//
+// Client ID Metadata Document support is not Dynamic Client Registration:
+// there is no POST to a registration endpoint and no provider-side app to pick.
+// The OAuth client identity is this host's public metadata-document URL, stored
+// locally as a public PKCE client (`clientSecret: ""`) so the existing
+// `oauth.start` flow can run unchanged.
+// ---------------------------------------------------------------------------
+
+type CimdExistingClient = Pick<
+  OAuthClientSummary,
+  "owner" | "slug" | "grant" | "authorizationUrl" | "tokenUrl" | "resource" | "clientId"
+>;
+
+type CimdCreateClientArgs = {
+  readonly owner: Owner;
+  readonly slug: OAuthClientSlug;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly resource?: string | null;
+  readonly grant: "authorization_code";
+  readonly clientId: string;
+  readonly clientSecret: "";
+};
+
+type RunCimdConnectDeps = {
+  readonly createClient: (args: CimdCreateClientArgs) => Promise<OAuthClientSlug | null>;
+  readonly start: (args: { readonly client: OAuthClientSlug; readonly owner: Owner }) => void;
+};
+
+type RunCimdConnectInput = {
+  readonly owner: Owner;
+  readonly integrationName: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly resource?: string | null;
+  readonly clientIdMetadataDocumentUrl: string;
+  readonly existingClients: readonly CimdExistingClient[];
+};
+
+type CimdOutcome =
+  | { readonly kind: "started"; readonly client: OAuthClientSlug; readonly reused: boolean }
+  | { readonly kind: "failed"; readonly reason: "missing-endpoints" | "create-failed" };
+
+export async function runCimdConnect(
+  deps: RunCimdConnectDeps,
+  input: RunCimdConnectInput,
+): Promise<CimdOutcome> {
+  if (input.authorizationUrl.trim().length === 0 || input.tokenUrl.trim().length === 0) {
+    return { kind: "failed", reason: "missing-endpoints" };
+  }
+
+  const resource = input.resource ?? null;
+  const existing = input.existingClients.find(
+    (client) =>
+      client.owner === input.owner &&
+      client.grant === "authorization_code" &&
+      client.authorizationUrl === input.authorizationUrl &&
+      client.tokenUrl === input.tokenUrl &&
+      (client.resource ?? null) === resource &&
+      client.clientId === input.clientIdMetadataDocumentUrl,
+  );
+
+  if (existing) {
+    deps.start({ client: existing.slug, owner: input.owner });
+    return { kind: "started", client: existing.slug, reused: true };
+  }
+
+  const slug = uniqueClientSlug(
+    `${input.integrationName} CIMD`,
+    input.existingClients.map((client) => String(client.slug)),
+  );
+  const created = await deps.createClient({
+    owner: input.owner,
+    slug,
+    authorizationUrl: input.authorizationUrl,
+    tokenUrl: input.tokenUrl,
+    resource,
+    grant: "authorization_code",
+    clientId: input.clientIdMetadataDocumentUrl,
+    clientSecret: "",
+  });
+  if (created === null) return { kind: "failed", reason: "create-failed" };
+  deps.start({ client: created, owner: input.owner });
+  return { kind: "started", client: created, reused: false };
+}
+
+// ---------------------------------------------------------------------------
 // Transparent DCR (RFC 7591) connect orchestration.
 //
 // For DCR-capable methods (MCP OAuth) the user clicks one "Connect" button and
@@ -448,27 +596,46 @@ type DcrStartArgs = {
 
 /** Outcome of the DCR orchestration. `"started"` means the OAuth flow handed
  *  off (the popup/inline start ran); `"fallback"` means we could not auto-set-up
- *  (probe failed, or no registration endpoint) and the caller should fall back
- *  to the bring-your-own-app picker. */
+ *  — a failed probe, no registration endpoint, or a failed registration — and
+ *  the caller should fall back to the bring-your-own-app picker. A failed probe
+ *  carries no probe result; the other two reasons always carry the probe that
+ *  seeds the picker. */
 type DcrOutcome =
   | { readonly kind: "started" }
+  | { readonly kind: "fallback"; readonly reason: "probe-failed" }
   | {
       readonly kind: "fallback";
-      readonly reason: "probe-failed" | "no-registration-endpoint";
+      readonly reason: "no-registration-endpoint" | "registration-failed";
+      readonly probe: DcrProbeResult;
+      /** A specific, user-facing reason to surface instead of the generic
+       *  "register an app" copy (e.g. a server that rejects the DCR redirect
+       *  URI). Absent when the fallback carries no actionable detail. */
+      readonly message?: string;
     };
 
 type RunDcrConnectDeps = {
   /** Probe the discovery URL → resolved endpoints + (maybe) a registration
    *  endpoint. Resolves to null when the probe fails. */
   readonly probe: (url: string) => Promise<DcrProbeResult | null>;
-  /** Register a DCR client → the minted client slug, or null on failure. */
-  readonly register: (args: DcrRegisterArgs) => Promise<OAuthClientSlug | null>;
+  /** Register a DCR client → the minted client slug, `{ error }` with a
+   *  user-facing message when the server rejects registration, or null on an
+   *  unexplained failure. */
+  readonly register: (
+    args: DcrRegisterArgs,
+  ) => Promise<OAuthClientSlug | { readonly error: string } | null>;
   /** Start the OAuth flow with the minted client (popup / inline). */
   readonly start: (args: DcrStartArgs) => void;
 };
 
 type RunDcrConnectInput = {
   readonly discoveryUrl: string;
+  /** The integration's genuine protected-resource URL (the MCP discovery URL),
+   *  used as the RFC 8707 resource indicator when the server's PRM names no
+   *  `resource`. Distinct from `discoveryUrl`, which falls back to the token
+   *  endpoint for probing: the token endpoint is NOT a resource identifier, so
+   *  it must never become the indicator. Undefined for integrations with no
+   *  discovery URL (non-MCP DCR), collapsing the resource to null as before. */
+  readonly resourceFallback?: string;
   readonly owner: Owner;
   readonly integrationName: string;
   /** The owner's existing client slugs, so the minted slug stays unique. */
@@ -481,13 +648,19 @@ type RunDcrConnectInput = {
   readonly integration: IntegrationSlug;
 };
 
+export const dcrClientNameForIntegration = (integrationName: string): string => {
+  const trimmed = integrationName.trim();
+  return trimmed.length > 0 ? `Executor for ${trimmed}` : "Executor";
+};
+
 /**
  * Run the transparent DCR connect sequence: probe → register → start.
  *
  * - Probe failure → `{ kind: "fallback", reason: "probe-failed" }` (caller shows BYO).
- * - No registration endpoint → `{ kind: "fallback", reason: "no-registration-endpoint" }`.
- * - Register failure → throws via the injected `register` rejecting; the caller
- *   treats a thrown/rejected register as fallback (kept out of the happy path).
+ * - No registration endpoint → `{ kind: "fallback", reason: "no-registration-endpoint", probe }`.
+ * - Register rejected with a message → `{ kind: "fallback", reason: "registration-failed", probe, message }`
+ *   so the caller can show why (e.g. a redirect-URI rejection) over the generic copy.
+ * - Register failed without detail (null) → `{ kind: "fallback", reason: "registration-failed", probe }`.
  * - Success → registers, calls `start`, returns `{ kind: "started" }`.
  */
 export async function runDcrConnect(
@@ -497,27 +670,29 @@ export async function runDcrConnect(
   const probe = await deps.probe(input.discoveryUrl);
   if (probe === null) return { kind: "fallback", reason: "probe-failed" };
   const registrationEndpoint = probe.registrationEndpoint;
-  if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint" };
+  if (!registrationEndpoint) return { kind: "fallback", reason: "no-registration-endpoint", probe };
 
   const slug = uniqueClientSlug(input.integrationName, input.existingSlugs);
-  const scopes =
-    input.declaredScopes && input.declaredScopes.length > 0
-      ? input.declaredScopes
-      : (probe.scopesSupported ?? []);
+  const scopes = registrationScopes(input.declaredScopes ?? [], probe.scopesSupported ?? []);
   const minted = await deps.register({
     owner: input.owner,
     slug,
     registrationEndpoint,
     authorizationUrl: probe.authorizationUrl,
     tokenUrl: probe.tokenUrl,
-    resource: probe.resource ?? null,
+    resource: probe.resource ?? input.resourceFallback ?? null,
     scopes,
     tokenEndpointAuthMethodsSupported: probe.tokenEndpointAuthMethodsSupported,
-    clientName: input.integrationName,
+    clientName: dcrClientNameForIntegration(input.integrationName),
     redirectUri: input.redirectUri,
     originIntegration: input.integration,
   });
-  if (minted === null) return { kind: "fallback", reason: "probe-failed" };
+  if (minted === null) return { kind: "fallback", reason: "registration-failed", probe };
+  // OAuthClientSlug is a branded string; an object return carries the failure
+  // message (e.g. the server rejected the redirect URI) for the BYO fallback.
+  if (typeof minted === "object") {
+    return { kind: "fallback", reason: "registration-failed", probe, message: minted.error };
+  }
   deps.start({ client: minted, owner: input.owner });
   return { kind: "started" };
 }
@@ -588,7 +763,7 @@ function OAuthAppRadioRow(props: {
   );
 }
 
-export function AddAccountModal(props: {
+interface AddAccountModalProps {
   readonly integration: IntegrationSlug;
   readonly integrationName: string;
   readonly methods: readonly AuthMethod[];
@@ -601,7 +776,20 @@ export function AddAccountModal(props: {
    *  plugin whose auth is fixed (MCP) omits this, hiding the row. */
   readonly createCustomMethod?: CreateCustomMethod;
   readonly removeCustomMethod?: (method: AuthMethod) => Promise<boolean>;
-}) {
+}
+
+/** The add-connection modal is self-contained: every transient bit of state
+ *  (form fields, the in-flight OAuth popup flow) lives in `AddAccountModalView`,
+ *  so closing the modal genuinely unmounts that view and React destroys all of
+ *  it, never hand-reset. Unmounting also runs `useOAuthPopupFlow`'s cleanup,
+ *  which cancels a dangling server OAuth session. That is why abandoning an
+ *  OAuth popup can't wedge a later open: the stuck flow died with its instance.
+ *  The parent owns only open/route intent (deep links, the reconnect handoff). */
+export function AddAccountModal(props: AddAccountModalProps) {
+  return props.open ? <AddAccountModalView {...props} /> : null;
+}
+
+function AddAccountModalView(props: AddAccountModalProps) {
   const {
     integration,
     integrationName,
@@ -651,10 +839,16 @@ export function AddAccountModal(props: {
   const [pickedApp, setPickedApp] = useState<string | null>(null);
   const [registeringOAuthClient, setRegisteringOAuthClient] = useState(false);
   const [ccBusy, setCcBusy] = useState(false);
+  const [cimdBusy, setCimdBusy] = useState(false);
   // Transparent DCR: busy while probing/registering/starting; `dcrFailed` flips
   // the modal to the bring-your-own-app picker if auto setup is unavailable.
   const [dcrBusy, setDcrBusy] = useState(false);
   const [dcrFailed, setDcrFailed] = useState(false);
+  const [oauthFallbackProbe, setOAuthFallbackProbe] = useState<DcrProbeResult | null>(null);
+  // When transparent DCR is rejected with an actionable reason (e.g. the server
+  // refuses our redirect URI), surface it as an inline error card on the
+  // bring-your-own-app recovery view instead of a transient toast.
+  const [dcrFallbackMessage, setDcrFallbackMessage] = useState<string | null>(null);
   // FIX 3 escape hatch: when no registered app matched the integration's
   // endpoints, the unmatched apps are collapsed behind an opt-in expander.
   const [showOtherApps, setShowOtherApps] = useState(false);
@@ -669,6 +863,7 @@ export function AddAccountModal(props: {
     mode: "promiseExit",
   });
   const doStartOAuth = useAtomSet(startOAuth, { mode: "promiseExit" });
+  const doCreateOAuthClient = useAtomSet(createOAuthClientOptimistic, { mode: "promiseExit" });
   const doProbe = useAtomSet(probeOAuth, { mode: "promiseExit" });
   const doRegisterDynamic = useAtomSet(registerDynamicOAuthClient, {
     mode: "promiseExit",
@@ -719,7 +914,9 @@ export function AddAccountModal(props: {
     setCredentialOrigin("paste");
     setOnePasswordItemId("");
     setPickedApp(null);
+    setOAuthFallbackProbe(null);
     setDcrFailed(false);
+    setDcrFallbackMessage(null);
   }, [initialState, allMethods, defaultOwner, ownerOptions]);
 
   useEffect(() => {
@@ -793,13 +990,27 @@ export function AddAccountModal(props: {
     }));
   }, [method]);
   const singleInput = credentialInputs.length <= 1;
+  // A stdio env method: every credential is injected as an environment variable
+  // (carrier "env"). These read as named secrets, not an HTTP placement, so we
+  // skip the `KEY=••••••` placement preview and label each field by its var.
+  const isEnvMethod =
+    method != null &&
+    method.placements.length > 0 &&
+    method.placements.every((p) => p.carrier === "env");
+  // CIMD-capable: the provider accepts a client_id that is a metadata-document
+  // URL, so we can create a public local client and skip provider app
+  // registration entirely.
+  const isCimd = isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true;
+  const cimdActive = isCimd;
   // DCR-capable: the integration advertises dynamic registration (MCP oauth2),
   // OR carries a discovery URL we can probe at connect time. When DCR-capable
   // and not yet fallen back, we skip the app picker entirely (Option A).
   const isDcr =
+    !cimdActive &&
     isOAuth &&
     (method?.oauth?.supportsDynamicRegistration === true || method?.oauth?.discoveryUrl != null);
   const dcrActive = isDcr && !dcrFailed;
+  const automaticOAuthActive = cimdActive || dcrActive;
 
   // OAuth apps usable for this integration (user-owned first). Hooks run
   // unconditionally; in DCR mode the result is ignored until/unless we fall back.
@@ -810,8 +1021,14 @@ export function AddAccountModal(props: {
     endpointMatched: oauthEndpointMatched,
     displayRegisterCTA: oauthDisplayRegisterCTA,
   } = useOAuthClientsForIntegration({
-    tokenUrl: method?.oauth?.tokenUrl,
-    authorizationUrl: method?.oauth?.authorizationUrl,
+    // MCP integrations declare no endpoints up front; once DCR has probed the
+    // server we match registered apps against the DISCOVERED endpoints. With no
+    // endpoints to match (a server-targeting MCP integration), require an
+    // explicit match so we surface the register CTA instead of auto-selecting an
+    // unrelated provider's app.
+    tokenUrl: method?.oauth?.tokenUrl ?? oauthFallbackProbe?.tokenUrl,
+    authorizationUrl: method?.oauth?.authorizationUrl ?? oauthFallbackProbe?.authorizationUrl,
+    requireEndpointMatch: isDcr,
   });
   const oauthPopup = useOAuthPopupFlow({
     popupName: "add-account-oauth",
@@ -832,7 +1049,9 @@ export function AddAccountModal(props: {
   const chosenClient: OAuthClientOption | null =
     oauthApps.find((c: OAuthClientOption) => String(c.slug) === selectedApp) ?? null;
   const oauthBusy = ccBusy || oauthPopup.busy;
+  const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
+  const automaticOAuthConnecting = cimdConnecting || dcrConnecting;
 
   // "Connection saved to" for a PICKED BYO OAuth app. Cloud: a Workspace (`org`)
   // app can mint Personal or Workspace connections; a Personal (`user`) app can
@@ -850,31 +1069,11 @@ export function AddAccountModal(props: {
     requestedOwner: owner,
     clientOwner: chosenClient?.owner ?? "user",
   });
-  const savedToOptions = isOAuth && !dcrActive ? oauthConnectionOptions : ownerOptions;
-  const savedToOwner = isOAuth && !dcrActive ? oauthConnectionOwner : owner;
+  const savedToOptions = isOAuth && !automaticOAuthActive ? oauthConnectionOptions : ownerOptions;
+  const savedToOwner = isOAuth && !automaticOAuthActive ? oauthConnectionOwner : owner;
   const showSavedToPicker = !oauthRegistering && savedToOptions.length > 1;
   const callableName = connectionNameFrom(label, savedToOwner, integrationName, organizationId);
-
-  const reset = () => {
-    setMethodId(methods[0]?.id ?? "");
-    setValues({});
-    setCredentialOrigin("paste");
-    setOnePasswordItemId("");
-    setLabel("");
-    setOwner(defaultOwner);
-    setSubmitting(false);
-    setPickedApp(null);
-    setRegisteringOAuthClient(false);
-    setCcBusy(false);
-    setDcrBusy(false);
-    setDcrFailed(false);
-    setShowOtherApps(false);
-    setEditingClient(null);
-    setRemovingClient(null);
-    setCreatedMethods([]);
-    setRemovedMethodIds(new Set());
-    setAddingMethod(false);
-  };
+  const authStepLabel = isOAuth ? (cimdActive ? "OAuth setup" : "OAuth app") : "Credential";
 
   // Build the picker row's Edit/Remove menu for an app, but only once its full
   // summary has loaded (the picker option lacks endpoints/resource). Until then
@@ -913,6 +1112,9 @@ export function AddAccountModal(props: {
     setValues({});
     setCredentialOrigin("paste");
     setOnePasswordItemId("");
+    setDcrFailed(false);
+    setOAuthFallbackProbe(null);
+    setDcrFallbackMessage(null);
   };
 
   // A just-created custom method joins the in-session list and is auto-selected
@@ -953,10 +1155,10 @@ export function AddAccountModal(props: {
     }
   };
 
-  const close = () => {
-    onOpenChange(false);
-    reset();
-  };
+  // Just ask the parent to close. Reopening remounts this whole component (see
+  // AddAccountModal), so there is nothing to hand-reset: the form fields and the
+  // OAuth popup flow's busy state die with this instance.
+  const close = () => onOpenChange(false);
 
   const credentialPayloadOrigin = createCredentialPayloadOrigin({
     origin: credentialOrigin,
@@ -1082,9 +1284,82 @@ export function AddAccountModal(props: {
     });
   };
 
+  const handleCimdConnect = async () => {
+    const authorizationUrl = method?.oauth?.authorizationUrl;
+    const tokenUrl = method?.oauth?.tokenUrl;
+    if (!method || !authorizationUrl || !tokenUrl) {
+      toast.error("OAuth metadata is missing endpoints");
+      return;
+    }
+    const cimdOwner = owner;
+    const connectionName = connectionNameFrom(label, cimdOwner, integrationName, organizationId);
+    const identityLabel = connectionLabelForHost(label, cimdOwner, integrationName, organizationId);
+    setCimdBusy(true);
+    const outcome = await runCimdConnect(
+      {
+        createClient: async (args: CimdCreateClientArgs): Promise<OAuthClientSlug | null> => {
+          const exit = await doCreateOAuthClient({
+            payload: {
+              owner: args.owner,
+              slug: args.slug,
+              authorizationUrl: args.authorizationUrl,
+              tokenUrl: args.tokenUrl,
+              resource: args.resource ?? null,
+              grant: args.grant,
+              clientId: args.clientId,
+              clientSecret: args.clientSecret,
+            },
+            reactivityKeys: oauthClientWriteKeys,
+          });
+          if (Exit.isFailure(exit)) return null;
+          return exit.value.client;
+        },
+        start: (args: { readonly client: OAuthClientSlug; readonly owner: Owner }): void => {
+          void oauthPopup.start({
+            payload: {
+              client: args.client,
+              // CIMD creates the public client under the connection owner, so
+              // the app and connection share one owner.
+              clientOwner: args.owner,
+              owner: args.owner,
+              name: connectionName,
+              integration,
+              template: method.template,
+              identityLabel,
+            },
+            onSuccess: () => {
+              toast.success("Connection added");
+              close();
+            },
+          });
+        },
+      },
+      {
+        owner: cimdOwner,
+        integrationName,
+        authorizationUrl,
+        tokenUrl,
+        resource: method.oauth?.resource ?? null,
+        clientIdMetadataDocumentUrl: oauthClientIdMetadataDocumentUrl(),
+        existingClients: clientSummaries,
+      },
+    );
+    setCimdBusy(false);
+    trackEvent("connection_oauth_started", {
+      integration_slug: String(integration),
+      owner: cimdOwner,
+      flow: "cimd",
+      success: outcome.kind === "started",
+    });
+    if (outcome.kind === "failed") {
+      toast.error("Client metadata setup failed");
+    }
+  };
+
   // Transparent DCR connect: probe → register → start, no app picker. On any
-  // failure (probe error or no registration endpoint) we flip `dcrFailed` so the
-  // bring-your-own-app picker renders as the recovery path with name/owner kept.
+  // failure (probe error, no registration endpoint, or registration failure) we
+  // flip `dcrFailed` so the bring-your-own-app picker renders as the recovery
+  // path with name/owner kept.
   const handleDcrConnect = async () => {
     const discoveryUrl = method?.oauth?.discoveryUrl ?? method?.oauth?.tokenUrl;
     if (!method || !discoveryUrl) {
@@ -1102,7 +1377,9 @@ export function AddAccountModal(props: {
           if (Exit.isFailure(exit)) return null;
           return exit.value;
         },
-        register: async (args: DcrRegisterArgs): Promise<OAuthClientSlug | null> => {
+        register: async (
+          args: DcrRegisterArgs,
+        ): Promise<OAuthClientSlug | { readonly error: string } | null> => {
           const exit = await doRegisterDynamic({
             payload: {
               owner: args.owner,
@@ -1119,7 +1396,11 @@ export function AddAccountModal(props: {
             },
             reactivityKeys: oauthClientWriteKeys,
           });
-          if (Exit.isFailure(exit)) return null;
+          if (Exit.isFailure(exit)) {
+            return {
+              error: messageFromExit(exit, "Automatic setup unavailable. Register an app instead."),
+            };
+          }
           return exit.value.client;
         },
         start: (args: DcrStartArgs): void => {
@@ -1144,6 +1425,10 @@ export function AddAccountModal(props: {
       },
       {
         discoveryUrl,
+        // Only a genuine discovery URL (MCP) seeds the RFC 8707 resource
+        // indicator; the token-endpoint fallback baked into `discoveryUrl` must
+        // not, so pass the un-collapsed method value here.
+        resourceFallback: method.oauth?.discoveryUrl,
         owner: dcrOwner,
         integrationName,
         existingSlugs: [...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
@@ -1163,19 +1448,17 @@ export function AddAccountModal(props: {
       ...(outcome.kind === "fallback" ? { dcr_fallback: true } : {}),
     });
     if (outcome.kind === "fallback") {
+      setOAuthFallbackProbe("probe" in outcome ? outcome.probe : null);
       setDcrFailed(true);
-      toast.error("Automatic setup unavailable — register an app");
+      // Surface the server's actionable rejection reason on the recovery view as
+      // an inline error card. Generic fallbacks (no message) fall through to the
+      // "register an app" empty state, which already guides the user.
+      setDcrFallbackMessage("message" in outcome ? (outcome.message ?? null) : null);
     }
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next: boolean) => {
-        if (!next) close();
-        else onOpenChange(true);
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
@@ -1242,19 +1525,38 @@ export function AddAccountModal(props: {
                 existingSlugs={[...oauthApps, ...oauthOtherApps].map((app: OAuthClientOption) =>
                   String(app.slug),
                 )}
+                autoRegisterRejectedReason={dcrFallbackMessage}
                 prefill={{
                   authorizationUrl:
-                    oauthHandoffPrefill?.authorizationUrl ?? method.oauth?.authorizationUrl,
-                  tokenUrl: oauthHandoffPrefill?.tokenUrl ?? method.oauth?.tokenUrl,
+                    oauthHandoffPrefill?.authorizationUrl ??
+                    method.oauth?.authorizationUrl ??
+                    oauthFallbackProbe?.authorizationUrl,
+                  tokenUrl:
+                    oauthHandoffPrefill?.tokenUrl ??
+                    method.oauth?.tokenUrl ??
+                    oauthFallbackProbe?.tokenUrl,
+                  resource:
+                    oauthHandoffPrefill?.resource ??
+                    oauthFallbackProbe?.resource ??
+                    method.oauth?.discoveryUrl ??
+                    null,
                   scopes: method.oauth?.scopes,
-                  registrationEndpoint: method.oauth?.registrationEndpoint,
+                  discoveredScopes: oauthFallbackProbe?.scopesSupported,
+                  registrationEndpoint:
+                    method.oauth?.registrationEndpoint ??
+                    oauthFallbackProbe?.registrationEndpoint ??
+                    undefined,
+                  tokenEndpointAuthMethodsSupported:
+                    oauthFallbackProbe?.tokenEndpointAuthMethodsSupported,
                   ...(oauthHandoffPrefill?.grant ? { grant: oauthHandoffPrefill.grant } : {}),
                   ...(oauthHandoffPrefill?.clientId
                     ? { clientId: oauthHandoffPrefill.clientId }
                     : {}),
                   ...(oauthHandoffPrefill?.resource != null
                     ? { resource: oauthHandoffPrefill.resource }
-                    : {}),
+                    : method.oauth?.resource != null
+                      ? { resource: method.oauth.resource }
+                      : {}),
                 }}
                 fixedSlug={
                   oauthClientHandoff?.slug != null && oauthClientHandoff.slug.length > 0
@@ -1365,20 +1667,34 @@ export function AddAccountModal(props: {
                       value={methodId}
                       className="mt-0 min-w-0 space-y-5 rounded-md border border-border/60 bg-muted/15 p-4"
                     >
-                      {method?.placements && method.placements.length > 0 ? (
-                        <div className="flex flex-wrap gap-x-3.5 gap-y-1">
-                          {method.placements.map((placement, i: number) => (
-                            <PlacementLine key={i} placement={placement} />
-                          ))}
-                        </div>
-                      ) : null}
+                      {method?.placements && !isEnvMethod && singleInput
+                        ? (() => {
+                            const shown = method.placements.filter((p) => p.carrier !== "env");
+                            return shown.length > 0 ? (
+                              <div className="flex flex-wrap gap-x-3.5 gap-y-1">
+                                {shown.map((placement, i: number) => (
+                                  <PlacementLine key={i} placement={placement} />
+                                ))}
+                              </div>
+                            ) : null;
+                          })()
+                        : null}
 
                       {!isNoAuth && (
                         <div className="space-y-2">
-                          <StepHeader index={2} label={isOAuth ? "OAuth app" : "Credential"} />
+                          <StepHeader index={2} label={authStepLabel} />
 
                           {isOAuth && method ? (
-                            dcrActive ? (
+                            cimdActive ? (
+                              <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
+                                <p className="text-sm font-medium">No app registration</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {cimdConnecting
+                                    ? `Connecting to ${integrationName}…`
+                                    : `${integrationName} supports Client ID Metadata Document OAuth. We'll use this Executor host's public client metadata document and sign you in.`}
+                                </p>
+                              </div>
+                            ) : dcrActive ? (
                               // Transparent DCR: no picker. We register an app for you and run
                               // the OAuth flow with a single Connect click.
                               <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 px-3 py-3">
@@ -1393,6 +1709,22 @@ export function AddAccountModal(props: {
                               <p className="text-xs text-muted-foreground">Loading OAuth apps…</p>
                             ) : (
                               <div className="space-y-3">
+                                {dcrFallbackMessage ? (
+                                  <div
+                                    role="alert"
+                                    className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-3"
+                                  >
+                                    <p className="text-sm font-medium text-destructive">
+                                      Couldn&apos;t set up {integrationName} automatically
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {dcrFallbackMessage}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      Register an app below to connect.
+                                    </p>
+                                  </div>
+                                ) : null}
                                 {/* No registered app matched the integration's endpoint:
                         empty state + a prominent register CTA, and an opt-in
                         collapsed "use a different registered app" escape hatch. */}
@@ -1411,7 +1743,9 @@ export function AddAccountModal(props: {
                                         size="sm"
                                         onClick={() => setRegisteringOAuthClient(true)}
                                       >
-                                        Register app
+                                        {dcrFallbackMessage
+                                          ? "Manually register an app"
+                                          : "Register app"}
                                       </Button>
                                       {oauthOtherApps.length > 0 && !showOtherApps ? (
                                         <Button
@@ -1478,6 +1812,8 @@ export function AddAccountModal(props: {
                             <CredentialValueFields
                               inputs={credentialInputs}
                               singleInput={singleInput}
+                              showLabels={isEnvMethod}
+                              allowExternalProvider={!isEnvMethod}
                               values={values}
                               onValuesChange={setValues}
                               origin={credentialOrigin}
@@ -1524,17 +1860,27 @@ export function AddAccountModal(props: {
                 type="button"
                 variant="ghost"
                 onClick={close}
-                disabled={submitting || oauthBusy || dcrConnecting}
+                disabled={submitting || oauthBusy || automaticOAuthConnecting}
               >
                 {isOAuth ? "Close" : "Cancel"}
               </Button>
               {/* Footer action, in precedence order:
+              - transparent CIMD (no app registration): create/reuse a public
+                metadata-document client and start OAuth;
               - transparent DCR (no picker): a single Connect that runs
                 probe → register → start;
               - registering a BYO app: the form owns its own submit, no footer;
               - picked BYO OAuth app: Connect with OAuth / Connect (client creds);
               - credential/no-auth method: Add connection. */}
-              {dcrActive ? (
+              {cimdActive ? (
+                <Button
+                  type="button"
+                  onClick={() => void handleCimdConnect()}
+                  disabled={cimdConnecting}
+                >
+                  {cimdConnecting ? "Connecting…" : "Connect with OAuth"}
+                </Button>
+              ) : dcrActive ? (
                 <Button
                   type="button"
                   onClick={() => void handleDcrConnect()}

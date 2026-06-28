@@ -31,7 +31,7 @@ const IntegrationParams = { slug: IntegrationSlug };
 /** Where a credential value is carried — mirrors the SDK's
  *  `AuthPlacementDescriptor`. */
 const PlacementDescriptor = Schema.Struct({
-  carrier: Schema.Literals(["header", "query"]),
+  carrier: Schema.Literals(["header", "query", "env"]),
   name: Schema.String,
   prefix: Schema.String,
   /** Input variable this placement renders from (absent ⇒ `token`). Without
@@ -47,9 +47,11 @@ const OAuthDescriptor = Schema.Struct({
   discoveryUrl: Schema.optional(Schema.String),
   authorizationUrl: Schema.optional(Schema.String),
   tokenUrl: Schema.optional(Schema.String),
+  resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.optional(Schema.Array(Schema.String)),
   registrationEndpoint: Schema.optional(Schema.String),
   supportsDynamicRegistration: Schema.optional(Schema.Boolean),
+  supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
 });
 
 /** A single declared auth method — mirrors the SDK's `AuthMethodDescriptor`. */

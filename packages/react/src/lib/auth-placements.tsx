@@ -18,7 +18,7 @@
 import { AuthTemplateSlug } from "@executor-js/sdk/shared";
 import type { AuthMethodDescriptor } from "@executor-js/sdk/shared";
 
-export type Carrier = "header" | "query";
+export type Carrier = "header" | "query" | "env";
 
 export interface Placement {
   readonly carrier: Carrier;
@@ -54,6 +54,7 @@ export type AuthMethodKind = "oauth" | "apikey" | "none";
 export interface AuthMethodOAuth {
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
+  readonly resource?: string | null;
   readonly scopes?: readonly string[];
   /** RFC 7591 registration endpoint, when the provider advertises Dynamic
    *  Client Registration. Lets the form offer a one-click "Register
@@ -68,6 +69,11 @@ export interface AuthMethodOAuth {
    *  registration. Drives the transparent auto-register connect flow (probe →
    *  register → start, with no app picker). */
   readonly supportsDynamicRegistration?: boolean;
+  /** True when the authorization server supports OAuth Client ID Metadata
+   *  Document. The connect flow can create a public local client whose
+   *  `client_id` is this host's metadata document URL, with no provider-side app
+   *  registration. */
+  readonly supportsClientIdMetadataDocument?: boolean;
 }
 
 export interface AuthMethod {
@@ -87,6 +93,9 @@ export function placementLabel(placement: Placement): string {
   if (placement.carrier === "header") {
     return `${placement.name || "Authorization"} header`;
   }
+  if (placement.carrier === "env") {
+    return `${placement.name || "TOKEN"} env var`;
+  }
   return `${placement.name || "api_key"} query param`;
 }
 
@@ -100,7 +109,9 @@ export function PlacementLine(props: { readonly placement: Placement; readonly m
   const lead =
     placement.carrier === "header"
       ? `${placement.name || "Authorization"}: `
-      : `?${placement.name || "api_key"}=`;
+      : placement.carrier === "env"
+        ? `${placement.name || "TOKEN"}=`
+        : `?${placement.name || "api_key"}=`;
   return (
     <span className="inline-flex items-center font-mono text-xs text-muted-foreground">
       {lead}
@@ -153,10 +164,12 @@ function authMethodFromDescriptor(descriptor: AuthMethodDescriptor): AuthMethod 
       oauth: {
         authorizationUrl: oauth?.authorizationUrl,
         tokenUrl: oauth?.tokenUrl,
+        resource: oauth?.resource ?? null,
         scopes: oauth?.scopes,
         registrationEndpoint: oauth?.registrationEndpoint,
         discoveryUrl: oauth?.discoveryUrl,
         supportsDynamicRegistration: oauth?.supportsDynamicRegistration,
+        supportsClientIdMetadataDocument: oauth?.supportsClientIdMetadataDocument,
       },
     };
   }

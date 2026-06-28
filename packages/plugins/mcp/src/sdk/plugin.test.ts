@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Option, Predicate, Schema } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { Effect, Layer, Option, Predicate, Schema } from "effect";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpServerResponse,
+} from "effect/unstable/http";
 
 import {
   AuthTemplateSlug,
@@ -13,10 +18,12 @@ import {
 import {
   makeTestConfig,
   memoryCredentialsPlugin,
+  scopesFromAuthorizeUrl,
   serveOAuthTestServer,
   serveTestHttpApp,
 } from "@executor-js/sdk/testing";
 
+import { createMcpConnector } from "./connection";
 import { mcpPlugin, userFacingProbeMessage } from "./plugin";
 import { McpInvocationError } from "./errors";
 import { extractManifestFromListToolsResult, deriveMcpNamespace, joinToolPath } from "./manifest";
@@ -299,6 +306,30 @@ describe("mcpPlugin", () => {
     }),
   );
 
+  it.effect("routes remote connector traffic through the provided HttpClient layer", () =>
+    Effect.gen(function* () {
+      const seen: string[] = [];
+      const httpClientLayer = Layer.succeed(HttpClient.HttpClient)(
+        HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+          seen.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response("blocked", { status: 403 })),
+          );
+        }),
+      );
+
+      const error = yield* createMcpConnector({
+        transport: "remote",
+        endpoint: "https://internal.example/mcp",
+        remoteTransport: "streamable-http",
+        httpClientLayer,
+      }).pipe(Effect.flip);
+
+      expect(Predicate.isTagged(error, "McpConnectionError")).toBe(true);
+      expect(seen).toEqual(["https://internal.example/mcp"]);
+    }),
+  );
+
   it.effect("integration catalog has no configured MCP integrations initially", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [mcpPlugin()] as const }));
@@ -470,6 +501,52 @@ describe("mcpPlugin", () => {
 
       expect(merged.map((method) => method.slug)).toEqual(["oauth2", "header"]);
     }),
+  );
+
+  it.effect("oauth.start discovers scopes for an MCP oauth method", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["channels:history", "users:read"],
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+        );
+
+        yield* executor.mcp.addServer({
+          name: "Slack MCP",
+          endpoint: server.mcpResourceUrl,
+          slug: "slack_mcp",
+          authenticationTemplate: [{ kind: "oauth2" }],
+        });
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: OAuthClientSlug.make("slack-app"),
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: OAuthClientSlug.make("slack-app"),
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: IntegrationSlug.make("slack_mcp"),
+          template: AuthTemplateSlug.make("oauth2"),
+        });
+
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+          "channels:history",
+          "users:read",
+        ]);
+      }),
+    ),
   );
 
   // When discovery fails (auth, network, etc.) the connection still lands with

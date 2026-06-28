@@ -5,6 +5,8 @@ import { buildToolTypeScriptPreview } from "@executor-js/sdk/core";
 import {
   convertGoogleDiscoveryBundleToOpenApi,
   convertGoogleDiscoveryToOpenApi,
+  isGoogleDiscoveryUrl,
+  normalizeGoogleDiscoveryUrl,
 } from "./discovery";
 import { extract, parse } from "@executor-js/plugin-openapi";
 
@@ -43,6 +45,31 @@ const ConvertedSpec = Schema.Struct({
 });
 
 const decodeConvertedSpec = Schema.decodeUnknownSync(Schema.fromJsonString(ConvertedSpec));
+
+it("accepts only supported HTTPS Google Discovery endpoints", () => {
+  expect(
+    normalizeGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest/"),
+  ).toBe("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest");
+  expect(
+    normalizeGoogleDiscoveryUrl("https://chat.googleapis.com/$discovery/rest?version=v1"),
+  ).toBe("https://www.googleapis.com/discovery/v1/apis/chat/v1/rest");
+
+  expect(isGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest")).toBe(
+    true,
+  );
+  expect(isGoogleDiscoveryUrl("https://evilgoogleapis.com/discovery/v1/apis/gmail/v1/rest")).toBe(
+    false,
+  );
+  expect(isGoogleDiscoveryUrl("http://www.googleapis.com/discovery/v1/apis/gmail/v1/rest")).toBe(
+    false,
+  );
+  expect(
+    isGoogleDiscoveryUrl("https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest?next=x"),
+  ).toBe(false);
+  expect(
+    isGoogleDiscoveryUrl("https://token@www.googleapis.com/discovery/v1/apis/gmail/v1/rest"),
+  ).toBe(false);
+});
 
 const normalizeOpenApiRefsForPreview = (node: unknown): unknown => {
   if (node == null || typeof node !== "object") return node;
@@ -244,6 +271,64 @@ it.effect("converts Google Discovery documents into Executor-preserving OpenAPI 
     // OAuth2SourceConfig slot model, which no longer exists in v2.
     const oauthTemplate = result.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
     expect(oauthTemplate).toBeDefined();
+  }),
+);
+
+it.effect("marks Google Discovery media-download methods as binary responses", () =>
+  Effect.gen(function* () {
+    const result = yield* convertGoogleDiscoveryToOpenApi({
+      discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      documentText: JSON.stringify({
+        name: "drive",
+        version: "v3",
+        title: "Drive API",
+        rootUrl: "https://www.googleapis.com/",
+        servicePath: "drive/v3/",
+        resources: {
+          files: {
+            methods: {
+              export: {
+                id: "drive.files.export",
+                httpMethod: "GET",
+                path: "files/{fileId}/export",
+                supportsMediaDownload: true,
+                useMediaDownloadService: true,
+                parameters: {
+                  fileId: { location: "path", required: true, type: "string" },
+                  mimeType: { location: "query", required: true, type: "string" },
+                },
+              },
+            },
+          },
+        },
+        schemas: {},
+      }),
+    });
+
+    const spec = decodeConvertedSpec(result.specText);
+    const operation = spec.paths["/files/{fileId}/export"]?.get;
+    expect(operation?.responses).toMatchObject({
+      "200": {
+        content: {
+          "application/octet-stream": {
+            schema: { type: "string", format: "binary" },
+          },
+        },
+      },
+    });
+
+    const parsed = yield* parse(result.specText);
+    const extracted = yield* extract(parsed);
+    const exportOperation = extracted.operations.find(
+      (candidate) => candidate.operationId === "files.export",
+    );
+    expect(exportOperation?.operationId).toBe("files.export");
+    const responseFileHint = Option.flatMap(
+      exportOperation?.responseBody ?? Option.none(),
+      (body) => body.fileHint,
+    );
+    expect(Option.isSome(responseFileHint)).toBe(true);
   }),
 );
 

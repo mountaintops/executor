@@ -64,8 +64,13 @@ export const team = plan({
   addOn: false,
   autoEnable: false,
   price: {
-    amount: 49,
+    amount: 150,
     interval: "month",
+  },
+  freeTrial: {
+    durationLength: 14,
+    durationType: "day",
+    cardRequired: true,
   },
   items: [
     item({

@@ -39,7 +39,14 @@ export interface OAuthClientFormPrefill {
   readonly authorizationUrl?: string;
   readonly tokenUrl?: string;
   readonly resource?: string | null;
+  /** Template-DECLARED scopes (e.g. an OpenAPI bundle's scope union). Immutable
+   *  in the form and authoritative — always sent at registration, surviving
+   *  Discover. */
   readonly scopes?: readonly string[];
+  /** Scopes already DISCOVERED from a prior server probe (e.g. a DCR fallback).
+   *  Seed the form's discovered state; a later in-form Discover replaces them,
+   *  and they are only sent when no declared scopes exist. */
+  readonly discoveredScopes?: readonly string[];
   readonly grant?: OAuthGrant;
   /** Client id to seed (e.g. when editing an existing app). NOT a secret — the
    *  secret is never returned, so it is always re-entered. */
@@ -48,7 +55,36 @@ export interface OAuthClientFormPrefill {
    *  method or surfaced by Discover), the form offers a one-click "Register
    *  automatically" path that needs no pasted client id/secret. */
   readonly registrationEndpoint?: string;
+  /** Token-endpoint auth methods the server advertises (RFC 8414), so a
+   *  prefilled "Register automatically" picks the right client-auth method
+   *  instead of defaulting to public ("none"). */
+  readonly tokenEndpointAuthMethodsSupported?: readonly string[];
 }
+
+/** The scopes to register via DCR. The integration's DECLARED (template) scopes
+ *  are authoritative and immutable, so they win. Otherwise the DISCOVERED set is
+ *  used — seeded from a prior server probe and replaced by any in-form Discover —
+ *  so re-discovering a different issuer can't register a stale set. */
+export const registrationScopes = (
+  declaredScopes: readonly string[],
+  discoveredScopes: readonly string[],
+): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
+
+export const canSubmitOAuthClientForm = (input: {
+  readonly submitting: boolean;
+  readonly name: string;
+  readonly grant: OAuthGrant;
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+}): boolean =>
+  !input.submitting &&
+  input.name.trim().length > 0 &&
+  input.clientId.trim().length > 0 &&
+  (input.grant === "authorization_code" || input.clientSecret.trim().length > 0) &&
+  input.tokenUrl.trim().length > 0 &&
+  (input.grant === "client_credentials" || input.authorizationUrl.trim().length > 0);
 
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
@@ -68,6 +104,11 @@ export function OAuthClientForm(props: {
   readonly onCreated: (result: { readonly owner: Owner; readonly slug: OAuthClientSlug }) => void;
   readonly onCancel?: () => void;
   readonly surface?: "card" | "plain";
+  /** When set, the server's automatic (DCR) registration is known to be rejected
+   *  for this host (e.g. it refused our redirect URI). The form then suppresses
+   *  the "Register automatically" path and leads with manual client entry; the
+   *  string is the actionable reason shown to the user. */
+  readonly autoRegisterRejectedReason?: string | null;
 }) {
   const {
     integrationName,
@@ -78,6 +119,7 @@ export function OAuthClientForm(props: {
     onCreated,
     onCancel,
     surface = "card",
+    autoRegisterRejectedReason = null,
   } = props;
   // Non-org hosts (local/desktop) have one local workspace. Offer only Local,
   // so the owner dropdown (which hides on a single option) disappears.
@@ -108,6 +150,15 @@ export function OAuthClientForm(props: {
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
   const [resource, setResource] = useState(prefill?.resource ?? null);
+  // Scopes to register with DCR. The form has no scopes input (DCR sends them
+  // verbatim). Declared scopes are the integration's TEMPLATE scopes — immutable
+  // and authoritative, so they survive Discover. Discovered scopes are seeded
+  // from a prior probe (e.g. a DCR fallback) and replaced by any in-form
+  // Discover; they are only sent when nothing is declared.
+  const declaredScopes = prefill?.scopes ?? [];
+  const [discoveredScopes, setDiscoveredScopes] = useState<readonly string[]>(
+    prefill?.discoveredScopes ?? [],
+  );
   const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // DCR (RFC 7591): the registration endpoint + advertised auth methods. Seeded
@@ -116,7 +167,9 @@ export function OAuthClientForm(props: {
   const [registrationEndpoint, setRegistrationEndpoint] = useState(
     prefill?.registrationEndpoint ?? "",
   );
-  const [authMethods, setAuthMethods] = useState<readonly string[] | undefined>(undefined);
+  const [authMethods, setAuthMethods] = useState<readonly string[] | undefined>(
+    prefill?.tokenEndpointAuthMethodsSupported,
+  );
   const [registering, setRegistering] = useState(false);
 
   // Endpoints/scopes usually come prefilled from the integration's declared
@@ -131,13 +184,15 @@ export function OAuthClientForm(props: {
     mode: "promiseExit",
   });
 
-  const canSubmit =
-    !submitting &&
-    name.trim().length > 0 &&
-    clientId.trim().length > 0 &&
-    clientSecret.trim().length > 0 &&
-    tokenUrl.trim().length > 0 &&
-    (grant === "client_credentials" || authorizationUrl.trim().length > 0);
+  const canSubmit = canSubmitOAuthClientForm({
+    submitting,
+    name,
+    grant,
+    clientId,
+    clientSecret,
+    authorizationUrl,
+    tokenUrl,
+  });
 
   // DCR is offered when the server advertises a registration endpoint AND we
   // have the interactive-flow endpoints to persist alongside the minted client.
@@ -146,6 +201,11 @@ export function OAuthClientForm(props: {
     authorizationUrl.trim().length > 0 &&
     tokenUrl.trim().length > 0 &&
     grant === "authorization_code";
+
+  // When the server already rejected automatic registration for this host (e.g.
+  // it refused our non-loopback redirect URI), don't lead the user back into the
+  // path that just failed: suppress the auto CTA and lead with manual entry.
+  const showAutoRegister = canRegisterDynamic && autoRegisterRejectedReason === null;
 
   const handleDiscover = async () => {
     const url = issuerUrl.trim();
@@ -166,6 +226,10 @@ export function OAuthClientForm(props: {
     setAuthorizationUrl(result.authorizationUrl);
     setTokenUrl(result.tokenUrl);
     setResource(result.resource ?? null);
+    // Record the discovered scopes. Declared scopes (if any) still take
+    // precedence at registration, so a re-Discover reflects the latest server
+    // without clobbering a declared set.
+    setDiscoveredScopes(result.scopesSupported ?? []);
     // Capture DCR availability so the "Register automatically" path shows for a
     // pasted MCP/issuer URL without any client id/secret.
     setRegistrationEndpoint(result.registrationEndpoint ?? "");
@@ -189,9 +253,9 @@ export function OAuthClientForm(props: {
         authorizationUrl: authorizationUrl.trim(),
         tokenUrl: tokenUrl.trim(),
         resource,
-        // DCR sends the integration's declared scopes to the AS at registration
-        // (the app itself stores none).
-        scopes: [...(prefill?.scopes ?? [])],
+        // DCR sends the integration's declared scopes, or the discovered set when
+        // none are declared, to the AS at registration (the app stores none).
+        scopes: [...registrationScopes(declaredScopes, discoveredScopes)],
         tokenEndpointAuthMethodsSupported: authMethods,
         clientName: name.trim(),
         redirectUri: oauthCallbackUrl(),
@@ -248,11 +312,18 @@ export function OAuthClientForm(props: {
       <div className="space-y-1">
         <p className="text-sm font-medium">Register an OAuth app</p>
         <p className="text-xs text-muted-foreground">
-          {canRegisterDynamic
+          {showAutoRegister
             ? "Register automatically below, or enter a client id/secret manually."
-            : "Paste a client id/secret. We only ask for endpoints when they aren't already known."}
+            : "Paste a client id and optional secret. We only ask for endpoints when they aren't already known."}
         </p>
       </div>
+
+      {autoRegisterRejectedReason ? (
+        <div className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <p className="text-sm font-medium text-destructive">Automatic registration unavailable</p>
+          <p className="text-xs text-muted-foreground">{autoRegisterRejectedReason}</p>
+        </div>
+      ) : null}
 
       {/* app name */}
       <div className="space-y-1.5">
@@ -270,7 +341,7 @@ export function OAuthClientForm(props: {
 
       {/* register automatically (RFC 7591 DCR) — the primary path when the
           server advertises a registration endpoint: no client id/secret needed */}
-      {canRegisterDynamic ? (
+      {showAutoRegister ? (
         <div className="space-y-2 rounded-lg border border-ring/40 bg-accent/30 p-3">
           <p className="text-sm font-medium">No client ID needed</p>
           <p className="text-xs text-muted-foreground">
@@ -330,7 +401,7 @@ export function OAuthClientForm(props: {
       </div>
 
       {/* divider before the manual (secondary) path when DCR is available */}
-      {canRegisterDynamic ? (
+      {showAutoRegister ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="h-px flex-1 bg-border/60" />
           or enter a client ID manually
@@ -378,12 +449,19 @@ export function OAuthClientForm(props: {
         <div className="space-y-1.5">
           <Label htmlFor="oauth-client-secret" className="text-xs text-muted-foreground">
             Client secret
+            {grant === "authorization_code" ? (
+              <span className="font-normal text-muted-foreground/70">
+                optional for public clients
+              </span>
+            ) : null}
           </Label>
           <Input
             id="oauth-client-secret"
             type="password"
             autoComplete="new-password"
-            placeholder="client secret"
+            placeholder={
+              grant === "authorization_code" ? "optional client secret" : "required client secret"
+            }
             value={clientSecret}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setClientSecret(e.target.value)}
             className="font-mono"
@@ -400,7 +478,7 @@ export function OAuthClientForm(props: {
           onClick={() => setShowEndpoints(true)}
           className="h-auto w-full justify-start gap-2 px-3 py-2 text-xs font-normal text-muted-foreground"
         >
-          <span className="text-emerald-500">✓</span>
+          <span className="text-foreground">✓</span>
           Endpoints set from {integrationName}
           <span className="ml-auto font-medium text-foreground">Edit</span>
         </Button>

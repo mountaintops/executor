@@ -33,7 +33,9 @@ export type AuthTemplateEditorValue =
       readonly kind: "oauth";
       readonly authorizationUrl: string;
       readonly tokenUrl: string;
+      readonly resource?: string | null;
       readonly scopes: readonly string[];
+      readonly supportsClientIdMetadataDocument?: boolean;
     };
 
 export interface AuthTemplateEditorPreset {
@@ -89,8 +91,8 @@ export interface AuthTemplateEditorProps {
    *  tabs. Clicking a pill applies its value as an editable default. */
   readonly presets?: readonly AuthTemplateEditorPreset[];
   /** Some integrations, notably MCP, discover OAuth metadata from the server at
-   *  connection time. In that case the add form should declare OAuth but not
-   *  expose editable provider URLs/scopes that are not persisted. */
+   *  connection time. In that case the add form should declare OAuth without
+   *  editable provider URLs or scopes. */
   readonly oauthMetadata?: "editable" | "discovered";
 }
 

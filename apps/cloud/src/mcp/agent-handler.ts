@@ -1,6 +1,12 @@
 import { Effect, Predicate } from "effect";
 
-import { McpAuthProvider, jsonRpcErrorBody, type AuthOutcome } from "@executor-js/host-mcp";
+import {
+  McpAuthProvider,
+  jsonRpcErrorBody,
+  defaultMcpResource,
+  type AuthOutcome,
+  type McpResource,
+} from "@executor-js/host-mcp";
 import {
   currentPropagationHeaders,
   readElicitationMode,
@@ -73,9 +79,22 @@ const authenticate = (request: Request) =>
     return { auth, outcome };
   }).pipe(Effect.provide(cloudMcpAuth));
 
+// The MCP resource the request targets. `server.ts` routes both the bare `/mcp`
+// and `/mcp/toolkits/<slug>` to this handler (`prepareMcpOrgScope` strips the org
+// selector but keeps the toolkit segment), so a session minted on a toolkit path
+// scopes its tool catalog to that toolkit.
+const resourceFromPath = (request: Request): McpResource => {
+  const segments = new URL(request.url).pathname.split("/").filter((s) => s.length > 0);
+  if (segments.length === 3 && segments[0] === "mcp" && segments[1] === "toolkits" && segments[2]) {
+    return { kind: "toolkit", slug: segments[2] };
+  }
+  return defaultMcpResource;
+};
+
 const propsForPrincipal = (
   request: Request,
   principal: Extract<AuthOutcome, { readonly _tag: "Authenticated" }>["principal"],
+  resource: McpResource,
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
     const propagation = yield* currentPropagationHeaders(request);
@@ -84,6 +103,7 @@ const propsForPrincipal = (
         organizationId: principal.organizationId,
         userId: principal.accountId,
         elicitationMode: readElicitationMode(request),
+        resource,
         webOrigin: new URL(request.url).origin,
       },
       propagation,
@@ -127,12 +147,17 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal));
+    const resource = resourceFromPath(request);
+    const props = await Effect.runPromise(propsForPrincipal(request, outcome.principal, resource));
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
-    const forwarded = withVerifiedIdentityHeaders(request, {
-      accountId: outcome.principal.accountId,
-      organizationId: outcome.principal.organizationId,
-    });
+    const forwarded = withVerifiedIdentityHeaders(
+      request,
+      {
+        accountId: outcome.principal.accountId,
+        organizationId: outcome.principal.organizationId,
+      },
+      resource,
+    );
     return serve.fetch(forwarded, env, ctx);
   };
 };

@@ -67,7 +67,7 @@ export interface AnalyticsEvents {
   connection_oauth_started: {
     integration_slug: string;
     owner: Owner;
-    flow: "byo" | "dcr";
+    flow: "byo" | "dcr" | "cimd";
     success: boolean;
     dcr_fallback?: boolean;
   };
@@ -138,6 +138,9 @@ export interface AnalyticsEvents {
     kind: "integration" | "add_integration" | "preset";
     plugin_key?: string;
   };
+
+  // ── Docs / help ──────────────────────────────────────────────────────────
+  docs_opened: { surface: "sidebar" };
 
   // ── Cloud: auth & onboarding ─────────────────────────────────────────────
   login_cta_clicked: {};
