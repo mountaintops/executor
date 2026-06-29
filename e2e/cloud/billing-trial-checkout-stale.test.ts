@@ -1,18 +1,20 @@
 // Cloud-only (billing, browser): completing the Team free-trial checkout should
-// leave the billing page showing the new plan WITHOUT a manual reload.
+// leave the billing page showing the new plan WITHOUT a manual reload, and
+// without ever flashing the stale upgrade CTA.
 //
-// Repro of a reported bug: a user starts the free trial, completes Stripe
-// checkout, and is redirected back to the plans page, which STILL shows the
-// upgrade/"Start free trial" call to action. A manual reload then shows the
-// active trial. The cause is client-side: autumn-js fetches the customer once
-// on load (staleTime 60s, refetchOnWindowFocus off) and the redirect back from
-// Stripe lands before Autumn has processed Stripe's webhook, so that single
-// fetch sees the old plan and the page never refetches on its own.
+// Guards a reported bug + its fix: a user starts the free trial, completes
+// Stripe checkout, and is redirected back to the plans page. The redirect lands
+// before Autumn has processed Stripe's webhook, and autumn-js fetches the
+// customer once on load (staleTime 60s, refetchOnWindowFocus off), so the page
+// used to show the old plan and the "Start free trial" CTA until a manual
+// reload. The fix tags the checkout return URL with the purchased plan, then on
+// return shows that plan as "Activating" while it refetches until the webhook
+// lands, resolving to "Your plan" with no reload.
 //
-// The emulator models this faithfully: completing the hosted checkout redirects
-// back immediately but does NOT activate the subscription; the activation lands
-// only when the webhook settles (autumn.settleCheckout). The reload control
-// proves the backend is consistent, isolating the failure to the stale client.
+// The emulator models the race faithfully: completing the hosted checkout
+// redirects back immediately but does NOT activate the subscription; activation
+// lands only when the webhook settles (autumn.settleCheckout), which this test
+// triggers to control the exact moment the backend becomes consistent.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -63,36 +65,25 @@ scenario(
 
       await step("Complete checkout and return to the plans page", async () => {
         await page.locator("button.checkout-pay-btn").click();
-        // Checkout completes and redirects back to the success_url (the plans
-        // page). The webhook has NOT landed yet, so the trial is still offered:
-        // exactly the window the bug lives in.
         await page.waitForURL(/billing\/plans/, { timeout: 30_000 });
-        await startTrial.waitFor();
+        // The webhook has NOT landed yet, but the page knows from the return
+        // marker which plan was purchased, so it shows that plan as activating
+        // rather than the stale upgrade CTA (which would read as if nothing
+        // happened). This is the key user-facing guarantee.
+        await teamCard.getByText("Activating", { exact: true }).waitFor({ timeout: 10_000 });
+        expect(await startTrial.count(), "the stale trial CTA is not shown on return").toBe(0);
       });
 
       // The Stripe webhook reaches Autumn: the customer is now on the Team trial.
-      // From here on the billing backend is authoritative-consistent.
       await Effect.runPromise(autumn.settleCheckout(sessionId));
 
-      // The page the user was returned to never reloads. If the UI refetched
-      // after returning from checkout it would drop the trial CTA within a few
-      // seconds; today it does not, so this stays visible.
-      const reflectedWithoutReload = await startTrial
-        .waitFor({ state: "hidden", timeout: 8_000 })
-        .then(() => true)
-        .catch(() => false);
-
-      // Control: a manual reload surfaces the active trial, proving the backend
-      // was consistent all along and the only thing missing was a client refetch.
-      await step("A manual reload shows the active trial", async () => {
-        await page.reload({ waitUntil: "networkidle" });
+      // Without any reload, the activating state resolves to the active plan as
+      // the polled refetch picks up the now-consistent backend.
+      await step("The plan resolves to active without a reload", async () => {
         await teamCard.getByText("Current plan").waitFor({ timeout: 15_000 });
+        await teamCard.getByText("Your plan").waitFor({ timeout: 5_000 });
       });
-
-      expect(
-        reflectedWithoutReload,
-        "the plans page reflects the completed checkout without a manual reload",
-      ).toBe(true);
+      expect(await startTrial.count(), "the upgrade CTA never returns").toBe(0);
     });
   }),
 );

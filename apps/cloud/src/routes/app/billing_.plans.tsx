@@ -35,10 +35,16 @@ const CHECKOUT_RETURN_PARAM = "checkout";
  * otherwise show the old plan (and the upgrade CTA) until a manual reload.
  *
  * On detecting the return marker, poll the billing data until the attached plan
- * shows as active (or a timeout), then strip the marker so a later manual reload
- * does not re-arm the poll.
+ * shows as active (or a timeout). While that reconciliation is in flight this
+ * returns the attached plan id so the page can show that plan as "Activating"
+ * rather than the pre-checkout upgrade CTA, which would otherwise read as if the
+ * purchase did not happen. The marker is stripped immediately so a later manual
+ * reload does not re-arm the poll.
+ *
+ * @returns the plan id being finalized, or null once it reflects (or times out).
  */
-function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void): void {
+function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void): string | null {
+  const [finalizingPlan, setFinalizingPlan] = useState<string | null>(null);
   const plansRef = useRef(plans);
   plansRef.current = plans;
 
@@ -50,6 +56,7 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
     params.delete(CHECKOUT_RETURN_PARAM);
     const query = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    setFinalizingPlan(attachedPlanId);
 
     const reflected = () =>
       plansRef.current?.find((p) => p.id === attachedPlanId)?.customerEligibility?.status ===
@@ -61,12 +68,26 @@ function useRefreshAfterCheckout(plans: Plan[] | undefined, refetch: () => void)
       elapsed += 1500;
       if (reflected() || elapsed >= 20_000) {
         clearInterval(interval);
+        setFinalizingPlan(null);
         return;
       }
       refetch();
     }, 1500);
     return () => clearInterval(interval);
   }, [refetch]);
+
+  // Drop the optimistic state the moment the refetched data reflects the plan,
+  // so it does not linger until the next poll tick after the webhook lands.
+  useEffect(() => {
+    if (
+      finalizingPlan &&
+      plans?.find((p) => p.id === finalizingPlan)?.customerEligibility?.status === "active"
+    ) {
+      setFinalizingPlan(null);
+    }
+  }, [finalizingPlan, plans]);
+
+  return finalizingPlan;
 }
 
 const ENTERPRISE_FEATURES = [
@@ -133,7 +154,7 @@ function PlansPage() {
     void refetchCustomer();
     void refetchPlans();
   }, [refetchCustomer, refetchPlans]);
-  useRefreshAfterCheckout(plans, refetchBilling);
+  const finalizingPlan = useRefreshAfterCheckout(plans, refetchBilling);
 
   const isLoading = customerLoading || plansLoading;
 
@@ -193,6 +214,9 @@ function PlansPage() {
               const isScheduled = status === "scheduled";
               const isUpgradeAction = action === "upgrade" || action === "activate";
               const isEnterprise = plan.id === "enterprise";
+              // Just back from checkout for this plan and the webhook has not
+              // landed yet: show it as activating instead of the stale CTA.
+              const isFinalizing = plan.id === finalizingPlan && !isCurrent && !isScheduled;
               // Offer the trial only when the plan defines one and this customer
               // is still eligible (trialAvailable is false once they've used it).
               const freeTrial = plan.freeTrial;
@@ -223,6 +247,9 @@ function PlansPage() {
                       {plan.name}
                     </p>
                     {isCurrent && <Badge className="bg-muted text-foreground">Your plan</Badge>}
+                    {isFinalizing && (
+                      <Badge className="bg-primary/10 text-primary">Activating</Badge>
+                    )}
                     {isCanceling && (
                       <Badge className="bg-muted text-muted-foreground">Canceling</Badge>
                     )}
@@ -248,6 +275,11 @@ function PlansPage() {
                     {(isCurrent && !isCanceling) || isScheduled ? (
                       <div className="flex h-9 items-center justify-center rounded-md border border-border bg-muted/30 text-sm font-medium text-muted-foreground">
                         {isCurrent ? "Current plan" : "Scheduled"}
+                      </div>
+                    ) : isFinalizing ? (
+                      <div className="flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-muted/30 text-sm font-medium text-muted-foreground">
+                        <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
+                        Activating…
                       </div>
                     ) : isEnterprise ? (
                       <EnterpriseContactDialog />
