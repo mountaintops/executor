@@ -9,6 +9,7 @@ import {
   generateWindowsTaskXml,
   getServiceBackend,
   parseNetstatListenerPids,
+  parseSchtasksRunning,
 } from "./service";
 
 describe("service unit generation", () => {
@@ -187,6 +188,45 @@ describe("service unit generation", () => {
     // A connection in another state on the port must not be treated as a listener.
     expect(parseNetstatListenerPids(netstat, 445)).toEqual([4]);
     expect(parseNetstatListenerPids(netstat, 1234)).toEqual([]);
+  });
+
+  it("identifies listeners by wildcard remote, so it survives a localized state column", () => {
+    // German netstat: the state word is "ABHÖREN"/"HERGESTELLT", but addresses and
+    // "TCP" are not localized. Listener detection must not depend on the word.
+    const deNetstat = [
+      "Aktive Verbindungen",
+      "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
+      "  TCP    127.0.0.1:4789         0.0.0.0:0              ABHÖREN         4072",
+      "  TCP    127.0.0.1:4789         127.0.0.1:51000       HERGESTELLT     8000",
+    ].join("\r\n");
+    expect(parseNetstatListenerPids(deNetstat, 4789)).toEqual([4072]);
+  });
+
+  it("detects a running task via the locale-invariant result code, not the Status word", () => {
+    // English verbose LIST output for a running task.
+    const en = [
+      "TaskName:                             \\ExecutorDaemon",
+      "Status:                               Running",
+      "Last Result:                          267009",
+    ].join("\r\n");
+    expect(parseSchtasksRunning(en)).toBe(true);
+
+    // French Windows: both the label and the status word are translated, but the
+    // SCHED_S_TASK_RUNNING code (267009 / 0x41301) is the same.
+    const fr = [
+      "Nom de tâche:                         \\ExecutorDaemon",
+      "État:                                 En cours d'exécution",
+      "Dernier résultat:                     267009",
+    ].join("\r\n");
+    expect(parseSchtasksRunning(fr)).toBe(true);
+
+    // A ready/terminated task (267014 = SCHED_S_TASK_TERMINATED) is not running.
+    const ready = ["Status:                               Ready", "Last Result:    267014"].join(
+      "\r\n",
+    );
+    expect(parseSchtasksRunning(ready)).toBe(false);
+    // Hex form (some builds/locales) is also recognized.
+    expect(parseSchtasksRunning("Last Result: 0x41301")).toBe(true);
   });
 });
 

@@ -2832,6 +2832,16 @@ const installService = (port: number, commandName: string, boot = false) =>
     }
 
     const backend = getServiceBackend();
+
+    // `--boot` only means something on Windows (a boot/S4U Scheduled Task). The
+    // launchd/systemd backends silently ignore the descriptor field, so warn
+    // rather than let a macOS/Linux caller believe it took effect.
+    if (boot && backend.platform !== "win32") {
+      console.warn(
+        `Note: --boot is a Windows-only option and has no effect on ${process.platform}; installing the standard login-based service.`,
+      );
+    }
+
     if (!backend.automated) {
       // Unsupported platforms surface their manual steps via the install error.
       yield* backend.install({

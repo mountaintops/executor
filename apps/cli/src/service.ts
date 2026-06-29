@@ -680,18 +680,42 @@ const writeUtf16File = (
   });
 
 /**
- * Parse `netstat -ano` output for the PIDs LISTENING on `port`. Pure, so it can
- * be unit-tested without a live socket. Matches both IPv4 (`127.0.0.1:PORT`) and
- * IPv6 (`[::1]:PORT`) local endpoints in the LISTENING state.
+ * SCHED_S_TASK_RUNNING — the Task Scheduler HRESULT a task reports as its "Last
+ * Result" while it is currently running (0x00041301 == 267009). schtasks prints
+ * this in the verbose listing as a decimal; some Windows builds/locales print the
+ * hex form. The numeric code is locale-invariant even though the surrounding
+ * labels ("Last Result:", "Status:") and the human state word ("Running") are
+ * translated on a non-English Windows.
  */
+const SCHED_S_TASK_RUNNING = 267009;
+
+/**
+ * Decide whether `schtasks /query /v /fo LIST` reports the task as currently
+ * running, without depending on the localized "Status:" line. We look for the
+ * locale-invariant SCHED_S_TASK_RUNNING result code instead. Pure + exported for
+ * unit tests (including non-English fixtures).
+ */
+export const parseSchtasksRunning = (verboseListOutput: string): boolean =>
+  new RegExp(`\\b(?:${SCHED_S_TASK_RUNNING}|0x0*41301)\\b`, "i").test(verboseListOutput);
+
+/**
+ * Parse `netstat -ano` output for the PIDs listening on `port`. Pure, so it can
+ * be unit-tested without a live socket. Matches both IPv4 (`127.0.0.1:PORT`) and
+ * IPv6 (`[::1]:PORT`) local endpoints. A listener is identified by its
+ * wildcard/zero remote endpoint (`0.0.0.0:0` / `[::]:0`) rather than the state
+ * column, because that column ("LISTENING") is localized on a non-English
+ * Windows while the addresses and the `TCP` token are not.
+ */
+const NETSTAT_LISTENER_REMOTES = new Set(["0.0.0.0:0", "[::]:0", "*:*"]);
+
 export const parseNetstatListenerPids = (output: string, port: number): ReadonlyArray<number> => {
   const pids = new Set<number>();
   for (const line of output.split(/\r?\n/)) {
     const cols = line.trim().split(/\s+/);
-    // TCP  <local>  <remote>  LISTENING  <pid>
+    // TCP  <local>  <remote(=wildcard when listening)>  <state>  <pid>
     if (cols.length < 5 || cols[0].toUpperCase() !== "TCP") continue;
-    if (cols[3].toUpperCase() !== "LISTENING") continue;
     if (!cols[1].endsWith(`:${port}`)) continue;
+    if (!NETSTAT_LISTENER_REMOTES.has(cols[2])) continue;
     const pid = Number.parseInt(cols[4], 10);
     if (Number.isInteger(pid) && pid > 0) pids.add(pid);
   }
@@ -844,15 +868,16 @@ const makeWindowsBackend = (): ServiceBackend => {
             ],
           };
         }
-        // schtasks LIST output has a localized "Status:" line: Running/Ready/Disabled.
-        const state = /^\s*Status:\s*(\w+)/m.exec(result.stdout)?.[1] ?? "Unknown";
-        const running = state === "Running";
+        // Detect "running" via the locale-invariant SCHED_S_TASK_RUNNING result
+        // code, not the translated "Status: Running" line (which is localized on
+        // a non-English Windows and would otherwise always read as not-running).
+        const running = parseSchtasksRunning(result.stdout);
         return {
           platform: "win32" as const,
           registered: true,
           running,
           pid: null,
-          detail: running ? [] : [`Scheduled task registered; current state: ${state}.`],
+          detail: running ? [] : ["Scheduled task registered but not currently running."],
         };
       }),
     restart: () =>
