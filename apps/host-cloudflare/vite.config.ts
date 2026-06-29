@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vite";
@@ -7,6 +8,15 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import executorVitePlugin from "@executor-js/vite-plugin";
 
 import { routes } from "./tsr.routes";
+
+// The real release version (matches the published `executor` dist-tags the
+// update card compares against). A placeholder here made the card read as
+// permanently "behind".
+// oxlint-disable-next-line executor/no-json-parse -- boundary: Vite config reads the version from package.json at build time
+const cliPackage = JSON.parse(
+  readFileSync(new URL("../cli/package.json", import.meta.url), "utf8"),
+) as { version?: string };
+const EXECUTOR_VERSION = cliPackage.version;
 
 // ---------------------------------------------------------------------------
 // Cloudflare web SPA. The SAME shared @executor-js/react shell + pages as cloud
@@ -36,7 +46,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
   },
   define: {
-    "import.meta.env.VITE_APP_VERSION": JSON.stringify("0.0.0-cloudflare"),
+    "import.meta.env.VITE_APP_VERSION": JSON.stringify(EXECUTOR_VERSION ?? "0.0.0"),
     // Cloudflare upgrades by redeploying the Worker (wrangler deploy), not npm,
     // so the update card links to the upgrade guide instead of a command.
     "import.meta.env.VITE_UPGRADE_HINT": JSON.stringify("cloudflare"),

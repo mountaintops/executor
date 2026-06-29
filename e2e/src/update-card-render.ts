@@ -56,3 +56,52 @@ export const registerUpdateCardRenderScenario = (name: string): void =>
       });
     }),
   );
+
+// Regression for the "card always shows on Docker even on the latest version"
+// report: a placeholder build version (0.0.0-selfhost / 0.0.0-cloudflare) made
+// the comparison permanently "behind". With the real version baked in, a
+// published version that is NOT newer must leave the card hidden, and the
+// sidebar footer must show the running version (the other half of the report).
+export const registerUpdateCardCurrentScenario = (name: string): void =>
+  scenario(
+    name,
+    { timeout: 120_000 },
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const identity = yield* target.newIdentity();
+
+      yield* browser.session(identity, async ({ page, step }) => {
+        // Report a published version OLDER than this build, i.e. the build is
+        // current. With the placeholder version this still showed the card.
+        await page.route("**/v1/app/npm/dist-tags", (route) =>
+          route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({ latest: "0.0.1", beta: "0.0.1-beta.1" }),
+          }),
+        );
+
+        await step("Open the console", async () => {
+          await page.goto("/", { waitUntil: "networkidle" });
+          await page.getByRole("heading", { name: "Integrations" }).waitFor({ timeout: 60_000 });
+        });
+
+        await step("No update card, and the footer shows the running version", async () => {
+          // The footer version proves the build injects a real semver, not a
+          // placeholder, which is what makes the comparison correct.
+          const version = page
+            .locator("aside")
+            .getByText(/^v\d+\.\d+\.\d+/)
+            .first();
+          await version.waitFor({ timeout: 10_000 });
+          // The mocked update check resolves on mount; give the state a beat to
+          // settle, then assert the card stayed hidden.
+          await page.waitForTimeout(750);
+          expect(
+            await page.getByText("Update available").count(),
+            "no update card when the build is current",
+          ).toBe(0);
+        });
+      });
+    }),
+  );

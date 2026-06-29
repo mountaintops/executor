@@ -59,6 +59,13 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
  *  via {@link ShellProps.docsUrl}. */
 export const DEFAULT_DOCS_URL = "https://executor.sh/docs";
 
+// The build version, surfaced in the sidebar footer so self-hosters can see
+// what they're running (and sanity-check the update card). Undefined on builds
+// that don't inject it (e.g. cloud) — then the line is hidden.
+const APP_VERSION = (
+  import.meta as ImportMeta & { readonly env?: { readonly VITE_APP_VERSION?: string } }
+).env?.VITE_APP_VERSION;
+
 // Scope-relative path -> the route id under the optional org segment
 // ("/" -> "/{-$orgSlug}", "/policies" -> "/{-$orgSlug}/policies"). Loosely
 // typed on purpose: host-specific items ("/admin", "/billing") resolve against
@@ -367,6 +374,11 @@ function SidebarContent(
 
       <div className="shrink-0 border-t border-sidebar-border p-2">
         <DocsLink href={props.docsUrl ?? DEFAULT_DOCS_URL} onNavigate={props.onNavigate} />
+        {APP_VERSION && (
+          <p className="px-2.5 pt-1.5 font-mono text-[11px] text-muted-foreground tabular-nums">
+            v{APP_VERSION}
+          </p>
+        )}
       </div>
 
       {props.supportSlot && <div className="shrink-0 px-2 pb-2">{props.supportSlot}</div>}
