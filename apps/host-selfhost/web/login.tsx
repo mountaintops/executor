@@ -5,7 +5,7 @@ import { Input } from "@executor-js/react/components/input";
 import { Label } from "@executor-js/react/components/label";
 
 import { authClient } from "./auth-client";
-import { safeReturnTo } from "../src/auth/return-to";
+import { mcpAuthorizeResumeTarget, safeReturnTo } from "../src/auth/return-to";
 
 // Self-host login: email + password sign-in via Better Auth. On success we
 // reload so the shared AuthProvider re-reads /account/me and the AuthGate swaps
@@ -16,7 +16,15 @@ import { safeReturnTo } from "../src/auth/return-to";
 // redeeming an invite — either the full /join/<code> link, or by entering the
 // code here ("Have an invite code?"), which forwards to the same join page.
 export const LoginPage = () => {
-  const returnTo = safeReturnTo(new URLSearchParams(window.location.search).get("returnTo")) ?? "/";
+  const search = window.location.search;
+  // Where to go after sign-in: resume an interrupted MCP OAuth authorize if we
+  // arrived from one (Better Auth redirects it here with the OAuth params),
+  // otherwise honor a safe returnTo (e.g. an integration OAuth callback), else
+  // land on the dashboard.
+  const postLogin =
+    mcpAuthorizeResumeTarget(search) ??
+    safeReturnTo(new URLSearchParams(search).get("returnTo")) ??
+    "/";
   const [mode, setMode] = useState<"signin" | "code">("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -34,7 +42,7 @@ export const LoginPage = () => {
       setError(result.error.message ?? "Sign in failed");
       return;
     }
-    window.location.href = returnTo;
+    window.location.href = postLogin;
   };
 
   const redeem = (event: FormEvent) => {
