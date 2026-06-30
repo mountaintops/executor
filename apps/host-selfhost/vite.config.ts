@@ -97,7 +97,32 @@ function executorApiPlugin(): Plugin {
           // auth. Served by the Effect router in prod; without this the SPA
           // index.html fallback answers 200-with-HTML and breaks discovery.
           path.startsWith("/.well-known/");
-        if (!handled) return next();
+        if (!handled) {
+          // SPA document navigations must receive the app shell, not a module.
+          // A browser navigating to a route like `/login` (Better Auth's
+          // MCP-OAuth `loginPage` 302s here as a real document GET) sends an
+          // extensionless request that Vite's transform middleware would resolve
+          // to a colliding web-root module (`web/login.tsx` shadows `/login`,
+          // `web/setup.tsx` shadows `/setup`) and serve as text/javascript, so
+          // the page renders as raw JS and the OAuth login never appears. Rewrite
+          // genuine page navigations to the index so Vite's html fallback serves
+          // index.html; the SPA reads window.location and renders the right
+          // route. Module/asset/HMR requests carry a file extension or a
+          // non-document fetch destination, so they fall through untouched. This
+          // is dev-only: the production static server already serves index.html
+          // for unknown routes, with login/setup bundled into the SPA.
+          const isGet = req.method === "GET" || req.method === "HEAD";
+          const dest = req.headers["sec-fetch-dest"];
+          const accept = req.headers.accept;
+          const wantsDocument =
+            dest === "document" ||
+            (dest === undefined && typeof accept === "string" && accept.includes("text/html"));
+          const hasExtension = /\.[^/]+$/.test(path);
+          if (isGet && wantsDocument && !hasExtension && !path.startsWith("/@")) {
+            req.url = "/";
+          }
+          return next();
+        }
 
         // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Vite dev middleware must convert handler failures into HTTP 500 responses
         try {
