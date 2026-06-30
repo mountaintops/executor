@@ -1,4 +1,5 @@
 ---
+"executor": patch
 "@executor-js/host-selfhost": patch
 ---
 
