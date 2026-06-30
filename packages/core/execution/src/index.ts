@@ -9,7 +9,8 @@ export {
   type ResumeResponse,
 } from "./engine";
 
-export { buildExecuteDescription } from "./description";
+export { buildExecuteDescription, INTEGRATION_INVENTORY_HEADER } from "./description";
+export { EXECUTE_SKILL, SKILLS, findSkill, renderSkillsIndex, type Skill } from "./skills";
 export { ExecutionToolError } from "./errors";
 export {
   defaultToolDiscoveryProvider,

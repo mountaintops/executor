@@ -23,6 +23,10 @@ import {
   createExecutionEngine,
   formatExecuteResult,
   formatPausedExecution,
+  findSkill,
+  renderSkillsIndex,
+  EXECUTE_SKILL,
+  INTEGRATION_INVENTORY_HEADER,
   type ExecutionEngine,
   type ExecutionEngineConfig,
   type ResumeResponse,
@@ -518,6 +522,47 @@ const missingExecutionResult = (executionId: string): McpToolResult => ({
   isError: true,
 });
 
+// The `skills` tool serves named, static how-to docs (see the execution
+// package's skills registry). No name -> the index; a known name -> that
+// skill's body; an unknown name -> the index plus a not-found note so the model
+// retries with a listed name instead of the same miss.
+//
+// The skill body IS the payload, returned as plain text content. We do NOT
+// attach `structuredContent`: a client that prefers structured output (Claude
+// Code does) will surface only that and drop the text, so the long-form guide
+// silently fails to load. The not-found case keeps `isError` (a separate field
+// clients honor) so a bad name still reads as a failure.
+//
+// The `execute` skill also gets the live integration inventory appended, the
+// same block the execute tool description carries, so a model reading the guide
+// sees what is connected without a second round trip.
+const skillsResult = (name: string | undefined, executeInventory: string): McpToolResult => {
+  const trimmed = name?.trim();
+  if (!trimmed) {
+    return { content: [{ type: "text", text: renderSkillsIndex() }] };
+  }
+  const skill = findSkill(trimmed);
+  if (!skill) {
+    return {
+      content: [{ type: "text", text: `No skill named "${trimmed}".\n\n${renderSkillsIndex()}` }],
+      isError: true,
+    };
+  }
+  const text =
+    skill.name === EXECUTE_SKILL.name && executeInventory.length > 0
+      ? `${skill.body}\n\n${executeInventory}`
+      : skill.body;
+  return { content: [{ type: "text", text }] };
+};
+
+/** Pull the live integration inventory block out of the built execute
+ *  description (it runs from its header to the end), so the `skills` tool can
+ *  re-use it without rebuilding the inventory from the executor. */
+const extractInventory = (description: string): string => {
+  const index = description.indexOf(INTEGRATION_INVENTORY_HEADER);
+  return index === -1 ? "" : description.slice(index).trimEnd();
+};
+
 const JsonObjectFromString = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
 const decodeJsonObjectString = Schema.decodeUnknownOption(JsonObjectFromString);
 
@@ -539,6 +584,9 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const description =
       config.description ??
       (yield* engine.getDescription.pipe(Effect.withSpan("mcp.host.get_description")));
+    // The same live integration inventory the description carries, re-used by
+    // the `skills` tool so the `execute` guide lists what is connected too.
+    const executeInventory = extractInventory(description);
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -773,6 +821,30 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
         attributes: { "mcp.tool.name": "execute" },
+      }),
+    );
+
+    yield* Effect.sync(() =>
+      server.registerTool(
+        "skills",
+        {
+          description: [
+            "Fetch a named how-to skill. Skills hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
+            'Call `skills({ name: "execute" })` for the full guide to writing code for the `execute` tool (search the catalog, call tools, emit results, resume paused runs).',
+            "Call with no name to list the available skills.",
+          ].join("\n"),
+          inputSchema: {
+            name: z
+              .string()
+              .optional()
+              .describe('The skill to fetch, e.g. "execute". Omit to list available skills.'),
+          },
+        },
+        ({ name }) => runToolEffect(Effect.succeed(skillsResult(name, executeInventory))),
+      ),
+    ).pipe(
+      Effect.withSpan("mcp.host.register_tool", {
+        attributes: { "mcp.tool.name": "skills" },
       }),
     );
 

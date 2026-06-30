@@ -99,10 +99,21 @@ import type { ExecutionEngine } from "@executor-js/execution";
 
 declare const engine: ExecutionEngine;
 
-const docs = await engine.getDescription();
-// Returns the canonical "use tools.search(), then tools.describe.tool(), then call …"
-// workflow prose + per-namespace tool listing. Feed this to an LLM so it knows
-// how to drive the sandbox.
+const description = await engine.getDescription();
+// Returns the short `execute` tool description: a one-line intro, a pointer to
+// the `execute` skill, and the live connection-prefix inventory. Feed this to
+// an LLM as the execute tool's description.
+```
+
+The full "use tools.search(), then tools.describe.tool(), then call ..." workflow
+prose lives in the `execute` skill rather than the always-loaded description, so a
+model that never runs code does not pay for it. MCP hosts expose it through the
+`skills` tool; to read it directly:
+
+```ts
+import { EXECUTE_SKILL } from "@executor-js/execution";
+
+const howTo = EXECUTE_SKILL.body;
 ```
 
 ## Using with Effect

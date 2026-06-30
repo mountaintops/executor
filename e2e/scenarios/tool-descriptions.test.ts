@@ -398,13 +398,13 @@ scenario(
         const graphqlTools = yield* snapshotFor(graphqlSlug);
 
         // The execute tool's description over the real MCP surface — the
-        // connection-prefix inventory an MCP client (and its model) reads.
+        // connected-integration inventory an MCP client (and its model) reads.
         // Only this run's lines: the shared selfhost admin may have other
-        // connections in the inventory.
+        // integrations in the inventory.
         const readInventory = () =>
           Effect.map(mcp.session(identity).describeTools(), (mcpTools) =>
             (mcpTools.find((tool) => tool.name === "execute")?.description ?? "")
-              .split("## Available connection prefixes")[1]
+              .split("## Available integrations")[1]
               ?.split("\n")
               .filter(
                 (line) =>

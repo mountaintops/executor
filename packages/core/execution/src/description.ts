@@ -1,17 +1,22 @@
 import { Effect } from "effect";
-import type { Connection, Integration, Executor } from "@executor-js/sdk/core";
+import type { Connection, Executor } from "@executor-js/sdk/core";
 
 /**
- * Builds a tool description dynamically.
+ * Builds the `execute` tool description dynamically.
  *
  * Structure:
- *   1. Workflow (top — critical, least likely to be truncated)
- *   2. Available connection prefixes (bottom)
- *
- * v2: callable API tools are scoped by saved connections. A tool's sandbox
- * address is `tools.<integration>.<owner>.<connection>.<tool>`, so the useful
- * inventory is the connection prefix rather than only the integration slug.
+ *   1. One-line intro + pointer to the `execute` skill (the full how-to lives
+ *      behind the `skills` tool, see ./skills.ts, to keep this always-loaded
+ *      description small)
+ *   2. Available integrations (the live, per-session inventory): the top-level
+ *      integration slugs the user has connected, deduped across connections,
+ *      names only. The same block is appended to the `execute` skill content.
  */
+
+/** The header that opens the live integration inventory. Exported so the host
+ *  can locate (and re-use) the inventory block inside the built description. */
+export const INTEGRATION_INVENTORY_HEADER = "## Available integrations";
+
 export const buildExecuteDescription = (executor: Executor): Effect.Effect<string> =>
   Effect.gen(function* () {
     const connections: readonly Connection[] = yield* executor.connections.list().pipe(
@@ -19,15 +24,20 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
       Effect.orDie,
       Effect.withSpan("executor.connections.list"),
     );
-    const integrations: readonly Integration[] = yield* executor.integrations.list().pipe(
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: same getDescription error-channel constraint as connections.list above
-      Effect.orDie,
-      Effect.withSpan("executor.integrations.list"),
-    );
 
-    const description = yield* Effect.sync(() =>
-      formatDescription(connections.map((connection) => connectionEntry(connection, integrations))),
-    ).pipe(
+    const description = yield* Effect.sync(() => {
+      const lines = [
+        "Execute TypeScript in a sandboxed runtime.",
+        "",
+        'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
+      ];
+      const inventory = formatIntegrationInventory(connections);
+      if (inventory.length > 0) {
+        lines.push("");
+        lines.push(inventory);
+      }
+      return lines.join("\n");
+    }).pipe(
       Effect.withSpan("schema.compile.description", {
         attributes: { "executor.connection_count": connections.length },
       }),
@@ -58,99 +68,26 @@ const connectionPath = (connection: Connection): string => {
   return address.startsWith("tools.") ? address.slice("tools.".length) : address;
 };
 
-/** One inventory line: the callable prefix plus the best available context.
- *  Connection description wins (the user wrote it about THIS credential);
- *  otherwise the integration description, unless it is just the slug again. */
-interface ConnectionInventoryEntry {
-  readonly prefix: string;
-  readonly description?: string;
-}
+// The live inventory block: the top-level integrations the user has connected,
+// one bare line per integration slug (deduped across connections, sorted), no
+// per-connection prefixes and no descriptions. Empty string when nothing is
+// connected.
+const INVENTORY_LIMIT = 50;
 
-const inventoryNote = (
-  text: string | null | undefined,
-  identityEchoes: readonly string[],
-): string | undefined => {
-  const firstLine = (text ?? "").split("\n", 1)[0]!.trim();
-  if (firstLine.length === 0) return undefined;
-  // A description that just restates the slug or display name carries no
-  // information beyond identity — drop it from the inventory line.
-  if (identityEchoes.some((echo) => firstLine.toLowerCase() === echo.toLowerCase())) {
-    return undefined;
-  }
-  return firstLine.length > 140 ? `${firstLine.slice(0, 139)}…` : firstLine;
-};
-
-const connectionEntry = (
-  connection: Connection,
-  integrations: readonly Integration[],
-): ConnectionInventoryEntry => {
-  const slug = String(connection.integration);
-  const integration = integrations.find((candidate) => String(candidate.slug) === slug);
-  const identityEchoes = [slug, ...(integration ? [integration.name] : [])];
-  return {
-    prefix: connectionPath(connection),
-    description:
-      inventoryNote(connection.description, identityEchoes) ??
-      inventoryNote(integration?.description, identityEchoes),
-  };
-};
-
-const formatDescription = (connectionEntries: readonly ConnectionInventoryEntry[]): string => {
-  const lines: string[] = [
-    "Execute TypeScript in a sandboxed runtime with access to configured API tools.",
+const formatIntegrationInventory = (connections: readonly Connection[]): string => {
+  const slugs = [...new Set(connections.map((connection) => String(connection.integration)))].sort(
+    (a, b) => a.localeCompare(b),
+  );
+  if (slugs.length === 0) return "";
+  const shown = slugs.slice(0, INVENTORY_LIMIT);
+  const lines = [
+    INTEGRATION_INVENTORY_HEADER,
     "",
-    "## Workflow",
-    "",
-    '1. `const { items: matches } = await tools.search({ query: "<intent + key nouns>", limit: 12 });`',
-    '2. `const path = matches[0]?.path; if (!path) return "No matching tools found.";`',
-    "3. `const details = await tools.describe.tool({ path });`",
-    "4. Use `details.inputTypeScript` / `details.outputTypeScript` and `details.typeScriptDefinitions` for compact shapes.",
-    "5. Use `tools.executor.coreTools.connections.list({})` when you need live saved-connection inventory.",
-    "6. Call the tool: `const result = await tools.<path>(input);`",
-    "",
-    "## Rules",
-    "",
-    "- `tools.search()` returns paginated, ranked matches: `{ items, total, hasMore, nextOffset }`. Best-first. Use short intent phrases like `github issues`, `repo details`, or `create calendar event`.",
-    '- When you already know the namespace, narrow with `tools.search({ namespace: "github", query: "issues" })`.',
-    "- `tools.executor.coreTools.connections.list({})` returns saved connections with `{ address, integration, owner, name, ... }`. The `address` field includes the leading `tools.` root.",
-    "- Tool calls return a value union: `{ ok: true, data }` for success or `{ ok: false, error: { code, message, status?, details?, retryable? } }` for expected tool/domain failures. Branch on `result.ok`.",
-    "- `data` is the upstream payload itself. HTTP-backed tools (OpenAPI) also set `http: { status, headers }` beside `data` — read `result.http?.headers` for pagination (Link) or rate-limit headers.",
-    "- Use `emit(value)` to append user-visible output and return `undefined`. Plain values become MCP text content. MCP content blocks are forwarded as-is. `ToolFile` values are rendered by MIME. Emitted output goes to the user, not back to you; the result envelope reports an `emitted` count so you can confirm it landed, but to read a value yourself, `return` it.",
-    '- File-returning tools may return `ToolFile` values: `{ _tag: "ToolFile", name?, mimeType, encoding: "base64", data, byteLength }`. Emit any attachment with `emit(result.data)`.',
-    '- To emit MCP-native content directly, pass an MCP content block to `emit(...)`, such as `{ type: "image", data, mimeType }`, `{ type: "audio", data, mimeType }`, `{ type: "text", text }`, `{ type: "resource", resource }`, or `{ type: "resource_link", uri, name, ... }`.',
-    "- `emit(ToolFile)` is MIME-based: `image/*` becomes MCP image content, `audio/*` becomes MCP audio content, text-like files become decoded text, and other binary files become embedded MCP resources.",
-    "- `return` is only for ordinary structured data. Returning a `ToolFile`, a `ToolResult`, an MCP content block, or a bare base64 string does not emit content to the MCP client.",
-    "- Some providers, including Gmail, return attachment bytes without a public URL. To send that attachment to another API from code, decode `ToolFile.data` from base64 and pass the bytes to that API's upload/file input.",
-    "- If `tools.search()` returns `hasMore: true` and you didn't find what you need, fetch the next page: `tools.search({ query, offset: nextOffset, limit })`.",
-    "- Always use the full address when calling tools: `tools.<integration>.<owner>.<connection>.<tool>(args)`. The `path` returned by `tools.search()` / `tools.describe.tool()` is already the exact path under `tools` — call `tools[path]` rather than guessing segments.",
-    "- The `tools` object is a lazy proxy — `Object.keys(tools)` won't work. Use `tools.search()` or `tools.executor.coreTools.connections.list({})` instead.",
-    '- Pass an object to system tools, e.g. `tools.search({ query: "..." })`, `tools.executor.coreTools.connections.list({})`, and `tools.describe.tool({ path })`.',
-    '- `tools.describe.tool()` returns compact TypeScript shapes. Use `inputTypeScript`, `outputTypeScript`, and `typeScriptDefinitions`. If the path doesn\'t resolve, the result carries `error: { code: "tool_not_found", suggestions }` — use a suggestion instead of retrying the same path.',
-    "- For tools that return large collections (e.g. `getStates`, `getAll`), filter results in code rather than calling per-item tools.",
-    "- Do not use `fetch` — all API calls go through `tools.*`.",
-    "- If execution pauses for interaction, resume it with the returned `resumePayload`.",
-    "- TypeScript type syntax (`: T`, `as T`, generics, interfaces, type aliases) is stripped before execution — feel free to write idiomatic TypeScript using the shapes from `tools.describe.tool()`. Decorators and `enum` are not supported.",
+    "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
+    ...shown.map((slug) => `- \`${slug}\``),
   ];
-
-  if (connectionEntries.length > 0) {
-    lines.push("");
-    lines.push("## Available connection prefixes");
-    lines.push("");
-    lines.push("These are paths under `tools.`; append the final tool segment.");
-    const sorted = [...connectionEntries]
-      .sort((a, b) => a.prefix.localeCompare(b.prefix))
-      .slice(0, 50);
-    for (const entry of sorted) {
-      lines.push(
-        entry.description
-          ? `- \`${entry.prefix}\` — ${entry.description}`
-          : `- \`${entry.prefix}\``,
-      );
-    }
-    if (connectionEntries.length > sorted.length) {
-      lines.push(`- ... ${connectionEntries.length - sorted.length} more`);
-    }
+  if (slugs.length > shown.length) {
+    lines.push(`- ... ${slugs.length - shown.length} more`);
   }
-
   return lines.join("\n");
 };

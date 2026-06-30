@@ -29,8 +29,9 @@ import { Textarea } from "./textarea";
 // editing the description is editing what the model sees.
 // ---------------------------------------------------------------------------
 
-/** The connection's callable prefix under `tools.` — the line item agents see
- *  in the execute tool's "Available connection prefixes" inventory. */
+/** The connection's callable prefix under `tools.`: the path an agent reaches
+ *  this connection's tools through (`tools.<prefix>.<tool>`). The execute tool's
+ *  inventory now lists integrations, not per-connection prefixes. */
 const connectionPrefix = (connection: Connection): string => {
   const address = String(connection.address);
   return address.startsWith("tools.") ? address.slice("tools.".length) : address;

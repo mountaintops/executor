@@ -1424,3 +1424,80 @@ describe("MCP host server — multiple elicitations", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// skills tool
+// ---------------------------------------------------------------------------
+
+describe("MCP host server — skills tool", () => {
+  it("registers a skills tool alongside execute", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).toContain("skills");
+    });
+  });
+
+  it("returns the execute skill body by name", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "skills",
+        arguments: { name: "execute" },
+      });
+      const text = textOf(result);
+      // The how-to that the execute description used to inline.
+      expect(text).toContain("## Workflow");
+      expect(text).toContain("## Rules");
+      expect(text).toContain("Use `emit(value)` to append user-visible output");
+      expect(result.isError).toBeFalsy();
+      // The body is the payload, returned ONLY as text content. Attaching a
+      // partial structuredContent ({status,name}) makes clients that prefer
+      // structured output surface that and drop the text, so the guide silently
+      // fails to load. Pin the single-channel shape so that can't regress.
+      expect(result.structuredContent).toBeUndefined();
+    });
+  });
+
+  it("appends the live integration inventory to the execute skill", async () => {
+    const description = [
+      "Execute TypeScript in a sandboxed runtime.",
+      "",
+      "## Available integrations",
+      "",
+      "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
+      "- `acme`",
+    ].join("\n");
+    await withClient(makeStubEngine({ description }), NO_CAPS, async (client) => {
+      const result = await client.callTool({ name: "skills", arguments: { name: "execute" } });
+      const text = textOf(result);
+      // The how-to body still comes first ...
+      expect(text).toContain("## Workflow");
+      // ... and the live inventory the description carries is appended.
+      expect(text).toContain("## Available integrations");
+      expect(text).toContain("- `acme`");
+    });
+  });
+
+  it("lists available skills when called without a name", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "skills",
+        arguments: {},
+      });
+      expect(textOf(result)).toContain("`execute`");
+      expect(result.structuredContent).toBeUndefined();
+    });
+  });
+
+  it("reports an unknown skill name as an error and lists valid names", async () => {
+    await withClient(makeStubEngine({}), NO_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "skills",
+        arguments: { name: "nope" },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('No skill named "nope"');
+      expect(textOf(result)).toContain("`execute`");
+      expect(result.structuredContent).toBeUndefined();
+    });
+  });
+});

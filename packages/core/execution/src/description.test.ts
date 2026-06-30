@@ -37,9 +37,9 @@ const GITHUB = IntegrationSlug.make("github");
 const SLACK = IntegrationSlug.make("slack");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 
-// v2 port: available entries are saved connection prefixes, not integration
-// slugs. Multiple saved connections can point at the same integration, and the
-// callable path needs `<integration>.<owner>.<connection>`.
+// The execute description lists the top-level integrations the user has
+// connected: one bare line per integration slug, deduped across connections,
+// names only (no per-integration descriptions).
 const githubPlugin = definePlugin(() => ({
   id: "github-plugin" as const,
   credentialProviders: [memoryProvider()],
@@ -68,8 +68,10 @@ const slackPlugin = definePlugin(() => ({
   }),
 }))();
 
+const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+
 describe("buildExecuteDescription", () => {
-  it.effect("renders real connection prefixes separately through the real executor flow", () =>
+  it.effect("lists the connected integrations, not the connection prefixes", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
@@ -93,72 +95,36 @@ describe("buildExecuteDescription", () => {
 
       const description = yield* buildExecuteDescription(executor);
 
-      // Stable anchor from the workflow preamble.
+      // Stable anchor from the short preamble.
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
-      expect(description).toContain("Use `emit(value)` to append user-visible output");
-      expect(description).toContain("Emit any attachment with `emit(result.data)`");
-      expect(description).toContain("pass an MCP content block to `emit(...)`");
-      expect(description).toContain("`emit(ToolFile)` is MIME-based");
-      expect(description).toContain(
-        "Returning a `ToolFile`, a `ToolResult`, an MCP content block, or a bare base64 string does not emit content",
-      );
-      expect(description).toContain("## Available connection prefixes");
-      expect(description).toContain("- `github.org.prod`");
-      expect(description).toContain("- `github.user.personal`");
-      expect(description).not.toContain("## Available namespaces");
+      // The full how-to now lives behind the `skills` tool, so the description
+      // points there rather than inlining the workflow/rules.
+      expect(description).toContain('skills({ name: "execute" })');
+      expect(description).not.toContain("Use `emit(value)` to append user-visible output");
+      expect(description).not.toContain("## Workflow");
+      expect(description).not.toContain("## Rules");
+      // Top-level integration slug, deduped across the two github connections.
+      expect(description).toContain("## Available integrations");
+      expect(description).toContain("- `github`");
+      expect(occurrences(description, "- `github`")).toBe(1);
+      // The per-connection prefixes are gone.
+      expect(description).not.toContain("github.org.prod");
+      expect(description).not.toContain("github.user.personal");
+      // Slack is registered but unconnected, so it is not listed.
+      expect(description).not.toContain("- `slack`");
       expect(description).not.toContain("workspace messages");
       expect(description).not.toContain("`github-plugin`");
       expect(description).not.toContain("`slack-plugin`");
-      expect(description).not.toContain("- `github`");
-
-      const orgIdx = description.indexOf("`github.org.prod`");
-      const userIdx = description.indexOf("`github.user.personal`");
-      expect(orgIdx).toBeGreaterThan(-1);
-      expect(userIdx).toBeGreaterThan(-1);
-      expect(orgIdx).toBeLessThan(userIdx);
     }),
   );
 
-  it.effect("annotates prefixes with connection or integration descriptions", () =>
+  it.effect("lists integration names only, with no descriptions", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
       );
       yield* executor["slack-plugin"].seed();
       yield* executor["github-plugin"].seed();
-      yield* executor.connections.create({
-        owner: "org",
-        name: ConnectionName.make("prod"),
-        integration: GITHUB,
-        template: TEMPLATE,
-        value: "org-token",
-        description: "Production org — issues and PRs only.",
-      });
-      yield* executor.connections.create({
-        owner: "user",
-        name: ConnectionName.make("personal"),
-        integration: GITHUB,
-        template: TEMPLATE,
-        value: "user-token",
-      });
-
-      const description = yield* buildExecuteDescription(executor);
-
-      // The curated connection description rides its prefix line.
-      expect(description).toContain("- `github.org.prod` — Production org — issues and PRs only.");
-      // No connection description and the integration description ("GitHub")
-      // just restates the slug — the line stays bare.
-      expect(description).toContain("- `github.user.personal`");
-      expect(description).not.toContain("- `github.user.personal` —");
-    }),
-  );
-
-  it.effect("falls back to a meaningful integration description", () =>
-    Effect.gen(function* () {
-      const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
-      );
-      yield* executor["slack-plugin"].seed();
       yield* executor.connections.create({
         owner: "org",
         name: ConnectionName.make("main"),
@@ -166,21 +132,61 @@ describe("buildExecuteDescription", () => {
         template: TEMPLATE,
         value: "slack-token",
       });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
 
       const description = yield* buildExecuteDescription(executor);
 
-      expect(description).toContain("- `slack.org.main` — Send and read workspace messages.");
+      // Bare slugs, sorted, with no per-integration description riding the line
+      // (Slack's "Send and read workspace messages." is dropped).
+      expect(description).toContain("- `github`");
+      expect(description).toContain("- `slack`");
+      expect(description).not.toContain("Send and read workspace messages");
+      expect(description).not.toContain("- `slack` —");
+      expect(description).not.toContain("- `github` —");
     }),
   );
 
-  it.effect("omits the Available connection prefixes section when no connections exist", () =>
+  it.effect("dedupes many connections of one integration into a single line", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "user-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(occurrences(description, "- `github`")).toBe(1);
+      expect(description).not.toContain(".org.prod");
+      expect(description).not.toContain(".user.personal");
+    }),
+  );
+
+  it.effect("omits the Available integrations section when no connections exist", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(makeTestConfig({ plugins: [] as const }));
 
       const description = yield* buildExecuteDescription(executor);
 
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
-      expect(description).not.toContain("## Available connection prefixes");
+      expect(description).not.toContain("## Available integrations");
     }),
   );
 });
