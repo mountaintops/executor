@@ -989,12 +989,44 @@ const installApplicationMenu = () => {
     label: "File",
     submenu: [{ role: "close" }],
   };
+  // The web shell navigates with browser history (TanStack Router pushState),
+  // but Electron binds none of the history shortcuts by default and the menu is
+  // built from roles, none of which carry Back/Forward. So the standard macOS
+  // Cmd+[ / Cmd+] (Ctrl+[ / Ctrl+] elsewhere) are dead keys inside the desktop
+  // window, with no browser chrome to fall back on. Bind them here, driving the
+  // focused window's navigation history. canGo* guards keep the keys no-ops at
+  // the ends of the stack, matching how they behave in a browser.
+  const navigateHistory = (direction: "back" | "forward") => {
+    const nav = BrowserWindow.getFocusedWindow()?.webContents.navigationHistory;
+    if (!nav) return;
+    if (direction === "back") {
+      if (nav.canGoBack()) nav.goBack();
+    } else if (nav.canGoForward()) {
+      nav.goForward();
+    }
+  };
+  const historyMenu: MenuItemConstructorOptions = {
+    label: "History",
+    submenu: [
+      {
+        label: "Back",
+        accelerator: "CmdOrCtrl+[",
+        click: () => navigateHistory("back"),
+      },
+      {
+        label: "Forward",
+        accelerator: "CmdOrCtrl+]",
+        click: () => navigateHistory("forward"),
+      },
+    ],
+  };
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       appMenu,
       fileMenu,
       { role: "editMenu" },
       { role: "viewMenu" },
+      historyMenu,
       { role: "windowMenu" },
     ]),
   );
