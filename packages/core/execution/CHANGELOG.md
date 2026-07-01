@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- Add a `skills` tool and slim the always-loaded `execute` description. The execute tool's calling-convention guide now lives behind `skills({ name: "execute" })`, so a session loads it on demand instead of carrying it up front. The `execute` description keeps a one-line intro, a pointer to the skill, and a names-only list of the integrations the user has connected (deduped across connections, no per-connection prefixes).
+
 - Updated dependencies []:
   - @executor-js/sdk@1.5.27
   - @executor-js/codemode-core@1.5.27
