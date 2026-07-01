@@ -147,6 +147,7 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { connectionIdentifier } from "./connection-name-identifier";
+import { makeInvokeBatching } from "./invoke-batching";
 import { annotateToolResultOutcome } from "./tool-result";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
@@ -2533,6 +2534,51 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             );
 
     // ------------------------------------------------------------------
+    // Invoke-path batching. Concurrent `execute` calls within one microtask
+    // window share ONE query per table (tool / connection / integration) and
+    // one policy-rule-set snapshot instead of 4×N point queries — the
+    // DataLoader pattern, via Effect Request/RequestResolver. Loaders serve
+    // a batch of mixed tuples with a single OR-of-tuples query; the memory
+    // and SQL adapters both plan it as one round trip.
+    // ------------------------------------------------------------------
+
+    const invokeBatching = makeInvokeBatching({
+      loadToolRows: (requests) =>
+        core.findMany("tool", {
+          where: (b: AnyCb) =>
+            b.or(
+              ...requests.map((request) =>
+                b.and(
+                  byOwner(request.owner)(b),
+                  b("integration", "=", String(request.integration)),
+                  b("connection", "=", String(request.connection)),
+                  b("name", "=", String(request.tool)),
+                ),
+              ),
+            ),
+          select: TOOL_INVOCATION_COLUMNS,
+        }),
+      loadConnectionRows: (requests) =>
+        core.findMany("connection", {
+          where: (b: AnyCb) =>
+            b.or(
+              ...requests.map((request) =>
+                b.and(
+                  byOwner(request.owner)(b),
+                  b("integration", "=", String(request.integration)),
+                  b("name", "=", String(request.name)),
+                ),
+              ),
+            ),
+        }),
+      loadIntegrationRows: (slugs) =>
+        core.findMany("integration", {
+          where: (b: AnyCb) => b("slug", "in", slugs.map(String)),
+        }),
+      loadPolicyRuleSet: () => listActivePolicyRuleSet(),
+    });
+
+    // ------------------------------------------------------------------
     // Tools (read surface)
     // ------------------------------------------------------------------
 
@@ -3035,7 +3081,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // not the 5-segment dynamic form.
         const staticEntry = staticTools.get(String(address));
         if (staticEntry) {
-          const policyRules = yield* listActivePolicyRuleSet();
+          const policyRules = yield* invokeBatching.getPolicyRuleSet();
           const policy = yield* resolvePolicyFromRuleSet(
             String(address),
             policyRules,
@@ -3064,16 +3110,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         // Find the tool row — projected: invoke needs routing/policy fields
         // only, never the multi-KB input/output schema JSON (`tools.schema`
-        // is the schema-bearing surface).
-        const row = yield* core.findFirst("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
+        // is the schema-bearing surface). Batched: concurrent executes in the
+        // same window share one query.
+        const row = yield* invokeBatching.getToolRow({
+          owner: parsed.owner,
+          integration: parsed.integration,
+          connection: parsed.connection,
+          tool: parsed.tool,
         });
         if (!row) {
           const searchMatches = yield* searchToolRowsForConnection(parsed);
@@ -3087,7 +3130,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         // Resolve policy (owner-ranked).
         const toolForPolicy = rowToTool(row);
-        const policyRules = yield* listActivePolicyRuleSet();
+        const policyRules = yield* invokeBatching.getPolicyRuleSet();
         const annotations = decodeJsonColumn(row.annotations) as ToolAnnotations | undefined;
         const policy = yield* resolvePolicyFromRuleSet(
           normalizedPolicyId(toolForPolicy),
@@ -3115,8 +3158,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        // Find the connection row.
-        const connectionRow = yield* findConnectionRow({
+        // Find the connection row (batched with peer executes).
+        const connectionRow = yield* invokeBatching.getConnectionRow({
           owner: parsed.owner,
           integration: parsed.integration,
           name: parsed.connection,
@@ -3147,7 +3190,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // Resolve every named credential input (`variable → value`); `value` is
         // the primary `token` for single-input + OAuth callers.
         const values = yield* resolveConnectionValues(connectionRow);
-        const integrationRow = yield* findIntegrationRow(parsed.integration);
+        const integrationRow = yield* invokeBatching.getIntegrationRow(parsed.integration);
         const credential: ToolInvocationCredential = {
           owner: parsed.owner,
           integration: parsed.integration,
