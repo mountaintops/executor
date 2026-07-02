@@ -70,6 +70,13 @@ import {
   type OAuthEndpointUrlPolicy,
 } from "./oauth-helpers";
 import { OAUTH2_SESSION_TTL_MS, encodeOAuthCallbackState } from "./oauth";
+import {
+  canonicalIssuerUrl,
+  hostOfUrl,
+  isDcrClassifiedRow,
+  parseUrl,
+  registrableHostOfUrl,
+} from "./oauth-gc";
 
 /** Connection-minting input for the OAuth flow — extends a connection create
  *  with the OAuth lifecycle fields (client slug, refresh material, expiry,
@@ -239,21 +246,6 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
 const parseGrant = (grant: unknown): OAuthGrant | null =>
   grant === "client_credentials" || grant === "authorization_code" ? grant : null;
 
-const parseUrl = (value: string): URL | null => {
-  if (!URL.canParse(value)) return null;
-  return new URL(value);
-};
-
-const canonicalIssuerUrl = (value: string | null | undefined): string | null => {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return null;
-  const url = parseUrl(trimmed);
-  if (url === null) return null;
-  const path = url.pathname.replace(/\/+$/g, "");
-  return path.length > 0 ? `${url.origin}${path}` : url.origin;
-};
-
 const canonicalDcrIssuer = (
   issuer: string | null | undefined,
   registrationEndpoint: string,
@@ -272,42 +264,6 @@ const dcrIssuerMatches = (rowIssuer: string, inputIssuer: string | null): boolea
   inputIssuer !== null &&
   (rowIssuer === inputIssuer ||
     (issuerIsOriginOnly(inputIssuer) && issuerOrigin(rowIssuer) === inputIssuer));
-
-const hostOfUrl = (value: string): string | null => parseUrl(value)?.host.toLowerCase() ?? null;
-
-const commonTwoPartPublicSuffixes = new Set([
-  "co.uk",
-  "org.uk",
-  "ac.uk",
-  "gov.uk",
-  "com.au",
-  "net.au",
-  "org.au",
-  "co.jp",
-  "co.nz",
-  "com.br",
-  "com.mx",
-  "com.sg",
-]);
-
-const registrableHostname = (hostname: string): string => {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
-    return host;
-  }
-  const labels = host.split(".").filter(Boolean);
-  if (labels.length <= 2) return host;
-  const suffix = labels.slice(-2).join(".");
-  const labelCount = commonTwoPartPublicSuffixes.has(suffix) ? 3 : 2;
-  return labels.slice(-labelCount).join(".");
-};
-
-const registrableHostOfUrl = (value: string): string | null => {
-  const url = parseUrl(value);
-  if (url === null) return null;
-  const hostname = registrableHostname(url.hostname);
-  return hostname === url.hostname.toLowerCase() ? url.host.toLowerCase() : hostname;
-};
 
 const slugifyOAuthKey = (value: string): string =>
   value
@@ -348,29 +304,26 @@ const parseOAuthClientOrigin = (row: {
   readonly origin_kind?: unknown;
   readonly origin_integration?: unknown;
 }): OAuthClientOrigin => {
-  if (row.origin_kind === "dynamic_client_registration") {
+  // Shared DCR classification (explicit origin_kind OR the legacy MCP-shaped
+  // heuristic) lives in `oauth-gc` so the runtime and the GC/backfill
+  // migrations agree exactly on what counts as a DCR row.
+  if (!isDcrClassifiedRow(row)) {
     return {
-      kind: "dynamic_client_registration",
+      kind: "manual",
       integration:
         row.origin_integration == null
           ? null
           : IntegrationSlug.make(String(row.origin_integration)),
     };
   }
-  const slug = row.slug == null ? "" : String(row.slug);
-  const resource = row.resource == null ? "" : String(row.resource);
-  if (
-    row.origin_kind == null &&
-    row.grant === "authorization_code" &&
-    /(^|[-_])mcp($|[-_])/.test(slug) &&
-    /(^|\/)mcp($|[/?#])/.test(resource)
-  ) {
-    return { kind: "dynamic_client_registration", integration: null };
-  }
+  // An explicit-origin DCR row carries its requesting integration; a
+  // heuristic-classified legacy row (null origin_kind) has none.
   return {
-    kind: "manual",
+    kind: "dynamic_client_registration",
     integration:
-      row.origin_integration == null ? null : IntegrationSlug.make(String(row.origin_integration)),
+      row.origin_kind === "dynamic_client_registration" && row.origin_integration != null
+        ? IntegrationSlug.make(String(row.origin_integration))
+        : null,
   };
 };
 
@@ -693,6 +646,23 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     readonly resource: string | null;
   };
 
+  // `oauth_client.created_at` is a date column that surfaces as a Date, an ISO
+  // string, or an epoch number depending on the storage backend. Normalize to
+  // epoch ms for deterministic oldest-first ordering; an unparseable/missing
+  // value sorts as 0 (oldest), so slug then breaks the tie stably.
+  const candidateCreatedAt = (value: unknown): number => {
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    if (typeof value === "string") {
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? ms : 0;
+    }
+    return 0;
+  };
+
   const dcrCandidatesForIssuer = (
     owner: Owner,
     issuer: string | null,
@@ -707,23 +677,37 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       .pipe(
         Effect.map((rows) => {
           const inputTokenHost = registrableHostOfUrl(tokenUrl);
-          return rows.flatMap((row): readonly DcrReuseCandidate[] => {
-            if (parseOAuthClientOrigin(row).kind !== "dynamic_client_registration") return [];
-            const rowIssuer =
-              row.origin_issuer == null ? null : canonicalIssuerUrl(String(row.origin_issuer));
-            const issuerMatches =
-              rowIssuer !== null
-                ? dcrIssuerMatches(rowIssuer, issuer)
-                : inputTokenHost !== null &&
-                  registrableHostOfUrl(String(row.token_url)) === inputTokenHost;
-            if (!issuerMatches) return [];
-            return [
-              {
-                slug: OAuthClientSlug.make(String(row.slug)),
-                resource: row.resource == null ? null : String(row.resource),
-              },
-            ];
-          });
+          const matches = rows.flatMap(
+            (row): readonly (DcrReuseCandidate & { readonly createdAt: number })[] => {
+              if (parseOAuthClientOrigin(row).kind !== "dynamic_client_registration") return [];
+              const rowIssuer =
+                row.origin_issuer == null ? null : canonicalIssuerUrl(String(row.origin_issuer));
+              const issuerMatches =
+                rowIssuer !== null
+                  ? dcrIssuerMatches(rowIssuer, issuer)
+                  : inputTokenHost !== null &&
+                    registrableHostOfUrl(String(row.token_url)) === inputTokenHost;
+              if (!issuerMatches) return [];
+              return [
+                {
+                  slug: OAuthClientSlug.make(String(row.slug)),
+                  resource: row.resource == null ? null : String(row.resource),
+                  createdAt: candidateCreatedAt(row.created_at),
+                },
+              ];
+            },
+          );
+          // Deterministic reuse order: oldest first, slug as a stable tiebreak
+          // when timestamps collide or are missing. Without this, which of
+          // several live duplicates sharing an (owner, issuer) gets reused is
+          // whatever order the storage backend returned rows in — the reuse
+          // pick must be stable across boots and backends.
+          return [...matches]
+            .sort(
+              (a, b) =>
+                a.createdAt - b.createdAt || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0),
+            )
+            .map(({ slug, resource }): DcrReuseCandidate => ({ slug, resource }));
         }),
       );
 
