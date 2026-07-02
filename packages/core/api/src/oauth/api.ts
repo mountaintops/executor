@@ -65,6 +65,9 @@ const CreateClientPayload = Schema.Struct({
   clientId: Schema.String,
   clientSecret: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Integration whose connect dialog registered this manual app. Recorded so
+   *  the picker matches it to this integration by intent, not root domain. */
+  originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
 });
 
 const CreateClientResponse = Schema.Struct({

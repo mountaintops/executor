@@ -243,6 +243,9 @@ const OAuthCreateClientInput = Schema.Struct({
   grant: OAuthGrantSchema,
   clientId: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Integration whose connect dialog registered this manual app. Recorded so
+   *  the picker can match it by intent (exact) instead of by root domain. */
+  originIntegration: Schema.optional(Schema.NullOr(Schema.String)),
 });
 // Browser-handoff for a CONFIDENTIAL OAuth app: carries only the NON-secret
 // fields the form pre-fills. The client secret is typed by the human in the web
@@ -713,6 +716,13 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 // `oauth.clients.createHandoff`.
                 clientSecret: "",
                 resource: input.resource ?? null,
+                origin: {
+                  kind: "manual",
+                  integration:
+                    input.originIntegration == null
+                      ? null
+                      : IntegrationSlug.make(input.originIntegration),
+                },
               }),
               (client) => ({ client: String(client) }),
             ),

@@ -64,7 +64,15 @@ export interface OAuthClient {
 }
 
 export type OAuthClientOrigin =
-  | { readonly kind: "manual" }
+  | {
+      readonly kind: "manual";
+      /** Integration whose connect dialog registered this manual app, when the
+       *  registration happened from within one. Lets the picker match a BYO app
+       *  to its integration by recorded intent (exact) instead of guessing by
+       *  root domain. Null for apps registered outside any integration context
+       *  (and for legacy rows predating the stamp). */
+      readonly integration?: IntegrationSlug | null;
+    }
   | {
       readonly kind: "dynamic_client_registration";
       readonly integration?: IntegrationSlug | null;

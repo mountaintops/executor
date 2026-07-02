@@ -367,7 +367,11 @@ const parseOAuthClientOrigin = (row: {
   ) {
     return { kind: "dynamic_client_registration", integration: null };
   }
-  return { kind: "manual" };
+  return {
+    kind: "manual",
+    integration:
+      row.origin_integration == null ? null : IntegrationSlug.make(String(row.origin_integration)),
+  };
 };
 
 interface LoadedOAuthClient {
@@ -614,12 +618,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           client_secret_item_id: clientSecretItemIdValue,
           resource: input.resource ?? null,
           origin_kind: input.origin?.kind ?? "manual",
+          // Recorded intent, kept for BOTH origins: a manual app registered from
+          // an integration's dialog stamps its integration so the picker can
+          // match it exactly, the same way a DCR client records the integration
+          // that requested it.
           origin_integration:
-            input.origin?.kind === "dynamic_client_registration"
-              ? input.origin.integration == null
-                ? null
-                : String(input.origin.integration)
-              : null,
+            input.origin?.integration == null ? null : String(input.origin.integration),
           origin_issuer:
             input.origin?.kind === "dynamic_client_registration"
               ? (canonicalIssuerUrl(input.originIssuer) ?? null)
