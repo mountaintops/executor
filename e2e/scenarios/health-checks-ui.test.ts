@@ -293,7 +293,7 @@ scenario(
               await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
               // The key field is still on screen, editable, mid-flow.
-              await dialog.getByPlaceholder("token", { exact: true }).waitFor();
+              await dialog.locator('input[type="password"]').first().waitFor();
             });
 
             await step("The response rows ARE the identity picker: click the email", async () => {
@@ -788,7 +788,7 @@ scenario(
             await step("A valid key checks healthy and names the connection", async () => {
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
-              await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
+              await dialog.locator('input[type="password"]').first().fill(goodToken);
               // A CONFIGURED check probes directly — no pick block.
               await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText(/Healthy/).waitFor({ timeout: 30_000 });

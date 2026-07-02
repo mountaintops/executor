@@ -83,7 +83,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
-import { PlusIcon, XIcon } from "lucide-react";
+import { EyeIcon, EyeOffIcon, PlusIcon, XIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -166,6 +166,25 @@ function isOnePasswordRegistered(
   });
 }
 
+/** Constant-label reveal control (aria-pressed carries the state, per the
+ *  screen-reader guidance against relabeling toggles). Masked keys make typos
+ *  invisible; every credential field pairs with one of these. */
+function RevealKeyButton(props: { readonly revealed: boolean; readonly onToggle: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label="Show key"
+      aria-pressed={props.revealed}
+      className="shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
+      onClick={props.onToggle}
+    >
+      {props.revealed ? <EyeOffIcon /> : <EyeIcon />}
+    </Button>
+  );
+}
+
 function PasteCredentialInputs(props: {
   readonly inputs: readonly CredentialInput[];
   readonly singleInput: boolean;
@@ -179,6 +198,10 @@ function PasteCredentialInputs(props: {
   readonly values: Readonly<Record<string, string>>;
   readonly onChange: (values: Record<string, string>) => void;
 }) {
+  // One reveal state for the whole group: a user checking their paste wants
+  // to see all of it, not toggle per field.
+  const [revealed, setRevealed] = useState(false);
+  const inputType = revealed ? "text" : "password";
   if (!props.singleInput) {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
@@ -192,25 +215,27 @@ function PasteCredentialInputs(props: {
                 {input.label}
               </Label>
             </div>
-            <Input
-              id={`credential-input-${input.variable}`}
-              type="password"
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              data-form-type="other"
-              placeholder={`paste ${input.label}`}
-              value={props.values[input.variable] ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                props.onChange({
-                  ...props.values,
-                  [input.variable]: e.target.value,
-                })
-              }
-              className="h-9 font-mono text-sm"
-              data-ph-block
-            />
+            <div className="flex items-center gap-1">
+              <Input
+                id={`credential-input-${input.variable}`}
+                type={inputType}
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+                value={props.values[input.variable] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onChange({
+                    ...props.values,
+                    [input.variable]: e.target.value,
+                  })
+                }
+                className="h-9 font-mono text-sm"
+                data-ph-block
+              />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
+            </div>
           </div>
         ))}
       </div>
@@ -241,7 +266,7 @@ function PasteCredentialInputs(props: {
               </span>
               {/* oxlint-disable-next-line react/forbid-elements */}
               <input
-                type="password"
+                type={inputType}
                 autoComplete="off"
                 // The key is the modal's real first input: the display name is
                 // derived from it, so this is where typing starts.
@@ -251,34 +276,36 @@ function PasteCredentialInputs(props: {
                 data-lpignore="true"
                 data-bwignore
                 data-form-type="other"
-                placeholder="token"
                 value={props.values[input.variable] ?? ""}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   props.onChange({ ...props.values, [input.variable]: e.target.value })
                 }
-                className="min-w-0 flex-1 bg-transparent px-3 outline-none placeholder:text-muted-foreground/60"
+                className="min-w-0 flex-1 bg-transparent px-3 outline-none"
                 data-ph-block
               />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
             </div>
           ) : (
-            <Input
-              type="password"
-              autoComplete="off"
-              data-1p-ignore
-              data-lpignore="true"
-              data-bwignore
-              data-form-type="other"
-              placeholder={labelled ? "secret value" : "paste the value / token"}
-              value={props.values[input.variable] ?? ""}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                props.onChange({
-                  ...props.values,
-                  [input.variable]: e.target.value,
-                })
-              }
-              className="font-mono"
-              data-ph-block
-            />
+            <div className="flex items-center gap-1">
+              <Input
+                type={inputType}
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                data-form-type="other"
+                value={props.values[input.variable] ?? ""}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  props.onChange({
+                    ...props.values,
+                    [input.variable]: e.target.value,
+                  })
+                }
+                className="font-mono"
+                data-ph-block
+              />
+              <RevealKeyButton revealed={revealed} onToggle={() => setRevealed((v) => !v)} />
+            </div>
           )}
         </div>
       ))}
@@ -1527,9 +1554,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // The two-step wizard applies to credential methods only (OAuth connects in
   // one act — its flow is unchanged).
   const wizardActive = !isOAuth && !isNoAuth;
-  // Step 1 -> 2 wants the key present; validation is encouraged, not forced
-  // (some keys can't be probed — no candidates, no configured check).
-  const canContinue = credentialPayloadOrigin !== null;
+  // Continue is NEVER disabled (a disabled button hides the reason and drops
+  // out of tab order). Clicking it with no key says exactly what's missing.
+  const [continueError, setContinueError] = useState<string | null>(null);
 
   const handleSubmit = async () => {
     const payloadOrigin = createCredentialPayloadOrigin({
@@ -1577,6 +1604,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
     if (validationResult !== null) setValidationResult(null);
     if (savedInlineSpec !== null) setSavedInlineSpec(null);
     if (hcPickedPath !== null) setHcPickedPath(null);
+    if (continueError !== null) setContinueError(null);
   };
 
   // Check the key works: probe the pasted credential WITHOUT saving the
@@ -2053,7 +2081,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Add connection · {integrationName}</DialogTitle>
+              <DialogTitle>
+                Add connection · {integrationName}
+                {wizardActive ? (
+                  <span className="ml-2 font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                    Step {wizardStep === "validate" ? 1 : 2} of 2
+                  </span>
+                ) : null}
+              </DialogTitle>
               <DialogDescription>
                 {ownerDisplay.showOwnerLabels
                   ? "A connection is a saved way to use this integration, owned by you or the workspace."
@@ -2426,6 +2461,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
               )}
             </div>
 
+            {continueError ? (
+              <p role="alert" className="px-1 text-xs text-destructive">
+                {continueError}
+              </p>
+            ) : null}
             <DialogFooter>
               <Button
                 type="button"
@@ -2474,8 +2514,17 @@ function AddAccountModalView(props: AddAccountModalProps) {
               ) : wizardActive && wizardStep === "validate" ? (
                 <Button
                   type="button"
-                  onClick={() => setWizardStep("place")}
-                  disabled={!canContinue || validating}
+                  onClick={() => {
+                    if (credentialPayloadOrigin === null) {
+                      setContinueError(
+                        singleInput ? "Enter the key first" : "Fill in every credential field",
+                      );
+                      return;
+                    }
+                    setContinueError(null);
+                    setWizardStep("place");
+                  }}
+                  loading={validating}
                 >
                   Continue
                 </Button>
