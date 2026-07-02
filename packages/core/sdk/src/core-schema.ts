@@ -212,6 +212,9 @@ export const coreTables = defineTables({
       // "manual" by the service layer.
       origin_kind: nullableTextColumn("origin_kind"),
       origin_integration: nullableTextColumn("origin_integration"),
+      // Authorization-server issuer that owns a DCR client. Null for manual
+      // clients and legacy rows written before the DCR reuse key existed.
+      origin_issuer: nullableTextColumn("origin_issuer"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "slug"],
