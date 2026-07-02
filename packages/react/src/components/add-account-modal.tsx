@@ -952,12 +952,12 @@ function RequestCheckPanel(props: {
   );
   const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
   const healthy = result?.status === "healthy";
-  const fullSample = healthy ? (result?.responseSample ?? []) : [];
   // Identity-looking fields first, then response order; capped so a chatty
   // response can't blow the modal up (the hidden tail adds nothing — the
   // interesting fields rank first).
-  const sample = useMemo(() => {
-    const ranked = [...fullSample].sort((a, b) => {
+  const { sample, hiddenCount } = useMemo(() => {
+    const full = result?.status === "healthy" ? (result.responseSample ?? []) : [];
+    const ranked = [...full].sort((a, b) => {
       const tierA = identityPathTier(a.path);
       const tierB = identityPathTier(b.path);
       if (tierA === tierB) return 0;
@@ -965,9 +965,9 @@ function RequestCheckPanel(props: {
       if (tierB === -1) return -1;
       return tierA - tierB;
     });
-    return ranked.slice(0, 8);
-  }, [fullSample]);
-  const hiddenCount = fullSample.length - sample.length;
+    const capped = ranked.slice(0, 8);
+    return { sample: capped, hiddenCount: full.length - capped.length };
+  }, [result]);
   const method = configuredOperation ? "GET" : (selected?.method ?? "get").toUpperCase();
 
   return (
