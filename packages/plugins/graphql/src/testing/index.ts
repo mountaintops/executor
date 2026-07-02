@@ -55,6 +55,12 @@ export interface GraphqlTestServerShape {
   readonly clearRequests: Effect.Effect<void>;
 }
 
+export class GraphqlTestRecorderTimeoutError extends Data.TaggedError(
+  "GraphqlTestRecorderTimeoutError",
+)<{
+  readonly message: string;
+}> {}
+
 /** Poll the request recorder until `predicate` matches. Yoga captures requests
  *  asynchronously (`captureRequest` runs via `Effect.runPromise` in the handler
  *  context), so connect/invoke can resolve before the ref updates under load. */
@@ -62,14 +68,13 @@ export const waitForRecordedRequests = (
   requests: Effect.Effect<readonly GraphqlTestRequest[]>,
   predicate: (requests: readonly GraphqlTestRequest[]) => boolean,
   message = "timed out waiting for matching recorded GraphQL requests",
-): Effect.Effect<readonly GraphqlTestRequest[]> =>
+): Effect.Effect<readonly GraphqlTestRequest[], GraphqlTestRecorderTimeoutError> =>
   requests.pipe(
     Effect.filterOrFail(
       (all) => predicate(all),
-      () => message,
+      () => new GraphqlTestRecorderTimeoutError({ message }),
     ),
     Effect.retry(Schedule.both(Schedule.spaced("50 millis"), Schedule.recurs(100))),
-    Effect.orDie,
   );
 
 class GraphqlTestServerAddressError extends Data.TaggedError("GraphqlTestServerAddressError")<{
