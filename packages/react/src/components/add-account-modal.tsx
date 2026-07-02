@@ -1953,15 +1953,19 @@ function AddAccountModalView(props: AddAccountModalProps) {
                         and deleted without cluttering the picker. */}
                                 {dcrClients.length > 0 && (
                                   <div className="border-t border-border/60 pt-3">
-                                    <button
+                                    <Button
                                       type="button"
-                                      className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground hover:text-foreground"
+                                      variant="ghost"
+                                      className={cn(
+                                        "h-auto w-full justify-between rounded-none p-0 text-xs font-medium text-muted-foreground",
+                                        "hover:bg-transparent hover:text-foreground",
+                                      )}
                                       onClick={() => setShowAutoRegistered((prev) => !prev)}
                                       aria-expanded={showAutoRegistered}
                                     >
                                       <span>Auto-registered clients ({dcrClients.length})</span>
                                       <span aria-hidden>{showAutoRegistered ? "−" : "+"}</span>
-                                    </button>
+                                    </Button>
                                     {showAutoRegistered ? (
                                       <div className="space-y-2 pt-2">
                                         <p className="text-xs text-muted-foreground">
