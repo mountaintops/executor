@@ -907,13 +907,15 @@ function ResponseIdentityPicker(props: {
     <div className="space-y-1.5 rounded-md border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium">Which field names this account?</p>
-        <button
+        <Button
           type="button"
-          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          variant="link"
+          size="xs"
+          className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
           onClick={props.onDismiss}
         >
           Skip — status only
-        </button>
+        </Button>
       </div>
       <p className="text-xs text-muted-foreground">
         From the response the key just returned. Picking one labels the connection and every future
@@ -921,15 +923,17 @@ function ResponseIdentityPicker(props: {
       </p>
       <div className="max-h-40 overflow-y-auto">
         {sample.map((field) => (
-          <button
+          <Button
             key={field.path}
             type="button"
-            className="flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left font-mono text-xs hover:bg-muted/60"
+            variant="ghost"
+            size="xs"
+            className="flex h-auto w-full min-w-0 items-baseline justify-start gap-2 rounded px-1.5 py-1 text-left font-mono text-xs font-normal"
             onClick={() => props.onPick(field.path, field.value)}
           >
             <span className="shrink-0 text-muted-foreground">{field.path}</span>
             <span className="min-w-0 truncate text-foreground">{field.value}</span>
-          </button>
+          </Button>
         ))}
       </div>
     </div>
@@ -1047,9 +1051,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const hasHealthCheck =
     AsyncResult.isSuccess(healthCheckResult) && healthCheckResult.value !== null;
   const candidatesResult = useAtomValue(integrationHealthCheckCandidatesAtom(integration));
-  const healthCheckCandidates = AsyncResult.isSuccess(candidatesResult)
-    ? candidatesResult.value
-    : [];
+  const healthCheckCandidates = useMemo(
+    () => (AsyncResult.isSuccess(candidatesResult) ? candidatesResult.value : []),
+    [candidatesResult],
+  );
 
   // Full registered-app summaries (carry endpoints + resource the picker's
   // lightweight options omit) and the connection→app usage map that powers the
@@ -2215,13 +2220,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                           {hcSelected.method.toUpperCase()} {hcSelected.operation}
                                         </span>
                                         {" · "}
-                                        <button
+                                        <Button
                                           type="button"
-                                          className="underline underline-offset-2 hover:text-foreground"
+                                          variant="link"
+                                          size="xs"
+                                          className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
                                           onClick={() => setHcAdvanced(true)}
                                         >
                                           change
-                                        </button>
+                                        </Button>
                                       </span>
                                     ) : hasHealthCheck ? (
                                       <span className="text-xs text-muted-foreground">
@@ -2259,13 +2266,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                   {!hasHealthCheck && !hcAdvanced && !hcSelected ? (
                                     <p className="text-xs text-muted-foreground">
                                       No zero-argument read-only operation to auto-pick.{" "}
-                                      <button
+                                      <Button
                                         type="button"
-                                        className="underline underline-offset-2 hover:text-foreground"
+                                        variant="link"
+                                        size="xs"
+                                        className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground"
                                         onClick={() => setHcAdvanced(true)}
                                       >
                                         Pick one
-                                      </button>{" "}
+                                      </Button>{" "}
                                       to test the key against.
                                     </p>
                                   ) : null}
