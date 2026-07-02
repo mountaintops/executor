@@ -865,7 +865,7 @@ function KeyValidationStatus(props: {
     );
   }
   if (!props.result) return null;
-  const { status, detail } = props.result;
+  const { status, identity, detail } = props.result;
   const indicator = HEALTH_INDICATOR_COLOR[status];
   const tone = status === "healthy" ? "text-muted-foreground" : "text-destructive";
   return (
@@ -873,6 +873,12 @@ function KeyValidationStatus(props: {
       <span aria-hidden className={`mt-[3px] size-2 shrink-0 rounded-full ${indicator.dot}`} />
       <span className="min-w-0">
         <span className="font-medium">{HEALTH_STATUS_LABEL[status]}</span>
+        {status === "healthy" && identity ? (
+          <>
+            {" · "}
+            <span className="text-foreground">{identity}</span>
+          </>
+        ) : null}
         {status !== "healthy" && detail ? <span className="block opacity-80">{detail}</span> : null}
       </span>
     </div>
@@ -930,7 +936,11 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
   const [hcOperation, setHcOperation] = useState("");
+  const [hcIdentityField, setHcIdentityField] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+  // Whether the display name was auto-filled from a probed identity (so a later
+  // probe may overwrite it, but a hand-typed name is never clobbered).
+  const nameAutofilled = useRef(false);
   // Explicit create-time choice (no ambient owner). Cloud defaults to Personal;
   // local/desktop hide the picker and save to the one local workspace.
   const [owner, setOwner] = useState<Owner>(defaultOwner);
@@ -1373,12 +1383,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
     let inlineSpec: HealthCheckSpec | undefined;
     if (!hasHealthCheck) {
       if (hcOperation.length === 0 || hcMissingRequired) return;
+      const identityPath = hcIdentityField.trim();
       const argEntries = Object.entries(hcArgs)
         .map(([key, value]) => [key, value.trim()] as const)
         .filter(([, value]) => value.length > 0);
       inlineSpec = {
         operation: hcOperation,
         ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+        ...(identityPath.length > 0 ? { identityField: identityPath } : {}),
       };
     }
     setValidating(true);
@@ -1409,7 +1421,26 @@ function AddAccountModalView(props: AddAccountModalProps) {
         payload: { spec: inlineSpec },
         reactivityKeys: healthCheckWriteKeys,
       });
-      if (Exit.isSuccess(saved)) toast.success("Saved as this integration's health check");
+      if (Exit.isSuccess(saved)) {
+        toast.success("Saved as this integration's health check");
+      } else {
+        // The key is healthy but the spec did NOT persist: say so, or the
+        // user walks away believing the check is configured.
+        toast.error(messageFromExit(saved, "The key works, but saving the health check failed"));
+      }
+    }
+    // Derive the connection name from the probed identity, unless the user
+    // hand-typed one (only fill when empty or a prior auto-fill). Read the
+    // CURRENT label via the functional updater, not the closure's snapshot:
+    // the user may have typed a name while the probe was in flight, and a
+    // hand-typed name is never clobbered.
+    const probedIdentity = result.identity?.trim();
+    if (result.status === "healthy" && probedIdentity && probedIdentity.length > 0) {
+      setLabel((current) => {
+        if (current.trim().length > 0 && !nameAutofilled.current) return current;
+        nameAutofilled.current = true;
+        return probedIdentity;
+      });
     }
   };
 
@@ -1792,14 +1823,22 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 <StepHeader
                   index={1}
                   label="Display name"
-                  hint="how you'll tell accounts apart"
+                  hint={
+                    canCheckKey
+                      ? "auto-filled when you check the key"
+                      : "how you'll tell accounts apart"
+                  }
                   htmlFor="connection-name"
                 />
                 <Input
                   id="connection-name"
                   placeholder={connectionLabelForHost("", owner, integrationName, organizationId)}
                   value={label}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setLabel(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    setLabel(e.target.value);
+                    // A hand-typed name takes over: a later probe won't overwrite it.
+                    nameAutofilled.current = false;
+                  }}
                 />
                 <p className="text-xs text-muted-foreground">
                   This connection will be callable as{" "}
@@ -2064,6 +2103,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
                                         onOperationChange={(next) => {
                                           setHcOperation(next);
                                           setHcArgs({});
+                                          setHcIdentityField("");
+                                          clearKeyCheck();
+                                        }}
+                                        identityField={hcIdentityField}
+                                        onIdentityFieldChange={(path) => {
+                                          setHcIdentityField(path);
                                           clearKeyCheck();
                                         }}
                                         args={hcArgs}

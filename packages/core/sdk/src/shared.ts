@@ -114,6 +114,7 @@ export {
   HealthCheckCandidate,
   HealthCheckCandidateParameter,
   classifyHttpStatus,
+  extractIdentity,
   compareHealthCheckCandidates,
 } from "./health-check";
 
