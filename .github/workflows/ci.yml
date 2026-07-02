@@ -75,11 +75,30 @@ jobs:
       - run: bun run test
 
   e2e:
-    name: E2E (${{ matrix.target }})
+    name: E2E (${{ matrix.target }}${{ matrix['shard-name'] && format(' {0}', matrix['shard-name']) || '' }})
     strategy:
       fail-fast: false
       matrix:
-        target: [cloud, selfhost]
+        include:
+          # Cloud is SHARDED: each shard boots its own fresh dev stack. The
+          # cloud dev server degrades under a full-suite run's sustained load
+          # (the SSE/OTel memory growth being instrumented on main) — sign-in
+          # starts refusing connections partway through and everything after
+          # fails with fetch errors. Short shards on fresh boots stay under
+          # that threshold; re-merge into one job once the leak is fixed.
+          - target: cloud
+            shard: 1/4
+            shard-name: 1of4
+          - target: cloud
+            shard: 2/4
+            shard-name: 2of4
+          - target: cloud
+            shard: 3/4
+            shard-name: 3of4
+          - target: cloud
+            shard: 4/4
+            shard-name: 4of4
+          - target: selfhost
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -106,7 +125,7 @@ jobs:
       # The globalsetup boots the target's own dev server (ports are claimed
       # per checkout, so this is hermetic) and tears it down after the run.
       - name: Run ${{ matrix.target }} scenarios
-        run: bunx vitest run --project ${{ matrix.target }}
+        run: bunx vitest run --project ${{ matrix.target }} ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         working-directory: e2e
 
       # Failed runs keep their trace.zip / session.mp4 / step screenshots in
@@ -115,7 +134,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-runs-${{ matrix.target }}
+          name: e2e-runs-${{ matrix.target }}${{ matrix['shard-name'] && format('-{0}', matrix['shard-name']) || '' }}
           path: e2e/runs/
           retention-days: 7
 
