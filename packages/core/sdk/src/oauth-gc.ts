@@ -17,10 +17,16 @@
 //      to the registrable origin of `token_url` so the per-AS reuse lookup can
 //      find it and mint no new duplicate.
 //
-// The DCR classification here is the single source of truth: `oauth-service`'s
-// `parseOAuthClientOrigin` calls `isDcrClassifiedRow`, and the SQL migrations
-// mirror the exact same predicate. Keep the three in lockstep.
+// The predicates here are the SINGLE source of truth, imported (never
+// re-encoded) by every call site: `oauth-service`'s `parseOAuthClientOrigin`
+// calls `isDcrClassifiedRow` for the runtime reuse lookup, and BOTH GC
+// migrations (the local libSQL boot migration and the cloud code migration)
+// import `classifyOAuthClientGc` / `registrableOriginOfUrl` and decide in
+// process rather than rewriting the logic as SQL. There is no parallel SQL copy
+// to drift: changing a predicate here changes all three call sites at once.
 // ---------------------------------------------------------------------------
+
+import { getDomain } from "tldts";
 
 /** Parse a string into a URL, or null when it is not a valid absolute URL. */
 export const parseUrl = (value: string): URL | null => {
@@ -44,37 +50,16 @@ export const canonicalIssuerUrl = (value: string | null | undefined): string | n
 export const hostOfUrl = (value: string): string | null =>
   parseUrl(value)?.host.toLowerCase() ?? null;
 
-// Two-label public suffixes we must not collapse past (so `api.foo.co.uk`
-// registers under `foo.co.uk`, not `co.uk`). A pragmatic short list — the full
-// PSL is overkill for keying DCR clients.
-const commonTwoPartPublicSuffixes = new Set([
-  "co.uk",
-  "org.uk",
-  "ac.uk",
-  "gov.uk",
-  "com.au",
-  "net.au",
-  "org.au",
-  "co.jp",
-  "co.nz",
-  "com.br",
-  "com.mx",
-  "com.sg",
-]);
-
-/** The registrable domain of a hostname (eTLD+1), with the pragmatic two-part
- *  public-suffix carve-out. `localhost`, bare IPv4, and anything with a port
- *  are returned unchanged. */
+/** The registrable domain of a hostname (eTLD+1), backed by the full Public
+ *  Suffix List via `tldts` (so `api.foo.co.uk` → `foo.co.uk`, `x.co.in` →
+ *  `x.co.in`, etc., not a hardcoded suffix subset). `tldts.getDomain` returns
+ *  null for hosts with no registrable domain (`localhost`, bare IPv4/IPv6,
+ *  single-label hosts); those fall back to the raw lowercase hostname so
+ *  local-dev token hosts still key on their exact host. This mirrors how
+ *  `packages/react/src/plugins/use-effective-oauth-client.tsx` uses tldts. */
 export const registrableHostname = (hostname: string): string => {
   const host = hostname.toLowerCase();
-  if (host === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
-    return host;
-  }
-  const labels = host.split(".").filter(Boolean);
-  if (labels.length <= 2) return host;
-  const suffix = labels.slice(-2).join(".");
-  const labelCount = commonTwoPartPublicSuffixes.has(suffix) ? 3 : 2;
-  return labels.slice(-labelCount).join(".");
+  return getDomain(host) ?? host;
 };
 
 /** The registrable host (incl. port when the hostname is registered verbatim)

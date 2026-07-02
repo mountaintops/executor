@@ -183,8 +183,19 @@ describe("registrableOriginOfUrl (issuer backfill value)", () => {
     );
   });
 
-  test("respects the two-part public suffix carve-out", () => {
+  test("respects multi-label public suffixes via the full PSL", () => {
     expect(registrableOriginOfUrl("https://api.foo.co.uk/token")).toBe("https://foo.co.uk");
+    // Suffixes the old hardcoded 12-entry list missed: .co.in, .com.cn, .co.za.
+    // `accounts.example.co.in` must collapse to `example.co.in`, not `co.in`.
+    expect(registrableOriginOfUrl("https://accounts.example.co.in/token")).toBe(
+      "https://example.co.in",
+    );
+    expect(registrableOriginOfUrl("https://oauth.example.com.cn/token")).toBe(
+      "https://example.com.cn",
+    );
+    expect(registrableOriginOfUrl("https://login.example.co.za/token")).toBe(
+      "https://example.co.za",
+    );
   });
 
   test("preserves scheme and port for loopback / dev token hosts", () => {
