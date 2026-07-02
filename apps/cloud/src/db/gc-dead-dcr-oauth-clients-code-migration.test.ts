@@ -1,0 +1,159 @@
+/* oxlint-disable executor/no-error-constructor, executor/no-try-catch-or-throw -- test fake throws on an unexpected query to catch wiring drift */
+
+import { describe, expect, it } from "@effect/vitest";
+import { Effect } from "effect";
+
+import { gcDeadDcrOAuthClientsMigration } from "../../scripts/code-migrations/gc-dead-dcr-oauth-clients";
+import type { CodeMigrationContext, CodeMigrationSql } from "../../scripts/code-migrations/runner";
+
+// Cloud counterpart of the local libSQL GC migration test. A small in-memory
+// fake models the two SQL shapes the migration issues (the oauth_client SELECT,
+// the per-row connection COUNT, and the DELETE/UPDATE mutations) so the same
+// shared decision matrix is proven end-to-end over the Postgres wiring.
+
+interface OAuthClientRow {
+  readonly tenant: string;
+  readonly owner: string;
+  readonly slug: string;
+  readonly grant: string | null;
+  readonly resource: string | null;
+  readonly origin_kind: string | null;
+  readonly origin_issuer: string | null;
+  readonly token_url: string | null;
+}
+
+const makeFake = (input: {
+  rows: OAuthClientRow[];
+  /** connection count keyed by `${tenant}|${owner}|${slug}`. */
+  readonly references: Record<string, number>;
+}) => {
+  const key = (tenant: string, owner: string, slug: string) => `${tenant}|${owner}|${slug}`;
+  const deletes: string[] = [];
+  const updates: { slug: string; issuer: string }[] = [];
+
+  const sql: CodeMigrationSql = {
+    unsafe: (query: string, params?: readonly unknown[]) => {
+      const q = query.trim();
+      if (q.startsWith("SELECT") && q.includes("FROM oauth_client")) {
+        return Promise.resolve(input.rows as never);
+      }
+      if (q.startsWith("SELECT COUNT(*)") && q.includes("FROM connection")) {
+        const [tenant, owner, slug] = params as [string, string, string];
+        return Promise.resolve([
+          { count: input.references[key(tenant, owner, slug)] ?? 0 },
+        ] as never);
+      }
+      if (q.startsWith("DELETE FROM oauth_client")) {
+        const [tenant, owner, slug] = params as [string, string, string];
+        input.rows = input.rows.filter(
+          (r) => !(r.tenant === tenant && r.owner === owner && r.slug === slug),
+        );
+        deletes.push(slug);
+        return Promise.resolve([] as never);
+      }
+      if (q.startsWith("UPDATE oauth_client")) {
+        const [issuer, , , slug] = params as [string, string, string, string];
+        updates.push({ slug, issuer });
+        return Promise.resolve([] as never);
+      }
+      throw new Error(`unexpected query: ${q}`);
+    },
+  };
+
+  return { sql, deletes, updates, rowsRef: () => input.rows };
+};
+
+const row = (over: Partial<OAuthClientRow> & { readonly slug: string }): OAuthClientRow => ({
+  tenant: "t1",
+  owner: "org",
+  slug: over.slug,
+  grant: over.grant ?? "authorization_code",
+  resource: over.resource ?? null,
+  origin_kind: over.origin_kind ?? null,
+  origin_issuer: over.origin_issuer ?? null,
+  token_url: over.token_url ?? "https://oauth.cloudflare.com/token",
+});
+
+const runMigration = (
+  fake: ReturnType<typeof makeFake>,
+  dryRun: boolean,
+): Promise<{ readonly summary: string }> => {
+  const context: CodeMigrationContext = { sql: fake.sql, dryRun, log: () => {} };
+  return gcDeadDcrOAuthClientsMigration.run(context);
+};
+
+describe("gcDeadDcrOAuthClientsMigration", () => {
+  it.effect("deletes orphaned DCR, keeps manual + referenced, backfills survivors", () =>
+    Effect.promise(async () => {
+      const fake = makeFake({
+        rows: [
+          row({
+            slug: "dcr-cloudflare-com",
+            resource: "https://cf.example/mcp",
+            origin_kind: "dynamic_client_registration",
+            origin_issuer: "https://cloudflare.com",
+          }),
+          row({ slug: "cloudflare-mcp-2", resource: "https://cf.example/mcp" }),
+          row({ slug: "cloudflare-mcp", resource: "https://cf.example/mcp" }),
+          row({
+            slug: "my-github-app",
+            token_url: "https://github.com/login/oauth/access_token",
+            origin_kind: "manual",
+          }),
+        ],
+        references: { "t1|org|cloudflare-mcp": 1 },
+      });
+
+      const result = await runMigration(fake, false);
+
+      expect(fake.deletes.sort()).toEqual(["cloudflare-mcp-2", "dcr-cloudflare-com"]);
+      expect(fake.updates).toEqual([{ slug: "cloudflare-mcp", issuer: "https://cloudflare.com" }]);
+      expect(
+        fake
+          .rowsRef()
+          .map((r) => r.slug)
+          .sort(),
+      ).toEqual(["cloudflare-mcp", "my-github-app"]);
+      expect(result.summary).toContain("deleted 2 orphaned DCR client(s)");
+      expect(result.summary).toContain("backfilled 1 of 1 referenced DCR client(s)");
+    }),
+  );
+
+  it.effect("dry run mutates nothing but reports the plan", () =>
+    Effect.promise(async () => {
+      const fake = makeFake({
+        rows: [
+          row({ slug: "cloudflare-mcp-2", resource: "https://cf.example/mcp" }),
+          row({ slug: "cloudflare-mcp", resource: "https://cf.example/mcp" }),
+        ],
+        references: { "t1|org|cloudflare-mcp": 1 },
+      });
+
+      const result = await runMigration(fake, true);
+
+      expect(fake.deletes).toEqual([]);
+      expect(fake.updates).toEqual([]);
+      expect(fake.rowsRef()).toHaveLength(2);
+      expect(result.summary).toContain("would delete 1 orphaned DCR client(s)");
+      expect(result.summary).toContain("would backfill 1 of 1 referenced DCR client(s)");
+    }),
+  );
+
+  it.effect("never deletes a manual app even when orphaned and MCP-shaped", () =>
+    Effect.promise(async () => {
+      const fake = makeFake({
+        rows: [
+          row({
+            slug: "cloudflare-mcp",
+            resource: "https://cf.example/mcp",
+            origin_kind: "manual",
+          }),
+        ],
+        references: {},
+      });
+      await runMigration(fake, false);
+      expect(fake.deletes).toEqual([]);
+      expect(fake.rowsRef().map((r) => r.slug)).toEqual(["cloudflare-mcp"]);
+    }),
+  );
+});
