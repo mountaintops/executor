@@ -81,23 +81,20 @@ jobs:
       matrix:
         include:
           # Cloud is SHARDED: each shard boots its own fresh dev stack. The
-          # cloud dev server degrades under a full-suite run's sustained load
-          # (the SSE/OTel memory growth being instrumented on main) — sign-in
-          # starts refusing connections partway through and everything after
-          # fails with fetch errors. Short shards on fresh boots stay under
-          # that threshold; re-merge into one job once the leak is fixed.
-          - target: cloud
-            shard: 1/4
-            shard-name: 1of4
-          - target: cloud
-            shard: 2/4
-            shard-name: 2of4
-          - target: cloud
-            shard: 3/4
-            shard-name: 3of4
-          - target: cloud
-            shard: 4/4
-            shard-name: 4of4
+          # cloud dev server degrades after a few minutes of sustained suite
+          # load on 2-core runners (the SSE/OTel memory growth being
+          # instrumented on main) — requests start failing partway through and
+          # everything after dies with connection errors. Short shards on
+          # fresh boots stay under that threshold; re-merge into fewer jobs
+          # once the degradation is fixed.
+          - { target: cloud, shard: 1/8, shard-name: 1of8 }
+          - { target: cloud, shard: 2/8, shard-name: 2of8 }
+          - { target: cloud, shard: 3/8, shard-name: 3of8 }
+          - { target: cloud, shard: 4/8, shard-name: 4of8 }
+          - { target: cloud, shard: 5/8, shard-name: 5of8 }
+          - { target: cloud, shard: 6/8, shard-name: 6of8 }
+          - { target: cloud, shard: 7/8, shard-name: 7of8 }
+          - { target: cloud, shard: 8/8, shard-name: 8of8 }
           - target: selfhost
     runs-on: ubuntu-latest
     timeout-minutes: 30
