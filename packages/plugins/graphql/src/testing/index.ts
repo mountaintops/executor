@@ -69,6 +69,7 @@ export const waitForRecordedRequests = (
       () => message,
     ),
     Effect.retry(Schedule.both(Schedule.spaced("50 millis"), Schedule.recurs(100))),
+    Effect.orDie,
   );
 
 class GraphqlTestServerAddressError extends Data.TaggedError("GraphqlTestServerAddressError")<{
