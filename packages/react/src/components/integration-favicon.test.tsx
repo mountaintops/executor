@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  integrationFaviconFallbackUrl,
   integrationFaviconSrc,
   integrationFaviconUrl,
   integrationInferredUrl,
@@ -9,8 +10,14 @@ import {
 } from "./integration-favicon";
 
 describe("IntegrationFavicon", () => {
-  it("uses the favicon service that handles provider-specific icon locations", () => {
+  it("uses the integrations.sh logo proxy as the primary favicon source", () => {
     expect(integrationFaviconUrl("https://api.github.com/graphql", 20)).toBe(
+      "https://integrations.sh/logo/github.com?sz=40",
+    );
+  });
+
+  it("falls back to the Google favicon service", () => {
+    expect(integrationFaviconFallbackUrl("https://api.github.com/graphql", 20)).toBe(
       "https://www.google.com/s2/favicons?domain=github.com&sz=40",
     );
   });
@@ -18,10 +25,20 @@ describe("IntegrationFavicon", () => {
   it("does not request favicons for local URLs", () => {
     expect(integrationFaviconUrl("http://localhost:3000/private", 20)).toBeNull();
     expect(integrationFaviconUrl("http://127.0.0.1:3000/private", 20)).toBeNull();
+    expect(integrationFaviconFallbackUrl("http://localhost:3000/private", 20)).toBeNull();
   });
 
-  it("sends only the registrable domain to the favicon service", () => {
+  it("sends only the registrable domain to the logo proxy", () => {
     expect(integrationFaviconUrl("https://api.github.com/private", 20)).toBe(
+      "https://integrations.sh/logo/github.com?sz=40",
+    );
+  });
+
+  it("walks the cascade from the proxy to the favicon service on failure", () => {
+    const url = "https://api.github.com/graphql";
+    const primary = integrationFaviconSrc({ url, size: 20 });
+    expect(primary).toBe("https://integrations.sh/logo/github.com?sz=40");
+    expect(integrationFaviconSrc({ url, size: 20, failedSrcs: [primary ?? ""] })).toBe(
       "https://www.google.com/s2/favicons?domain=github.com&sz=40",
     );
   });
