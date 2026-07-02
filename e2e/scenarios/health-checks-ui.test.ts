@@ -271,7 +271,9 @@ scenario(
             });
 
             await step("Paste the key and pick an operation to test it against", async () => {
-              await dialog.getByPlaceholder("paste the value / token").fill(goodToken);
+              // The bearer template renders the merged "Bearer <token>" field: the
+              // affix is fixed, the input itself has the bare "token" placeholder.
+              await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
               // No check configured ⇒ the inline operation picker is shown. CLICK
               // the option (the real mouse path): the popup is portaled out of the
               // dialog, so this proves clicking it neither fails nor dismisses the
@@ -754,7 +756,9 @@ scenario(
             });
 
             await step("A valid key checks healthy and names the connection", async () => {
-              await dialog.getByPlaceholder("paste the value / token").fill(goodToken);
+              // The bearer template renders the merged "Bearer <token>" field: the
+              // affix is fixed, the input itself has the bare "token" placeholder.
+              await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
               await dialog.getByRole("button", { name: "Check the key works" }).click();
               await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
               await page.waitForFunction(
