@@ -333,7 +333,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "Linear MCP",
-        existingSlugs: [],
         redirectUri: "https://localhost:5394/api/oauth/callback",
         integration: TEST_INTEGRATION,
       },
@@ -384,7 +383,6 @@ describe("runDcrConnect", () => {
         resourceFallback: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         declaredScopes: ["declared.scope"],
         integration: TEST_INTEGRATION,
       },
@@ -421,7 +419,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://auth.example.com/token",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -453,7 +450,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -488,7 +484,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -518,7 +513,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
@@ -557,7 +551,6 @@ describe("runDcrConnect", () => {
         discoveryUrl: "https://mcp.example.com/mcp",
         owner: "user",
         integrationName: "App",
-        existingSlugs: [],
         integration: TEST_INTEGRATION,
       },
     );
