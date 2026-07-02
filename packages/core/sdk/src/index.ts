@@ -119,6 +119,7 @@ export {
   extractResponseFields,
   identityPathTier,
   pickIdentitySample,
+  rankResponseSample,
 } from "./health-check";
 
 // Core schema.

@@ -3,6 +3,7 @@ import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import {
+  rankResponseSample,
   type AuthTemplateSlug,
   type HealthCheckCandidate,
   type HealthCheckResult,
@@ -362,7 +363,7 @@ function HealthCheckLivePreviewBlock(props: {
             <div className="space-y-1">
               <p className="text-xs font-medium text-muted-foreground">Response</p>
               <dl className="space-y-0.5 rounded border border-border/50 bg-background/60 p-2 font-mono text-[11px]">
-                {result.responseSample.map((row) => (
+                {rankResponseSample(result.responseSample).map((row) => (
                   <div key={row.path} className="flex gap-2">
                     <dt className="shrink-0 text-muted-foreground">{row.path}</dt>
                     <dd className="min-w-0 truncate text-foreground">{row.value}</dd>

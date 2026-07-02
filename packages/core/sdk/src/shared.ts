@@ -119,6 +119,7 @@ export {
   compareHealthCheckCandidatesByIdentity,
   identityPathTier,
   pickIdentitySample,
+  rankResponseSample,
 } from "./health-check";
 
 // OAuth wire contracts (data + tagged errors; the flow impl is server-only).

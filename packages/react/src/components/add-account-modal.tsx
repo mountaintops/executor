@@ -9,6 +9,7 @@ import {
   ProviderItemId,
   ProviderKey,
   identityPathTier,
+  rankResponseSample,
   type HealthCheckCandidate,
   type HealthCheckResult,
   type HealthCheckSpec,
@@ -957,15 +958,7 @@ function RequestCheckPanel(props: {
   // interesting fields rank first).
   const { sample, hiddenCount } = useMemo(() => {
     const full = result?.status === "healthy" ? (result.responseSample ?? []) : [];
-    const ranked = [...full].sort((a, b) => {
-      const tierA = identityPathTier(a.path);
-      const tierB = identityPathTier(b.path);
-      if (tierA === tierB) return 0;
-      if (tierA === -1) return 1;
-      if (tierB === -1) return -1;
-      return tierA - tierB;
-    });
-    const capped = ranked.slice(0, 8);
+    const capped = rankResponseSample(full).slice(0, 8);
     return { sample: capped, hiddenCount: full.length - capped.length };
   }, [result]);
   const method = configuredOperation ? "GET" : (selected?.method ?? "get").toUpperCase();
@@ -1332,11 +1325,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const nameOptions = useMemo<FreeformComboboxOption[]>(() => {
     const sample =
       validationResult?.status === "healthy" ? (validationResult.responseSample ?? []) : [];
-    return sample
-      .map((field) => ({ field, tier: identityPathTier(field.path) }))
-      .filter((entry) => entry.tier !== -1)
-      .sort((a, b) => a.tier - b.tier)
-      .map(({ field }) => ({
+    return rankResponseSample(sample)
+      .filter((field) => identityPathTier(field.path) !== -1)
+      .map((field) => ({
         value: field.value,
         label: field.value,
         description: field.path,

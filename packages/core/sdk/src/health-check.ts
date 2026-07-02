@@ -442,6 +442,25 @@ export const identityPathTier = (path: string): number => {
   return IDENTITY_KEY_TIERS.findIndex((keys) => keys.includes(leaf));
 };
 
+/** Order sample rows identity-first: rows whose leaf key names the account
+ *  (email > login > name > id) come before the rest, which keep response
+ *  order. Every surface that renders a probe response uses this, so the
+ *  interesting fields always lead. Stable within tiers. */
+export const rankResponseSample = (
+  sample: readonly HealthCheckResponseSample[],
+): HealthCheckResponseSample[] =>
+  sample
+    .map((row, index) => ({ row, index, tier: identityPathTier(row.path) }))
+    .sort((a, b) => {
+      if (a.tier !== b.tier) {
+        if (a.tier === -1) return 1;
+        if (b.tier === -1) return -1;
+        return a.tier - b.tier;
+      }
+      return a.index - b.index;
+    })
+    .map(({ row }) => row);
+
 /** Pick the sample row that most likely identifies the account. The tiebreak
  *  within a tier is path depth (shallower = more canonical), then sample
  *  order (which follows response order). */

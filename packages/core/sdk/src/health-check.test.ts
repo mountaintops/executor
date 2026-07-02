@@ -4,7 +4,7 @@
 // shallower paths win within a tier; nothing plausible ⇒ undefined.
 import { describe, expect, it } from "@effect/vitest";
 
-import { pickIdentitySample } from "./health-check";
+import { pickIdentitySample, rankResponseSample } from "./health-check";
 
 const row = (path: string, value: string) => ({ path, value });
 
@@ -51,5 +51,29 @@ describe("pickIdentitySample", () => {
     expect(pickIdentitySample([row("email", "  ")])).toBeUndefined();
     expect(pickIdentitySample([row("createdAt", "2024-01-01")])).toBeUndefined();
     expect(pickIdentitySample([])).toBeUndefined();
+  });
+});
+
+describe("rankResponseSample", () => {
+  it("puts identity fields first (email before login), rest in response order", () => {
+    const ranked = rankResponseSample([
+      row("createdAt", "2024-01-01"),
+      row("login", "alice"),
+      row("plan", "pro"),
+      row("email", "alice@example.com"),
+    ]);
+    expect(ranked.map((r) => r.path)).toEqual(["email", "login", "createdAt", "plan"]);
+  });
+
+  it("is stable within a tier and for non-identity rows", () => {
+    const ranked = rankResponseSample([
+      row("a", "1"),
+      row("b", "2"),
+      row("user.email", "x@y.z"),
+      row("account.email", "a@b.c"),
+    ]);
+    // Both emails are tier 0; original order preserved between them, and the
+    // non-identity rows keep their relative order after.
+    expect(ranked.map((r) => r.path)).toEqual(["user.email", "account.email", "a", "b"]);
   });
 });
