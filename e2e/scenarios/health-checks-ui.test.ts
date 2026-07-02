@@ -776,3 +776,87 @@ scenario(
     }),
   ),
 );
+
+// ===========================================================================
+// At-a-glance expiry (persisted verdicts): the connections list renders the
+// LAST PERSISTED health-check result on a fresh page load — no per-row
+// clicking. This is the customer ask verbatim ("quickly see if one of these
+// has expired"): the verdict from an earlier probe (here via the API, as a
+// background sweep would run it) survives to a brand-new browser page.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · the connections list shows a persisted expired verdict at a glance",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      const server = yield* serveMutableIdentityApi(goodToken);
+      const slug = newSlug("hc-ui-glance");
+      const name = ConnectionName.make("main");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+          const operation = yield* getMeOperation(client, slug);
+          yield* client.integrations.healthCheckSet({
+            params: { slug },
+            payload: { spec: { operation, identityField: "email" } },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: goodToken,
+            },
+          });
+
+          // Probe while healthy, then revoke and probe again — entirely through
+          // the API, before any browser opens. Each run persists its verdict.
+          const healthy = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+          });
+          expect(healthy.status, "the key starts healthy").toBe("healthy");
+          server.revoke();
+          const expired = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+          });
+          expect(expired.status, "the revoked key probes expired").toBe("expired");
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            const connections = page.locator("section").filter({
+              has: page.getByRole("heading", { level: 3, name: "Connections" }),
+            });
+
+            await step(
+              "A fresh page load shows the expired connection with NO clicking",
+              async () => {
+                await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+                // The persisted verdict drives the row: red dot + Expired badge
+                // are already there on first paint of the list.
+                await connections.getByLabel("Status: Expired").waitFor({ timeout: 30_000 });
+                await connections.getByText("Expired", { exact: true }).waitFor();
+                // An expired verdict carries no identity; the row falls back to
+                // the connection name.
+                await connections.getByText("main", { exact: true }).waitFor();
+              },
+            );
+          });
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);

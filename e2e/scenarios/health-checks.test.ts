@@ -463,3 +463,144 @@ scenario(
     }),
   ),
 );
+
+scenario(
+  "Health checks · a mutating operation is refused as a probe (hard block, not just ranking)",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const goodToken = `gk_${randomBytes(8).toString("hex")}`;
+      const server = yield* serveIdentityApi(goodToken);
+      const slug = newSlug("hc-destructive");
+      const name = ConnectionName.make("main");
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+
+          // Deliberately declare the DESTRUCTIVE POST as the health check (the
+          // editor warns but allows saving; the runtime is the enforcement).
+          const candidates = yield* client.integrations.healthCheckCandidates({ params: { slug } });
+          const post = candidates.find((candidate) => candidate.method === "post");
+          if (!post) return yield* Effect.die("identity spec exposed no POST candidate");
+          yield* client.integrations.healthCheckSet({
+            params: { slug },
+            payload: { spec: { operation: post.operation } },
+          });
+
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: goodToken,
+            },
+          });
+
+          // A health check runs unattended and repeatedly with no approval
+          // gate, so the probe REFUSES to execute a mutating operation: the
+          // result is unknown-with-reason and the upstream never sees a POST.
+          const result = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+          });
+          expect(result.status, "a mutating probe refuses to run").toBe("unknown");
+          expect(result.detail ?? "", "the refusal names the problem").toContain("mutating");
+          expect(result.httpStatus, "no request reached the upstream").toBeUndefined();
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);
+
+scenario(
+  "Health checks · a probe's error detail never echoes the credential back",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(api, identity);
+      const secret = `sk_super_secret_${randomBytes(8).toString("hex")}`;
+      const slug = newSlug("hc-scrub");
+      const name = ConnectionName.make("main");
+
+      // A hostile-ish upstream: 500s on /me and ECHOES the Authorization header
+      // back in the error body — the shape that used to leak the key into the
+      // probe's diagnostic detail.
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<{ readonly url: string; readonly close: () => void }>((resume) => {
+          const httpServer = createServer((request, response) => {
+            response.writeHead(500, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({
+                message: `internal error while handling authorization: ${request.headers["authorization"] ?? "(none)"}`,
+              }),
+            );
+          });
+          httpServer.listen(0, "127.0.0.1", () => {
+            const address = httpServer.address();
+            const port = typeof address === "object" && address ? address.port : 0;
+            resume(
+              Effect.succeed({
+                url: `http://127.0.0.1:${port}`,
+                close: () => {
+                  httpServer.close();
+                  httpServer.closeAllConnections();
+                },
+              }),
+            );
+          });
+        }),
+        (s) => Effect.sync(s.close),
+      );
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* registerIdentityIntegration(client, slug, server.url);
+          const operation = yield* getMeOperation(client, slug);
+          yield* client.integrations.healthCheckSet({
+            params: { slug },
+            payload: { spec: { operation } },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: TEMPLATE,
+              value: secret,
+            },
+          });
+
+          const result = yield* client.connections.checkHealth({
+            params: { owner: "org", integration: slug, name },
+          });
+          expect(result.status, "a 500 upstream reads degraded").toBe("degraded");
+          expect(result.httpStatus, "the probe saw the 500").toBe(500);
+          // The upstream echoed the bearer token; the detail must not.
+          expect(result.detail ?? "", "the diagnostic survives").toContain("internal error");
+          expect(result.detail ?? "", "the credential is scrubbed").not.toContain(secret);
+          expect(result.detail ?? "", "the redaction marker stands in").toContain("[redacted]");
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+        }),
+      );
+    }),
+  ),
+);
