@@ -170,10 +170,15 @@ export const extractIdentity = (data: unknown, dotpath?: string): string | undef
 
 /** The best identity tier among a candidate's response fields, or -1 when its
  *  schema exposes nothing account-naming. Feeds the identity-aware ranking:
- *  a call that returns an email is a better probe than a generic list. */
+ *  a call that returns an email is a better probe than a generic list.
+ *
+ *  Only SINGULAR paths count: an identity field under an array segment
+ *  (`aliases.0.creator.email`) names people in a collection, not the caller,
+ *  and must not out-rank the actual whoami call (`user.email`). */
 export const candidateIdentityTier = (candidate: HealthCheckCandidate): number => {
   let best = -1;
   for (const field of candidate.responseFields ?? []) {
+    if (field.path.split(".").some((segment) => /^\d+$/.test(segment))) continue;
     const tier = identityPathTier(field.path);
     if (tier === -1) continue;
     if (best === -1 || tier < best) best = tier;

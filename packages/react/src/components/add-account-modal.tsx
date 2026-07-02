@@ -1970,8 +1970,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    // Non-modal for the same reason as the health-check editor sheet: a modal
+    // dialog's react-remove-scroll locks the wheel to the dialog subtree, so
+    // the operation combobox's PORTALED popup (and the modal body while it is
+    // open) cannot scroll. The overlay still dims and outside-click still
+    // closes; the portaled-popup guard in DialogContent keeps option clicks
+    // from dismissing.
+    <Dialog open={open} onOpenChange={onOpenChange} modal={false}>
       <DialogContent
+        forceOverlay
         className={cn(
           "max-h-[85vh] overflow-x-hidden overflow-y-auto",
           (addingMethod && createCustomMethod) || oauthRegistering || oauthEditing

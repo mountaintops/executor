@@ -38,6 +38,11 @@ type Client = HttpApiClient.ForApi<typeof api>;
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const IDENTITY = "alice@example.com";
 
+/** Scroll the dialog content back to the top (steps assert deltas). */
+const content_scrollTop_reset = async (page: Page) => {
+  await page.locator('[data-slot="dialog-content"]').evaluate((el) => el.scrollTo({ top: 0 }));
+};
+
 const newSlug = (prefix: string) =>
   IntegrationSlug.make(`${prefix}-${randomBytes(4).toString("hex")}`);
 
@@ -957,12 +962,48 @@ scenario(
           yield* browser.session(identity, async ({ page, step }) => {
             const dialog = page.getByRole("dialog", { name: /Add connection/ });
 
-            await step("Open the modal in a short viewport and probe", async () => {
-              await page.setViewportSize({ width: 1280, height: 560 });
+            await step("Open the modal in a short viewport", async () => {
+              // Short enough that step 1 already overflows BEFORE the probe,
+              // while the operation combobox still renders (a healthy probe
+              // saves the check and turns the request line static).
+              await page.setViewportSize({ width: 1280, height: 420 });
               await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
               await page.getByRole("button", { name: "Add connection", exact: true }).click();
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
               await page.keyboard.type(goodToken);
+            });
+
+            await step("The modal wheel-scrolls even with the operation popup open", async () => {
+              // The dialog is non-modal precisely so react-remove-scroll can't
+              // trap the wheel; opening the portaled combobox popup must not
+              // re-lock it.
+              const content = page.locator('[data-slot="dialog-content"]');
+              const overflowing = await content.evaluate(
+                (el) => el.scrollHeight > el.clientHeight + 20,
+              );
+              expect(overflowing, "step 1 overflows this viewport").toBe(true);
+              await page.locator("#hc-pick-operation").click();
+              await page.getByRole("option").first().waitFor();
+              const before = await content.evaluate((el) => el.scrollTop);
+              await content.hover();
+              await page.mouse.wheel(0, 200);
+              await page.waitForFunction(
+                (start) => {
+                  const el = document.querySelector('[data-slot="dialog-content"]');
+                  return el != null && el.scrollTop !== start;
+                },
+                before,
+                { timeout: 5_000 },
+              );
+              // Close the popup by tabbing focus out of the combobox (Escape
+              // would close the whole dialog, and in this short viewport the
+              // popup covers everything clickable).
+              await page.keyboard.press("Tab");
+              await page.getByRole("option").first().waitFor({ state: "hidden" });
+            });
+
+            await step("Probe: the response makes the overflow worse", async () => {
+              await content_scrollTop_reset(page);
               await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
             });

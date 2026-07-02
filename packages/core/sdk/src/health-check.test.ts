@@ -4,7 +4,12 @@
 // shallower paths win within a tier; nothing plausible ⇒ undefined.
 import { describe, expect, it } from "@effect/vitest";
 
-import { pickIdentitySample, rankResponseSample } from "./health-check";
+import {
+  candidateIdentityTier,
+  compareHealthCheckCandidatesByIdentity,
+  pickIdentitySample,
+  rankResponseSample,
+} from "./health-check";
 
 const row = (path: string, value: string) => ({ path, value });
 
@@ -75,5 +80,37 @@ describe("rankResponseSample", () => {
     // Both emails are tier 0; original order preserved between them, and the
     // non-identity rows keep their relative order after.
     expect(ranked.map((r) => r.path)).toEqual(["user.email", "account.email", "a", "b"]);
+  });
+});
+
+describe("candidateIdentityTier", () => {
+  it("ignores identity keys under array segments (a collection's members, not the caller)", () => {
+    const listAliases = {
+      operation: "aliases.listAliases",
+      method: "get",
+      requiredArgCount: 0,
+      destructive: false,
+      responseFields: [
+        { path: "aliases.0.creator.email", type: "string" },
+        { path: "aliases.0.uid", type: "string" },
+        { path: "pagination.count", type: "number" },
+      ],
+    };
+    const getAuthUser = {
+      operation: "user.getAuthUser",
+      method: "get",
+      requiredArgCount: 0,
+      destructive: false,
+      responseFields: [
+        { path: "user.email", type: "string" },
+        { path: "user.id", type: "string" },
+      ],
+    };
+    expect(candidateIdentityTier(listAliases), "array-nested email does not count").toBe(-1);
+    expect(candidateIdentityTier(getAuthUser), "singular email counts").toBe(0);
+    expect(
+      compareHealthCheckCandidatesByIdentity(getAuthUser, listAliases),
+      "the whoami call ranks ahead of the list",
+    ).toBeLessThan(0);
   });
 });

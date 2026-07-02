@@ -48,13 +48,22 @@ function DialogContent({
   children,
   showCloseButton = true,
   onInteractOutside,
+  forceOverlay = false,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
+  /** Pair with `<Dialog modal={false}>`: Radix renders no overlay in non-modal
+   *  mode, so this renders a plain dim layer instead. It still eats outside
+   *  clicks (which dismiss via onInteractOutside), so the dialog keeps its
+   *  modal look while the wheel stays free for portaled popups. */
+  forceOverlay?: boolean;
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
+      {forceOverlay ? (
+        <div aria-hidden data-slot="dialog-overlay" className="fixed inset-0 z-50 bg-black/50" />
+      ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
         onInteractOutside={(event) => {
