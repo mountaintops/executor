@@ -115,6 +115,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
           const client = yield* executor.oauth.registerDynamicClient({
             owner: payload.owner,
             slug: payload.slug,
+            issuer: payload.issuer ?? null,
             registrationEndpoint: payload.registrationEndpoint,
             authorizationUrl: payload.authorizationUrl,
             tokenUrl: payload.tokenUrl,

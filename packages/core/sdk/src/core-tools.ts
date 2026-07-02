@@ -269,6 +269,7 @@ const OAuthClientOutputRef = Schema.Struct({
 const OAuthRegisterDynamicInput = Schema.Struct({
   owner: OwnerSchema,
   slug: Schema.String,
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   registrationEndpoint: Schema.String,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
@@ -287,6 +288,7 @@ const OAuthProbeInput = Schema.Struct({
   url: Schema.String,
 });
 const OAuthProbeOutput = Schema.Struct({
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
@@ -748,6 +750,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
               ctx.oauth.registerDynamicClient({
                 owner: input.owner as Owner,
                 slug: OAuthClientSlug.make(input.slug),
+                issuer: input.issuer ?? null,
                 registrationEndpoint: input.registrationEndpoint,
                 authorizationUrl: input.authorizationUrl,
                 tokenUrl: input.tokenUrl,
@@ -789,6 +792,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           outputSchema: OAuthProbeOutputStd,
           execute: (input: typeof OAuthProbeInput.Type, { ctx }) =>
             Effect.map(ctx.oauth.probe({ url: input.url }), (result) => ({
+              issuer: result.issuer ?? null,
               authorizationUrl: result.authorizationUrl,
               tokenUrl: result.tokenUrl,
               resource: result.resource ?? null,

@@ -239,6 +239,108 @@ const clientOwnerFromPayload = (payload: unknown): Owner | null => {
 const parseGrant = (grant: unknown): OAuthGrant | null =>
   grant === "client_credentials" || grant === "authorization_code" ? grant : null;
 
+const parseUrl = (value: string): URL | null => {
+  if (!URL.canParse(value)) return null;
+  return new URL(value);
+};
+
+const canonicalIssuerUrl = (value: string | null | undefined): string | null => {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  const url = parseUrl(trimmed);
+  if (url === null) return null;
+  const path = url.pathname.replace(/\/+$/g, "");
+  return path.length > 0 ? `${url.origin}${path}` : url.origin;
+};
+
+const canonicalDcrIssuer = (
+  issuer: string | null | undefined,
+  registrationEndpoint: string,
+): string | null => {
+  const discovered = canonicalIssuerUrl(issuer);
+  if (discovered !== null) return discovered;
+  const endpoint = parseUrl(registrationEndpoint);
+  return endpoint === null ? null : endpoint.origin;
+};
+
+const issuerOrigin = (issuer: string): string | null => parseUrl(issuer)?.origin ?? null;
+
+const issuerIsOriginOnly = (issuer: string): boolean => issuerOrigin(issuer) === issuer;
+
+const dcrIssuerMatches = (rowIssuer: string, inputIssuer: string | null): boolean =>
+  inputIssuer !== null &&
+  (rowIssuer === inputIssuer ||
+    (issuerIsOriginOnly(inputIssuer) && issuerOrigin(rowIssuer) === inputIssuer));
+
+const hostOfUrl = (value: string): string | null => parseUrl(value)?.host.toLowerCase() ?? null;
+
+const commonTwoPartPublicSuffixes = new Set([
+  "co.uk",
+  "org.uk",
+  "ac.uk",
+  "gov.uk",
+  "com.au",
+  "net.au",
+  "org.au",
+  "co.jp",
+  "co.nz",
+  "com.br",
+  "com.mx",
+  "com.sg",
+]);
+
+const registrableHostname = (hostname: string): string => {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")) {
+    return host;
+  }
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length <= 2) return host;
+  const suffix = labels.slice(-2).join(".");
+  const labelCount = commonTwoPartPublicSuffixes.has(suffix) ? 3 : 2;
+  return labels.slice(-labelCount).join(".");
+};
+
+const registrableHostOfUrl = (value: string): string | null => {
+  const url = parseUrl(value);
+  if (url === null) return null;
+  const hostname = registrableHostname(url.hostname);
+  return hostname === url.hostname.toLowerCase() ? url.host.toLowerCase() : hostname;
+};
+
+const slugifyOAuthKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const shortStableHash = (value: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const dcrClientSlug = (
+  issuer: string | null,
+  resource: string | null,
+  fallback: OAuthClientSlug,
+): OAuthClientSlug => {
+  if (issuer === null) return fallback;
+  const issuerHost = hostOfUrl(issuer);
+  if (issuerHost === null) return fallback;
+  const base = `dcr-${slugifyOAuthKey(issuerHost) || "authorization-server"}`;
+  if (resource === null) return OAuthClientSlug.make(base);
+  const resourceUrl = parseUrl(resource);
+  const resourceSource =
+    resourceUrl === null ? resource : `${resourceUrl.host}${resourceUrl.pathname}`;
+  const resourcePart = slugifyOAuthKey(resourceSource).slice(0, 60) || "resource";
+  return OAuthClientSlug.make(`${base}-${resourcePart}-${shortStableHash(resource)}`.slice(0, 240));
+};
+
 const parseOAuthClientOrigin = (row: {
   readonly slug?: unknown;
   readonly grant?: unknown;
@@ -518,6 +620,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 ? null
                 : String(input.origin.integration)
               : null,
+          origin_issuer:
+            input.origin?.kind === "dynamic_client_registration"
+              ? (canonicalIssuerUrl(input.originIssuer) ?? null)
+              : null,
           created_at: now,
         }),
       );
@@ -578,10 +684,85 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       ? "none"
       : "client_secret_post";
 
+  type DcrReuseCandidate = {
+    readonly slug: OAuthClientSlug;
+    readonly resource: string | null;
+  };
+
+  const dcrCandidatesForIssuer = (
+    owner: Owner,
+    issuer: string | null,
+    tokenUrl: string,
+  ): Effect.Effect<readonly DcrReuseCandidate[], StorageFailure> =>
+    deps.fuma
+      .use("oauth_client.findMany", (db) =>
+        looseDb(db).findMany("oauth_client", {
+          where: (b: any) => b("owner", "=", owner),
+        }),
+      )
+      .pipe(
+        Effect.map((rows) => {
+          const inputTokenHost = registrableHostOfUrl(tokenUrl);
+          return rows.flatMap((row): readonly DcrReuseCandidate[] => {
+            if (parseOAuthClientOrigin(row).kind !== "dynamic_client_registration") return [];
+            const rowIssuer =
+              row.origin_issuer == null ? null : canonicalIssuerUrl(String(row.origin_issuer));
+            const issuerMatches =
+              rowIssuer !== null
+                ? dcrIssuerMatches(rowIssuer, issuer)
+                : inputTokenHost !== null &&
+                  registrableHostOfUrl(String(row.token_url)) === inputTokenHost;
+            if (!issuerMatches) return [];
+            return [
+              {
+                slug: OAuthClientSlug.make(String(row.slug)),
+                resource: row.resource == null ? null : String(row.resource),
+              },
+            ];
+          });
+        }),
+      );
+
+  const decideDcrClientReuse = (
+    input: RegisterDynamicClientInput,
+    issuer: string | null,
+  ): Effect.Effect<
+    {
+      readonly existingSlug: OAuthClientSlug | null;
+      readonly registrationSlug: OAuthClientSlug;
+    },
+    StorageFailure
+  > =>
+    Effect.gen(function* () {
+      const candidates = yield* dcrCandidatesForIssuer(input.owner, issuer, input.tokenUrl);
+      const resource = input.resource ?? null;
+      if (resource !== null) {
+        const matchingResource = candidates.find((client) => client.resource === resource);
+        if (matchingResource) {
+          return { existingSlug: matchingResource.slug, registrationSlug: matchingResource.slug };
+        }
+        const slug = dcrClientSlug(issuer, candidates.length > 0 ? resource : null, input.slug);
+        return {
+          existingSlug: null,
+          registrationSlug: slug,
+        };
+      }
+
+      const reusable = candidates.find((client) => client.resource === null) ?? candidates[0];
+      if (reusable) return { existingSlug: reusable.slug, registrationSlug: reusable.slug };
+      const slug = dcrClientSlug(issuer, null, input.slug);
+      return { existingSlug: null, registrationSlug: slug };
+    });
+
   const registerDynamicClient = (
     input: RegisterDynamicClientInput,
   ): Effect.Effect<OAuthClientSlug, OAuthRegisterDynamicError | StorageFailure> =>
     Effect.gen(function* () {
+      const issuer = canonicalDcrIssuer(input.issuer, input.registrationEndpoint);
+      const reuse = yield* decideDcrClientReuse(input, issuer);
+      if (reuse.existingSlug !== null) return reuse.existingSlug;
+
+      const slug = reuse.registrationSlug;
       const flowRedirectUri = input.redirectUri ?? redirectUri;
       // DCR registers our callback as the client's redirect_uri — fail loudly
       // if the executor has none rather than registering a localhost URL.
@@ -633,7 +814,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // stored client carries no scope set (the integration drives requests).
       yield* createClient({
         owner: input.owner,
-        slug: input.slug,
+        slug,
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         resource: input.resource ?? null,
@@ -644,8 +825,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           kind: "dynamic_client_registration",
           integration: input.originIntegration ?? null,
         },
+        originIssuer: issuer,
       });
-      return input.slug;
+      return slug;
     });
 
   // -----------------------------------------------------------------------
@@ -1158,6 +1340,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         });
       }
       return {
+        issuer: as.metadata.issuer,
         authorizationUrl: as.metadata.authorization_endpoint,
         tokenUrl: as.metadata.token_endpoint,
         resource: resource?.metadata.resource ?? null,

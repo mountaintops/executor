@@ -81,6 +81,7 @@ const CreateClientResponse = Schema.Struct({
 const RegisterDynamicPayload = Schema.Struct({
   owner: Owner,
   slug: OAuthClientSlug,
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   registrationEndpoint: Schema.String,
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
@@ -203,6 +204,7 @@ const ProbePayload = Schema.Struct({
 });
 
 const ProbeResponse = Schema.Struct({
+  issuer: Schema.optional(Schema.NullOr(Schema.String)),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),

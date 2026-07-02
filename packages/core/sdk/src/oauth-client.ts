@@ -72,6 +72,7 @@ export type OAuthClientOrigin =
 
 export type CreateOAuthClientInput = OAuthClient & {
   readonly origin?: OAuthClientOrigin;
+  readonly originIssuer?: string | null;
 };
 
 /** Metadata-only projection of a registered client for listing in the UI.
@@ -134,6 +135,8 @@ export interface OAuthProbeInput {
 }
 
 export interface OAuthProbeResult {
+  /** RFC 8414 authorization-server issuer. Used to key DCR clients per AS. */
+  readonly issuer?: string | null;
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   /** RFC 8707 resource indicator discovered from protected-resource metadata.
@@ -157,6 +160,8 @@ export interface OAuthProbeResult {
 export interface RegisterDynamicClientInput {
   readonly owner: Owner;
   readonly slug: OAuthClientSlug;
+  /** RFC 8414 authorization-server issuer, when discovered before DCR. */
+  readonly issuer?: string | null;
   /** RFC 7591 registration endpoint advertised by the authorization server. */
   readonly registrationEndpoint: string;
   readonly authorizationUrl: string;
