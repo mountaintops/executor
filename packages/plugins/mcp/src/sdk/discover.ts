@@ -27,10 +27,15 @@ export const discoverTools = (
     // Acquire connection
     const connection = yield* connector.pipe(
       Effect.mapError(
-        ({ message }) =>
+        (error) =>
           new McpToolDiscoveryError({
             stage: "connect",
-            message: `Failed connecting to MCP server: ${message}`,
+            message: `Failed connecting to MCP server: ${error.message}`,
+            // Preserve the handshake HTTP status (401/403 = auth wall) so the
+            // liveness health check can classify structurally.
+            ...(error._tag === "McpConnectionError" && error.httpStatus !== undefined
+              ? { httpStatus: error.httpStatus }
+              : {}),
           }),
       ),
     );
