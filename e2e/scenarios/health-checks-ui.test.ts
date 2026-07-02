@@ -237,7 +237,7 @@ const largeSpec = (baseUrl: string, title = "Big API"): string => {
 // ===========================================================================
 
 scenario(
-  "Health checks (UI) · one Validate click checks the key, defaults the identity, and saves the check",
+  "Health checks (UI) · pick mode teaches the check: choose the call, see the response, pick the identity",
   {},
   Effect.scoped(
     Effect.gen(function* () {
@@ -272,45 +272,42 @@ scenario(
               await page.getByRole("heading", { name: /Add connection/ }).waitFor();
             });
 
-            await step("Paste the key and Validate — that's the whole flow", async () => {
-              // The bearer template renders the merged "Bearer <token>" field: the
-              // affix is fixed, the input itself has the bare "token" placeholder.
-              await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
-              // ONE control, no pre-probe form, no caption: the probe operation
-              // and the identity field are both defaults the flow picks.
-              await dialog.getByRole("button", { name: "Validate", exact: true }).click();
+            await step("The key field has first focus; paste and check", async () => {
+              // The credential is the modal's first input now (the name is
+              // derived from it), so pasting starts immediately.
+              await page.keyboard.type(goodToken);
+              await dialog.getByRole("button", { name: "Check the key works" }).click();
             });
 
-            await step("The verdict line carries everything: status + identity", async () => {
-              // Healthy, with the auto-picked identity inline and a "change"
-              // escape hatch — the only post-validate UI.
-              await dialog.getByText(/Healthy · alice@example\.com/).waitFor({ timeout: 30_000 });
-              await dialog.getByRole("button", { name: "change", exact: true }).waitFor();
-              // The display name adopted the identity.
+            await step("Pick mode: choose the read-only call", async () => {
+              // No configured check, so the modal swaps into pick mode (the
+              // OAuth-register pattern): one focused view, one decision.
+              await page.getByRole("heading", { name: "Check the key works" }).waitFor();
+              await clickComboboxOption(page, "hc-pick-operation", "getMe");
+              await page.getByRole("button", { name: "Run it", exact: true }).click();
+              await page.getByText("Healthy", { exact: true }).waitFor({ timeout: 30_000 });
+            });
+
+            await step("The real response teaches the pick: click the identity", async () => {
+              await page.getByText("Pick the field that names this account").waitFor();
+              await page.getByRole("button", { name: /email\s+alice@example\.com/ }).click();
+              // Picking returns to the main modal with the name derived.
+              await page.getByRole("heading", { name: /Add connection/ }).waitFor();
               await page.waitForFunction(
                 () =>
                   (document.querySelector("#connection-name") as HTMLInputElement | null)?.value ===
                   "alice@example.com",
               );
             });
-
-            await step("change opens the correction list over the real response", async () => {
-              await dialog.getByRole("button", { name: "change", exact: true }).click();
-              await dialog.getByText("Label this connection by").waitFor();
-              await dialog.getByRole("button", { name: /login\s+alice/ }).click();
-              await dialog.getByText(/Healthy · alice$/).waitFor({ timeout: 30_000 });
-            });
           });
 
-          // One Validate click persisted the check with the auto-picked
-          // identity; the correction click re-pointed it.
+          // Pick mode persisted the chosen operation, and the identity click
+          // upgraded it.
           const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
-          expect(stored?.operation, "the auto-picked operation was saved as the health check").toBe(
+          expect(stored?.operation, "the picked operation was saved as the health check").toBe(
             getMe.operation,
           );
-          expect(stored?.identityField, "the correction re-pointed the identity field").toBe(
-            "login",
-          );
+          expect(stored?.identityField, "the response click set the identity field").toBe("email");
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
       );
@@ -776,7 +773,7 @@ scenario(
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.getByPlaceholder("token", { exact: true }).fill(goodToken);
-              await dialog.getByRole("button", { name: "Validate", exact: true }).click();
+              await dialog.getByRole("button", { name: "Check the key works" }).click();
               await dialog.getByText("Healthy").waitFor({ timeout: 30_000 });
               await page.waitForFunction(
                 (expected) =>
