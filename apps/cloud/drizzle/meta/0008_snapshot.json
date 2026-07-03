@@ -1,5 +1,5 @@
 {
-  "id": "0a228326-fd03-4910-8506-64b57af52736",
+  "id": "a0208f9c-622b-4c94-bd09-33bcf37c2462",
   "prevId": "2f557ed1-5afc-431b-8623-2a2162793f43",
   "version": "7",
   "dialect": "postgresql",
@@ -242,12 +242,6 @@
         "description": {
           "name": "description",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_health": {
-          "name": "last_health",
-          "type": "json",
           "primaryKey": false,
           "notNull": false
         },
@@ -531,21 +525,15 @@
           "primaryKey": false,
           "notNull": false
         },
-        "config": {
-          "name": "config",
-          "type": "json",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "health_check": {
-          "name": "health_check",
-          "type": "json",
-          "primaryKey": false,
-          "notNull": false
-        },
         "config_revised_at": {
           "name": "config_revised_at",
           "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "config": {
+          "name": "config",
+          "type": "json",
           "primaryKey": false,
           "notNull": false
         },
@@ -672,6 +660,12 @@
         },
         "origin_integration": {
           "name": "origin_integration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "origin_issuer": {
+          "name": "origin_issuer",
           "type": "text",
           "primaryKey": false,
           "notNull": false
