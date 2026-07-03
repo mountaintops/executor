@@ -115,7 +115,7 @@ const CreateConnectionPayload = Schema.Struct({
 
 // Validate an in-flight credential WITHOUT saving it (the key-first connect
 // flow). Same origin shape as create, plus an optional `spec` override so the
-// editor can preview a candidate against a live key. No `name` — the point is
+// editor can preview a candidate against a live key. No `name`: the point is
 // to derive one from the identity the probe returns.
 const ValidateConnectionPayload = Schema.Struct({
   owner: Owner,
@@ -148,7 +148,7 @@ const ListConnectionsQuery = Schema.Struct({
 });
 
 // Freshness window for checkHealth: return the persisted verdict when younger
-// than this many ms; probe otherwise. Bounded to a day — a bigger window is a
+// than this many ms; probe otherwise. Bounded to a day: a bigger window is a
 // caller bug, not a use case.
 const CheckHealthQuery = Schema.Struct({
   ifStaleMs: Schema.optional(
@@ -234,7 +234,7 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
     HttpApiEndpoint.post("checkHealth", "/connections/:owner/:integration/:name/health", {
       params: ConnectionParams,
       // `ifStaleMs`: return the persisted verdict when younger than this
-      // instead of probing — the page-load revalidation path. The server owns
+      // instead of probing (the page-load revalidation path). The server owns
       // the freshness decision so open tabs can't stampede an upstream.
       query: CheckHealthQuery,
       success: HealthCheckResult,

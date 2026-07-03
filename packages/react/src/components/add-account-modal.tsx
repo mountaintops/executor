@@ -280,7 +280,7 @@ function PasteCredentialInputs(props: {
                 data-form-type="other"
                 // No visible label or placeholder here (the affix carries the
                 // instruction visually), so the accessible name comes from
-                // aria-label instead — matches the multi-input grid's Label
+                // aria-label instead, matching the multi-input grid's Label
                 // text one-for-one.
                 aria-label={input.label}
                 value={props.values[input.variable] ?? ""}
@@ -891,12 +891,12 @@ export function AddAccountModal(props: AddAccountModalProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Key-check verdict: ONE line beside the Validate button carrying everything —
-// status dot, label, auto-picked identity, and the "change" escape hatch. It
+// Key-check verdict: ONE line beside the Validate button carrying everything
+// (status dot, label, auto-picked identity, and the "change" escape hatch). It
 // shares the button's row (no reserved block, no reveal shift), and the
 // in-flight state lives only on the button's spinner.
 // ---------------------------------------------------------------------------
-/** One verdict line: status dot, label, `· identity` when healthy, `— detail`
+/** One verdict line: status dot, label, `· identity` when healthy, `: detail`
  *  when not. Shared by the step-2 recap and the request panel's response
  *  status so the verdict reads identically everywhere. */
 function HealthStatusLine(props: {
@@ -925,14 +925,14 @@ function HealthStatusLine(props: {
             <span className="text-foreground">{identity}</span>
           </>
         ) : null}
-        {!healthy && detail ? <span className="opacity-80"> — {detail}</span> : null}
+        {!healthy && detail ? <span className="opacity-80">: {detail}</span> : null}
       </span>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// The key check as a request/response panel — the system's code-window
+// The key check as a request/response panel: the system's code-window
 // pattern, because that is literally what this is: one hairline-framed panel
 // whose titlebar is the request line (method chip + operation + Check) and
 // whose body is the response the key actually got. The operation arrives
@@ -971,7 +971,7 @@ function RequestCheckPanel(props: {
   const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
   const healthy = result?.status === "healthy";
   // Identity-looking fields first, then response order; capped so a chatty
-  // response can't blow the modal up (the hidden tail adds nothing — the
+  // response can't blow the modal up (the hidden tail adds nothing, since the
   // interesting fields rank first).
   const { sample, hiddenCount } = useMemo(() => {
     const full = result?.status === "healthy" ? (result.responseSample ?? []) : [];
@@ -1120,7 +1120,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [onePasswordItemId, setOnePasswordItemId] = useState("");
   const [label, setLabel] = useState("");
   // Key check, probe-first: we auto-pick the top-ranked read-only zero-arg
-  // operation and the user just clicks "Check the key works" — no form to fill
+  // operation and the user just clicks "Check the key works": no form to fill
   // before anything has been seen. The probe's REAL response then doubles as
   // the identity picker (click the field that names the account), so identity
   // is chosen from data, never guessed from a schema. `hcOperation`/`hcArgs`
@@ -1321,7 +1321,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   }, [hcBestCandidate]);
   const hcSelected = healthCheckCandidates.find((c) => c.operation === hcOperation) ?? null;
   // Step 2's display name offers the response's identity-looking fields as
-  // options (email > login > name > id) — picking one also stores it as the
+  // options (email > login > name > id); picking one also stores it as the
   // check's identityField so future probes label the connection live.
   const nameOptions = useMemo<FreeformComboboxOption[]>(() => {
     const sample =
@@ -1558,7 +1558,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   const canSubmit = method != null && !submitting && credentialPayloadOrigin !== null;
   // The two-step wizard applies to credential methods only (OAuth connects in
-  // one act — its flow is unchanged).
+  // one act; its flow is unchanged).
   const wizardActive = !isOAuth && !isNoAuth;
   // Continue is NEVER disabled (a disabled button hides the reason and drops
   // out of tab order). Clicking it with no key says exactly what's missing.
@@ -1699,7 +1699,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
 
   // The user clicked a field in the probe's response: that field IS the
   // identity. Upgrade the just-saved spec with it, and (unless hand-typed)
-  // adopt its value as the display name — it's the account label, live.
+  // adopt its value as the display name: it's the account label, live.
   const handlePickIdentity = async (path: string, value: string) => {
     if (savedInlineSpec) {
       const upgraded: HealthCheckSpec = { ...savedInlineSpec, identityField: path };
@@ -2367,14 +2367,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
               Always visible for credential methods: the request line shows
               exactly what will run (pre-seeded with the best identity-bearing
               read-only call, editable in place), Check runs it, and the
-              response renders read-only — the identity pick happens on step 2
-              as the display name. */}
+              response renders read-only (the identity pick happens on step 2
+              as the display name). */}
               {showValidateStep && canCheckKey ? (
                 <div className="space-y-1.5">
                   <StepHeader
                     index={2}
                     label="Check the key works"
-                    hint="runs one read-only call with your key — saved as this integration's health check"
+                    hint="runs one read-only call with your key, saved as this integration's health check"
                   />
                   <RequestCheckPanel
                     candidates={healthCheckCandidates}
@@ -2410,7 +2410,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
               ) : null}
 
               {/* Step 2 (credential wizard): a one-line recap of what step 1
-              proved — the key's verdict travels with the user instead of
+              proved, so the key's verdict travels with the user instead of
               disappearing behind Back. */}
               {wizardActive && wizardStep === "place" && validationResult ? (
                 <div className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
@@ -2419,7 +2419,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
               ) : null}
 
               {/* Step 2 (credential wizard): name it and place it. The name is
-              DERIVED — validating filled it from the account's identity — so
+              DERIVED (validating filled it from the account's identity), so
               it arrives prefilled, editable for the rare override. OAuth
               methods aren't a wizard; they show this alongside the picker. */}
               {showPlaceStep && (
@@ -2429,7 +2429,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     label="Display name"
                     hint={
                       nameOptions.length > 0
-                        ? "from the account your key returned — or type your own"
+                        ? "from the account your key returned, or type your own"
                         : "how you'll tell accounts apart"
                     }
                     htmlFor="connection-name"

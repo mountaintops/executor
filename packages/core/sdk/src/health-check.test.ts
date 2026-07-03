@@ -1,5 +1,5 @@
 // Identity ranking heuristics: what leads in a rendered response, and which
-// candidate call gets pre-seeded, are product behavior — email beats login
+// candidate call gets pre-seeded, are product behavior: email beats login
 // beats display name beats id, and only singular paths make a call a whoami.
 import { describe, expect, it } from "@effect/vitest";
 

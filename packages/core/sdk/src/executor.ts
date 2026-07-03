@@ -1956,7 +1956,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     // ------------------------------------------------------------------
-    // Health checks — dispatch to the owning plugin's hooks.
+    // Health checks: dispatch to the owning plugin's hooks.
     // ------------------------------------------------------------------
 
     const integrationHealthCheckGet = (

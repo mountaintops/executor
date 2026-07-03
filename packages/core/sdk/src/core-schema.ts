@@ -134,7 +134,7 @@ export const coreTables = defineTables({
       config: nullableJsonColumn("config"),
       // The declared health check (HealthCheckSpec JSON): which authenticated
       // operation a connection runs to prove its credential is alive and whose
-      // account it is. CORE-owned — deliberately NOT inside `config`, so no
+      // account it is. CORE-owned, deliberately NOT inside `config`, so no
       // plugin's config decode/re-encode cycle can silently strip it and no
       // plugin schema has to declare it. Null = no check declared.
       health_check: nullableJsonColumn("health_check"),
@@ -170,7 +170,7 @@ export const coreTables = defineTables({
       description: nullableTextColumn("description"),
       // Last health-check outcome (HealthCheckResult JSON: status, httpStatus,
       // checkedAt, identity, detail). Written by every checkHealth run so the
-      // accounts list shows alive/expired AT A GLANCE — the customer ask —
+      // accounts list shows alive/expired AT A GLANCE (the customer ask)
       // instead of only after a per-row manual probe. Null = never checked.
       last_health: nullableJsonColumn("last_health"),
       // Epoch ms of the last tool (re)production for this connection. Stale

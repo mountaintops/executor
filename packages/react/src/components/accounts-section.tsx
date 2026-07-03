@@ -108,10 +108,10 @@ function AccountRow(props: {
     // The hook already folded the fresh probe into the live state.
     if (exit.value.status === "healthy") {
       toast.success(
-        exit.value.identity ? `Healthy — ${exit.value.identity}` : "Connection is healthy",
+        exit.value.identity ? `Healthy: ${exit.value.identity}` : "Connection is healthy",
       );
     } else if (exit.value.status === "expired") {
-      toast.error("Connection expired — reconnect to restore access");
+      toast.error("Connection expired, reconnect to restore access");
     } else if (exit.value.status === "degraded") {
       toast.warning(exit.value.detail ?? "Connection check returned an error");
     } else {

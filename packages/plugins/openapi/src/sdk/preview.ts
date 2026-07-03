@@ -14,7 +14,7 @@ import { normalizeOpenApiRefs } from "./backing";
 import { DocResolver } from "./openapi-utils";
 import { HttpMethod, ServerInfo, type ExtractedOperation, type ExtractionResult } from "./types";
 
-// Mutating HTTP methods — mirrors `REQUIRE_APPROVAL` in `./invoke` but kept
+// Mutating HTTP methods: mirrors `REQUIRE_APPROVAL` in `./invoke` but kept
 // inline so this browser-safe preview module never pulls in the HTTP execution
 // path. A health check should be safe to re-run, so these rank last.
 const DESTRUCTIVE_METHODS = new Set(["post", "put", "patch", "delete"]);

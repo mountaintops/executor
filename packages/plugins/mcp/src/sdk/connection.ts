@@ -292,7 +292,7 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
 
   // auto: try streamable-http first, fall back to SSE for TRANSPORT failures
   // only. A definitive auth wall (401/403) is about the credential, not the
-  // transport — the same endpoint would reject SSE too, and retrying it via
+  // transport: the same endpoint would reject SSE too, and retrying it via
   // SSE loses the HTTP status (the SSE POST failure is a different, opaque
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.

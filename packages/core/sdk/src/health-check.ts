@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// @executor-js/sdk health-check vocabulary — browser-safe.
+// @executor-js/sdk health-check vocabulary (browser-safe).
 //
 // A health check is a single declared, authenticated operation a connection can
 // run to answer two questions at once: "is this credential still alive?" and
@@ -18,7 +18,7 @@
 import { Schema } from "effect";
 
 // ---------------------------------------------------------------------------
-// Status — the four states a connection can be in. `expired` is the one this
+// Status: the four states a connection can be in. `expired` is the one this
 // whole feature exists for (Google's 7-day dev-token revocation): the credential
 // authenticated fine yesterday and now returns 401/403. `degraded` covers any
 // other non-2xx (upstream 5xx, a 404 on a mis-picked operation); `unknown` is
@@ -29,7 +29,7 @@ export const HealthStatus = Schema.Literals(["healthy", "expired", "degraded", "
 export type HealthStatus = typeof HealthStatus.Type;
 
 // ---------------------------------------------------------------------------
-// HealthCheckSpec — the persisted configuration: which operation to run, any
+// HealthCheckSpec, the persisted configuration: which operation to run, any
 // pinned arguments, and the dot-path to the identity field. Stored inside the
 // owning plugin's opaque integration config; core never parses it (the plugin
 // reads it back in `checkHealth`).
@@ -48,7 +48,7 @@ export const HealthCheckSpec = Schema.Struct({
 export type HealthCheckSpec = typeof HealthCheckSpec.Type;
 
 // ---------------------------------------------------------------------------
-// HealthCheckResponseSample — one scalar leaf from the actual response body,
+// HealthCheckResponseSample: one scalar leaf from the actual response body,
 // `path` (the dot-path that would resolve it) plus `value` (a truncated string
 // rendering). The live preview shows these so the user can see what the chosen
 // operation really returns and pick the right identity field. Sampled from the
@@ -62,7 +62,7 @@ export const HealthCheckResponseSample = Schema.Struct({
 export type HealthCheckResponseSample = typeof HealthCheckResponseSample.Type;
 
 // ---------------------------------------------------------------------------
-// HealthCheckResult — the outcome of running a probe. `httpStatus` and `detail`
+// HealthCheckResult: the outcome of running a probe. `httpStatus` and `detail`
 // are diagnostic; `identity` is the extracted display value when the check
 // succeeded and an `identityField` was configured (and resolved); `responseSample`
 // carries a bounded set of the actual returned fields for the live preview.
@@ -85,7 +85,7 @@ export const HealthCheckResult = Schema.Struct({
 export type HealthCheckResult = typeof HealthCheckResult.Type;
 
 // ---------------------------------------------------------------------------
-// HealthCheckCandidate — one operation the user can pick as the health check,
+// HealthCheckCandidate: one operation the user can pick as the health check,
 // projected from the plugin's stored operations. The editor lists these ranked
 // (non-destructive first, then fewest required args) so the obvious "GET /me"
 // style identity endpoint floats to the top.
@@ -101,7 +101,7 @@ export const HealthCheckCandidateParameter = Schema.Struct({
 export type HealthCheckCandidateParameter = typeof HealthCheckCandidateParameter.Type;
 
 // ---------------------------------------------------------------------------
-// HealthCheckResponseField — one scalar leaf the candidate operation can return,
+// HealthCheckResponseField: one scalar leaf the candidate operation can return,
 // projected from its response schema: `path` (the dot-path to set as
 // `HealthCheckSpec.identityField`) and a `type` display label ("string",
 // "number", "string[]", …). Feeds the typed identity picker.
@@ -120,7 +120,7 @@ export const HealthCheckCandidate = Schema.Struct({
   method: Schema.String,
   /** How many parameters are required to call it (ranking key: fewer is better). */
   requiredArgCount: Schema.Number,
-  /** True for mutating methods (post/put/patch/delete) — ranked last and shown
+  /** True for mutating methods (post/put/patch/delete), ranked last and shown
    *  with a warning, since a health check should be safe to run repeatedly. */
   destructive: Schema.Boolean,
   /** Operation summary / description for display, when known. */
@@ -134,7 +134,7 @@ export const HealthCheckCandidate = Schema.Struct({
 export type HealthCheckCandidate = typeof HealthCheckCandidate.Type;
 
 // ---------------------------------------------------------------------------
-// Pure helpers — shared so classification + identity extraction behave
+// Pure helpers, shared so classification + identity extraction behave
 // identically wherever a probe is interpreted.
 // ---------------------------------------------------------------------------
 
@@ -189,7 +189,7 @@ export const candidateIdentityTier = (candidate: HealthCheckCandidate): number =
 /** Sort candidates identity-first: non-destructive before destructive, then
  *  calls whose response carries an identity field (email beats login beats
  *  name), then the generic order (fewest required args, GET first,
- *  alphabetical). Tiers are computed once per candidate, not per comparison —
+ *  alphabetical). Tiers are computed once per candidate, not per comparison:
  *  the field walk is linear in response fields and the comparator runs
  *  O(n log n) times on Graph-sized specs. */
 export const sortHealthCheckCandidatesByIdentity = (
@@ -227,7 +227,7 @@ export const compareHealthCheckCandidates = (
 };
 
 // ---------------------------------------------------------------------------
-// Response-field projection — two pure walkers that feed the typed identity
+// Response-field projection: two pure walkers that feed the typed identity
 // picker and the live preview. `projectResponseFields` walks a (normalized)
 // response SCHEMA to enumerate selectable identity paths; `extractResponseFields`
 // walks an actual response BODY so the preview can show what the operation
@@ -427,7 +427,7 @@ export const extractResponseFields = (data: unknown): HealthCheckResponseSample[
 };
 
 // ---------------------------------------------------------------------------
-// Identity auto-pick — choose the response field that most likely names the
+// Identity auto-pick: choose the response field that most likely names the
 // account, so the connect flow can default the identity instead of asking.
 // Ranked by how account-naming the leaf key is (email > login/username >
 // name/displayName > id), shallower paths first within a tier. Returns

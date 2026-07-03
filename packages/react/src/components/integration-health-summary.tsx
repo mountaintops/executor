@@ -13,7 +13,7 @@ import {
 import { useConnectionsHealth } from "../lib/use-connection-health";
 
 // ---------------------------------------------------------------------------
-// Integration health summary — the at-a-glance verdict on an integrations-list
+// Integration health summary: the at-a-glance verdict on an integrations-list
 // row. Reads the integration's connections across BOTH owners, revalidates
 // each one stale-while-revalidate (the same automatic check the detail page
 // runs), and collapses them to the worst status: one dot per row, however
@@ -21,7 +21,7 @@ import { useConnectionsHealth } from "../lib/use-connection-health";
 //
 // Display only: the row is a Link, so this must never introduce a nested
 // interactive element. No connections, or nothing but never-probed ones,
-// renders nothing at all — a gray dot on every row would be pure noise.
+// renders nothing at all: a gray dot on every row would be pure noise.
 // ---------------------------------------------------------------------------
 
 export function IntegrationHealthSummary(props: { readonly integration: IntegrationSlug }) {

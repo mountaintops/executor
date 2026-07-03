@@ -293,7 +293,7 @@ scenario(
                 // derived from it), so pasting starts immediately.
                 await page.keyboard.type(goodToken);
                 // The panel is already on screen with the best read-only call in
-                // the request line — nothing to expand, nothing to configure.
+                // the request line: nothing to expand, nothing to configure.
                 await page.waitForFunction(() => {
                   const input = document.querySelector(
                     "#hc-pick-operation",
@@ -804,7 +804,7 @@ scenario(
               // The bearer template renders the merged "Bearer <token>" field: the
               // affix is fixed, the input itself has the bare "token" placeholder.
               await dialog.locator('input[type="password"]').first().fill(goodToken);
-              // A CONFIGURED check probes directly — no pick block.
+              // A CONFIGURED check probes directly, with no pick block.
               await dialog.getByRole("button", { name: "Check", exact: true }).click();
               await dialog.getByText(/Healthy/).waitFor({ timeout: 30_000 });
               // The derived name shows on step 2.
@@ -827,7 +827,7 @@ scenario(
 
 // ===========================================================================
 // At-a-glance expiry (persisted verdicts): the connections list renders the
-// LAST PERSISTED health-check result on a fresh page load — no per-row
+// LAST PERSISTED health-check result on a fresh page load, with no per-row
 // clicking. This is the customer ask verbatim ("quickly see if one of these
 // has expired"): the verdict from an earlier probe (here via the API, as a
 // background sweep would run it) survives to a brand-new browser page.
@@ -866,7 +866,7 @@ scenario(
             },
           });
 
-          // Probe while healthy, then revoke and probe again — entirely through
+          // Probe while healthy, then revoke and probe again, entirely through
           // the API, before any browser opens. Each run persists its verdict.
           const healthy = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },
@@ -928,7 +928,7 @@ scenario(
 
 // ===========================================================================
 // Modal scroll: with the request panel showing a full response, the Add
-// Connection modal can exceed the viewport cap (max-h 85vh) — its body must
+// Connection modal can exceed the viewport cap (max-h 85vh), so its body must
 // actually wheel-scroll. Radix modal dialogs lock body scroll; a bug in the
 // overflow chain (or a scroll-lock leak from the portaled combobox) makes the
 // wheel do nothing, stranding the footer out of reach.

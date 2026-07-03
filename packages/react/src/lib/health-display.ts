@@ -6,7 +6,7 @@
 
 import type { HealthStatus } from "@executor-js/sdk/shared";
 
-/** State form — badge text, indicator tooltips, "what is the current state". */
+/** State form: badge text, indicator tooltips, "what is the current state". */
 export const HEALTH_STATUS_LABEL: Record<HealthStatus, string> = {
   healthy: "Healthy",
   expired: "Expired",
@@ -15,7 +15,7 @@ export const HEALTH_STATUS_LABEL: Record<HealthStatus, string> = {
 };
 
 /** Text tone per status, for verdict lines and previews. Same per-status color
- *  decision as the indicator dots below — change them together. */
+ *  decision as the indicator dots below; change them together. */
 export const HEALTH_TEXT_CLASS: Record<HealthStatus, string> = {
   healthy: "text-emerald-600 dark:text-emerald-400",
   expired: "text-destructive",
@@ -57,7 +57,7 @@ export const worstHealthStatus = (statuses: readonly HealthStatus[]): HealthStat
   return worst;
 };
 
-/** Badge variant per status — semantic color via the Badge component. */
+/** Badge variant per status: semantic color via the Badge component. */
 export const HEALTH_BADGE_VARIANT: Record<
   HealthStatus,
   "default" | "secondary" | "outline" | "destructive"

@@ -695,7 +695,7 @@ export const resolveOpenApiBackedAnnotations = (input: {
   });
 
 // ---------------------------------------------------------------------------
-// Health checks — the declared liveness/identity probe for a connection.
+// Health checks: the declared liveness/identity probe for a connection.
 // ---------------------------------------------------------------------------
 
 /** Resolve the invocation binding for a health-check operation. Unlike the tool
@@ -726,7 +726,7 @@ const resolveHealthCheckBinding = (
   });
 
 /** Run the given probe against a resolved credential and classify the outcome.
- *  The spec is resolved by CORE (its own storage) and passed in — this never
+ *  The spec is resolved by CORE (its own storage) and passed in; this never
  *  reads it from the plugin config. Never fails for credential/upstream
  *  reasons: a rejected credential is a `HealthCheckResult` with
  *  `status: "expired"`, not an error. */
@@ -765,7 +765,7 @@ export const checkHealthOpenApi = (input: {
     }
 
     // HARD block, not just a ranking hint: a health check runs unattended and
-    // repeatedly, so a mutating operation must never execute through it — the
+    // repeatedly, so a mutating operation must never execute through it. The
     // normal tool path gates these behind approval, and this path has no
     // approval step. The candidate list labels these "(writes)"; refusing here
     // is the enforcement.
@@ -773,7 +773,7 @@ export const checkHealthOpenApi = (input: {
       return {
         status: "unknown",
         checkedAt,
-        detail: `Health check operation "${spec.operation}" is a ${binding.method.toUpperCase()} (mutating) — pick a read-only operation.`,
+        detail: `Health check operation "${spec.operation}" is a ${binding.method.toUpperCase()} (mutating): pick a read-only operation.`,
       } satisfies HealthCheckResult;
     }
 
@@ -816,7 +816,7 @@ export const checkHealthOpenApi = (input: {
     );
 
     // Upstream error text can echo the request back (URLs with query params,
-    // auth headers) — scrub every credential value out of anything that leaves
+    // auth headers), so scrub every credential value out of anything that leaves
     // as `detail` so a probe can never leak the secret it authenticated with.
     const secretValues = Object.values(input.credential.values).filter(
       (value): value is string => typeof value === "string" && value.length > 0,

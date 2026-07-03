@@ -67,7 +67,7 @@ scenario(
               endpoint: server.url,
               slug: String(slug),
               // No remoteTransport: the default ("auto") must classify the 401
-              // correctly — the fallback may not eat the auth wall.
+              // correctly: the fallback may not eat the auth wall.
               authenticationTemplate: [
                 {
                   slug: "bearer",

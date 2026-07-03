@@ -541,7 +541,7 @@ scenario(
       const name = ConnectionName.make("main");
 
       // A hostile-ish upstream: 500s on /me and ECHOES the Authorization header
-      // back in the error body — the shape that used to leak the key into the
+      // back in the error body: the shape that used to leak the key into the
       // probe's diagnostic detail.
       const server = yield* Effect.acquireRelease(
         Effect.callback<{ readonly url: string; readonly close: () => void }>((resume) => {
@@ -659,7 +659,7 @@ scenario(
             },
           });
 
-          // Within the freshness window the CACHED verdict comes back — no
+          // Within the freshness window the CACHED verdict comes back with no
           // probe, so the dead key still reads healthy (stale by design).
           const cached = yield* client.connections.checkHealth({
             params: { owner: "org", integration: slug, name },

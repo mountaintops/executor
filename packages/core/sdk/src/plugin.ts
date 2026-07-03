@@ -325,11 +325,11 @@ export interface ToolInvocationCredential {
 // Health-check hook inputs. A health check is a single declared authenticated
 // operation a connection runs to prove its credential is still alive and to
 // surface whose account it is. CORE owns the declared spec (its own column on
-// the integration row — never the plugin's opaque config, so no plugin config
+// the integration row, never the plugin's opaque config, so no plugin config
 // cycle can strip it); plugins only enumerate candidates and run probes.
 // ---------------------------------------------------------------------------
 
-/** Input to `checkHealth` — run the given probe against a resolved credential.
+/** Input to `checkHealth`: run the given probe against a resolved credential.
  *  The credential may come from a saved connection OR from in-flight values
  *  (key-first validation, before the connection is saved). Core resolves the
  *  declared spec (or the editor's preview override) and passes it here; the
@@ -344,7 +344,7 @@ export interface HealthCheckInput<TStore = unknown> {
   readonly spec?: HealthCheckSpec;
 }
 
-/** Input to `listHealthCheckCandidates` — the operations a user can pick. */
+/** Input to `listHealthCheckCandidates`: the operations a user can pick. */
 export interface HealthCheckCandidatesInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   readonly integration: IntegrationRecord;
