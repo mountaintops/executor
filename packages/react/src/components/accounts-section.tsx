@@ -1,20 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
-import {
-  IntegrationSlug,
-  type Connection,
-  type HealthCheckResult,
-  type HealthStatus,
-  type Owner,
-} from "@executor-js/sdk/shared";
+import { IntegrationSlug, type Connection, type Owner } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { toast } from "sonner";
 
 import {
   addConnectionOptimistic,
-  checkConnectionHealth,
   connectionsForIntegrationAtom,
   refreshConnection,
   removeConnectionOptimistic,
@@ -22,6 +15,7 @@ import {
 } from "../api/atoms";
 import { connectionWriteKeys } from "../api/reactivity-keys";
 import { HEALTH_INDICATOR_COLOR, HEALTH_STATUS_LABEL } from "../lib/health-display";
+import { useConnectionHealth } from "../lib/use-connection-health";
 import { messageFromExit } from "../api/error-reporting";
 import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
@@ -66,12 +60,6 @@ import {
 
 const OWNERS: readonly Owner[] = ["org", "user"];
 
-/** Freshness window for automatic revalidation: a HEALTHY verdict younger
- *  than this renders as-is; anything else (stale, missing, or non-healthy)
- *  triggers a background probe on mount. Server-enforced for the healthy
- *  path too, so concurrent tabs collapse to one probe. */
-const HEALTH_REVALIDATE_MS = 5 * 60 * 1000;
-
 function AccountRow(props: {
   readonly connection: Connection;
   /** The integration declares scopes this connection was not granted — it must
@@ -83,50 +71,19 @@ function AccountRow(props: {
   readonly onRemove: () => void;
 }) {
   const { connection, needsReconsent } = props;
-  // A live probe result, once a check has run, overrides the persisted one.
-  const [liveProbe, setLiveProbe] = useState<HealthCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
-  const doCheck = useAtomSet(checkConnectionHealth, { mode: "promiseExit" });
 
   // The status renders WITHOUT any clicking: every checkHealth run persists its
   // verdict on the connection row, so the list answers "has this expired?" at a
   // glance. A live check from this session takes precedence. We deliberately do
   // NOT derive expiry from the stored `expiresAt`: that's the access-token
   // lifetime, which refreshes, so a passive countdown means nothing.
-  const probe = liveProbe ?? connection.lastHealth ?? null;
-  const status: HealthStatus = probe?.status ?? "unknown";
+  //
+  // Health checks are AUTOMATIC: the hook revalidates on mount, stale-while-
+  // revalidate style (shared with the integrations-list summary), and the
+  // persisted verdict renders instantly while the probe corrects it in place.
+  const { probe, status, runCheck } = useConnectionHealth(connection);
   const indicator = HEALTH_INDICATOR_COLOR[status];
-
-  // Health checks are AUTOMATIC: loading the list revalidates any verdict
-  // older than the freshness window (or never checked), stale-while-revalidate
-  // style — the persisted verdict renders instantly, the probe corrects it in
-  // place. The server enforces the window (`ifStaleMs`), so N open tabs can't
-  // stampede the upstream; fresh verdicts return without probing.
-  const revalidated = useRef(false);
-  useEffect(() => {
-    if (revalidated.current) return;
-    const last = connection.lastHealth;
-    // Healthy-and-fresh renders as-is. Everything else revalidates: stale or
-    // never-checked for obvious reasons, and NON-healthy always — an expired
-    // dot is exactly the verdict the user is waiting to see change, so
-    // recovery must show on the next load, not after the freshness window.
-    const healthyAndFresh =
-      last?.status === "healthy" && Date.now() - last.checkedAt < HEALTH_REVALIDATE_MS;
-    if (healthyAndFresh) return;
-    revalidated.current = true;
-    void doCheck({
-      params: {
-        owner: connection.owner,
-        integration: connection.integration,
-        name: connection.name,
-      },
-      query: last?.status === "healthy" ? { ifStaleMs: HEALTH_REVALIDATE_MS } : {},
-    }).then((exit) => {
-      // Background refresh: update the dot on success, stay quiet on failure
-      // (the persisted verdict is still the best known state).
-      if (Exit.isSuccess(exit)) setLiveProbe(exit.value);
-    });
-  }, [connection.owner, connection.integration, connection.name, connection.lastHealth, doCheck]);
 
   // Prefer a probed identity (the live account), then the stored label, then the
   // connection name. The probe is the whole point: it shows WHICH account this is.
@@ -142,20 +99,13 @@ function AccountRow(props: {
   const handleCheck = async () => {
     if (checking) return;
     setChecking(true);
-    const exit = await doCheck({
-      params: {
-        owner: connection.owner,
-        integration: connection.integration,
-        name: connection.name,
-      },
-      query: {},
-    });
+    const exit = await runCheck();
     setChecking(false);
     if (Exit.isFailure(exit)) {
       toast.error(messageFromExit(exit, "Health check failed"));
       return;
     }
-    setLiveProbe(exit.value);
+    // The hook already folded the fresh probe into the live state.
     if (exit.value.status === "healthy") {
       toast.success(
         exit.value.identity ? `Healthy — ${exit.value.identity}` : "Connection is healthy",

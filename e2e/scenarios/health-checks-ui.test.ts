@@ -26,7 +26,10 @@ import { expect } from "@effect/vitest";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import type { Page } from "playwright";
 import { composePluginApi } from "@executor-js/api/server";
+import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
+import { makeEchoMcpServer, serveMcpServer } from "@executor-js/plugin-mcp/testing";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
+import { variable } from "@executor-js/sdk/http-auth";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk/shared";
 
 import { scenario } from "../src/scenario";
@@ -34,6 +37,8 @@ import { Api, Browser, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
+
+const mcpApi = composePluginApi([mcpHttpPlugin()] as const);
 
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 const IDENTITY = "alice@example.com";
@@ -1055,6 +1060,110 @@ scenario(
           });
         }),
         client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore),
+      );
+    }),
+  ),
+);
+
+// ===========================================================================
+// Integrations LIST page: health is checked automatically on load and visible
+// at a glance on the row itself. The seeded connection is an MCP server whose
+// token is dead from the start, and the connection has NO persisted verdict:
+// the Expired label on the list row can only come from the auto-check firing
+// as the list mounts. No clicking, no drilling into the detail page.
+// ===========================================================================
+
+scenario(
+  "Health checks (UI) · the integrations list auto-checks and shows an expired MCP server at a glance",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const browser = yield* Browser;
+      const { client: makeClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeClient(mcpApi, identity);
+      const slug = newSlug("hc-ui-list");
+      const name = ConnectionName.make("main");
+
+      // A real MCP server that rejects every token: the saved credential is
+      // dead on arrival, so the first probe (the list page's auto-check) is
+      // the one that discovers the expiry.
+      const server = yield* serveMcpServer(() => makeEchoMcpServer({ name: "list-glance-mcp" }), {
+        auth: {
+          validateAuthorization: () => Effect.succeed(false),
+        },
+      });
+
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          yield* client.mcp.addServer({
+            payload: {
+              transport: "remote",
+              name: `List Glance MCP ${String(slug)}`,
+              endpoint: server.url,
+              slug: String(slug),
+              authenticationTemplate: [
+                {
+                  slug: "bearer",
+                  type: "apiKey",
+                  headers: { Authorization: ["Bearer ", variable("token")] },
+                },
+              ],
+            },
+          });
+          yield* client.connections.create({
+            payload: {
+              owner: "org",
+              name,
+              integration: slug,
+              template: AuthTemplateSlug.make("bearer"),
+              value: "revoked-token",
+            },
+          });
+
+          // Deliberately NO checkHealth here: the connection reaches the
+          // browser with lastHealth unset, so the verdict on screen must come
+          // from the list page's own automatic revalidation.
+
+          yield* browser.session(identity, async ({ page, step }) => {
+            // The integration's LIST row. The sidebar nav carries a look-alike
+            // link to the same detail page, so scope to the card-stack entry.
+            const row = page
+              .getByRole("link", { name: new RegExp(String(slug)) })
+              .and(page.locator('[data-slot="card-stack-entry"]'));
+
+            await step(
+              "Load the integrations list: the dead MCP row reads Expired with no clicks",
+              async () => {
+                await page.goto("/", { waitUntil: "networkidle" });
+                // The row itself is the assertion surface: the list-page
+                // summary probes in the background and paints the worst-of
+                // verdict onto the row, scoped so a verdict from another row
+                // can't satisfy the wait.
+                await row.waitFor();
+                await row.getByText("Expired", { exact: true }).waitFor({ timeout: 30_000 });
+                await row.getByLabel("Status: Expired").waitFor();
+              },
+            );
+
+            await step(
+              "The row is still a plain click-through link to the detail page",
+              async () => {
+                await row.click();
+                await page.waitForURL(new RegExp(`/integrations/${String(slug)}`), {
+                  timeout: 15_000,
+                });
+              },
+            );
+          });
+        }),
+        Effect.gen(function* () {
+          yield* client.connections
+            .remove({ params: { owner: "org", integration: slug, name } })
+            .pipe(Effect.ignore);
+          yield* client.mcp.removeServer({ params: { slug } }).pipe(Effect.ignore);
+        }),
       );
     }),
   ),

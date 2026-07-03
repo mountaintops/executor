@@ -36,6 +36,27 @@ export const HEALTH_INDICATOR_COLOR: Record<
   unknown: { dot: "bg-muted-foreground/40", ring: "ring-muted-foreground/40" },
 };
 
+/** Severity for worst-of aggregation. `unknown` is excluded on purpose: a
+ *  never-probed connection carries no signal, so it must not drag a group
+ *  verdict in either direction. */
+const HEALTH_SEVERITY: Record<Exclude<HealthStatus, "unknown">, number> = {
+  healthy: 1,
+  degraded: 2,
+  expired: 3,
+};
+
+/** Collapse many connection statuses to the group's worst: expired > degraded
+ *  > healthy. `unknown` entries are ignored; when nothing else remains (empty
+ *  input or all unknown) there is no verdict and the caller renders nothing. */
+export const worstHealthStatus = (statuses: readonly HealthStatus[]): HealthStatus | null => {
+  let worst: Exclude<HealthStatus, "unknown"> | null = null;
+  for (const status of statuses) {
+    if (status === "unknown") continue;
+    if (worst === null || HEALTH_SEVERITY[status] > HEALTH_SEVERITY[worst]) worst = status;
+  }
+  return worst;
+};
+
 /** Badge variant per status — semantic color via the Badge component. */
 export const HEALTH_BADGE_VARIANT: Record<
   HealthStatus,
