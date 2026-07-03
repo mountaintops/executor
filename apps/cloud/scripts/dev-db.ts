@@ -82,10 +82,28 @@ const db = await PGlite.create(DB_PATH);
 console.log(`[dev-db] Running migrations from ${MIGRATIONS_FOLDER}`);
 await migrate(drizzle(db), { migrationsFolder: MIGRATIONS_FOLDER });
 
+// `PGLiteSocketServer` defaults to `maxConnections: 1` and answers every extra
+// concurrent connection with "Too many connections" + an immediate socket
+// close. (pglite-socket 0.1.4's published index.d.ts documents "default: 100",
+// but the shipped runtime JS is `maxConnections ?? 1`, verified in the shipped
+// chunk, so the runtime default really is 1.) The cloud worker opens a fresh
+// postgres pool per request (the MCP auth seam rebuilds one on EVERY `/mcp`
+// request, see apps/cloud/src/mcp/auth.ts), so under concurrent load, exactly
+// what the e2e suite generates against one shared dev stack, the
+// second-and-later connects were rejected, and postgres.js reconnected in a
+// tight loop against the closed socket. That reconnect storm piled up
+// thousands of half-closed sockets, starved real queries, drove request
+// latency into the tens of seconds, and eventually hung the stack: the CI e2e
+// "cloud dev stack degrades after minutes of sustained load" cascade flake.
+// PGlite still runs queries serially (its internal QueryQueueManager executes
+// each under `runExclusive`), so allowing many connections is safe: they queue
+// instead of being rejected. Raise the cap so concurrent requests wait their
+// turn instead of storming.
 const server = new PGLiteSocketServer({
   db,
   port: PORT,
   host: "127.0.0.1",
+  maxConnections: Number(process.env.DEV_DB_MAX_CONNECTIONS ?? 1000),
 });
 
 await server.start();
