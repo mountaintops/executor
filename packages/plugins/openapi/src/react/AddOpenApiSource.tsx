@@ -334,8 +334,11 @@ export default function AddOpenApiSource(props: {
 
     // Persist the drafted health check only when the user actively picked an
     // operation; otherwise leave the integration's auto-detected default in
-    // place. A failure here is non-fatal: the integration is already created and
-    // the check stays editable from its detail page, so surface it and move on.
+    // place. A failure here is non-fatal, and must NOT block navigation: the
+    // integration is already created server-side, so returning here would strand
+    // the user (re-submitting the form hits the slug-already-exists guard). The
+    // check stays editable from the integration's detail page, so on failure we
+    // proceed to onComplete regardless and let the user fix it there.
     if (hcOperation.length > 0) {
       const identity = hcIdentityField.trim();
       const argEntries = Object.entries(hcArgs)
@@ -346,18 +349,13 @@ export default function AddOpenApiSource(props: {
         ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
         ...(identity.length > 0 ? { identityField: identity } : {}),
       };
-      const exit = await doSetHealthCheck({
+      // Best-effort: the exit is intentionally ignored so a save failure cannot
+      // block completion.
+      await doSetHealthCheck({
         params: { slug: integration },
         payload: { spec },
         reactivityKeys: healthCheckWriteKeys,
       });
-      if (Exit.isFailure(exit)) {
-        setAddError(
-          errorMessageFromExit(exit, "Integration added, but saving the health check failed"),
-        );
-        setAdding(false);
-        return;
-      }
     }
 
     props.onComplete(String(integration));

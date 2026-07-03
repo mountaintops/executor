@@ -46,6 +46,12 @@ export const integrationWriteKeys = [ReactivityKey.integrations, ReactivityKey.t
  *  refreshing a connection changes the tool catalog. */
 export const connectionWriteKeys = [ReactivityKey.connections, ReactivityKey.tools] as const;
 
+/** A connection health check persists only the connection's `last_health`
+ *  verdict, never its tools, so it invalidates `connections` alone (no `tools`
+ *  churn). Passed at the manual "Check now" call site; the automatic mount-time
+ *  probe invalidates conditionally instead (only when the verdict changed). */
+export const connectionCheckKeys = [ReactivityKey.connections] as const;
+
 /** Mutations that register / replace an OAuth client (app). */
 export const oauthClientWriteKeys = [ReactivityKey.oauthClients] as const;
 

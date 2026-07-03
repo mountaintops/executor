@@ -1464,7 +1464,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
     // Only checkHealth is implemented (no candidates/describe/set), so the
     // operation/identity editor stays hidden while the status dot + "Check now"
     // light up.
-    checkHealth: ({ credential }) =>
+    checkHealth: ({ ctx, credential }) =>
       Effect.gen(function* () {
         const parsed = parseMcpIntegrationConfig(credential.config);
         if (!parsed) {
@@ -1475,6 +1475,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           credential.values,
           credential.template === null ? null : String(credential.template),
           allowStdio,
+          options?.httpClientLayer ?? ctx.httpClientLayer,
         ).pipe(Effect.map((ci) => createMcpConnector(ci)));
 
         return yield* discoverTools(connector).pipe(

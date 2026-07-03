@@ -166,9 +166,13 @@ export const updateConnection = ExecutorApiClient.mutation("connections", "updat
 
 export const refreshConnection = ExecutorApiClient.mutation("connections", "refresh");
 
-/** Probe a SAVED connection's health on demand (the "Check now" button). A
- *  read-only probe: returns a classified `HealthCheckResult`, persists nothing,
- *  so no reactivity keys. */
+/** Probe a SAVED connection's health on demand (the "Check now" button). The
+ *  server persists the verdict on the connection row (`last_health`), so a check
+ *  that changes the verdict must invalidate the connections cache or a later
+ *  read within the atom TTL serves the pre-check state. Callers pass
+ *  `reactivityKeys: connectionCheckKeys` (see `use-connection-health.ts` for the
+ *  manual-vs-automatic split that keeps the automatic path from churning the
+ *  cache on every load). */
 export const checkConnectionHealth = ExecutorApiClient.mutation("connections", "checkHealth");
 
 /** Validate an IN-FLIGHT credential without saving it (the key-first connect
