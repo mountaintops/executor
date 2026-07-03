@@ -64,8 +64,8 @@ scenario(
           await page.getByPlaceholder("Authorization").last().waitFor();
         });
 
-        await step("Add the source with both methods", async () => {
-          await page.getByRole("button", { name: "Add source" }).click();
+        await step("Add the integration with both methods", async () => {
+          await page.getByRole("button", { name: "Add integration" }).click();
           await page.waitForURL(/\/integrations\/(?!add\b)[^/?]+$/, {
             timeout: 30_000,
           });
@@ -142,7 +142,9 @@ scenario(
           });
 
           await step("Connect through the new method", async () => {
-            await page.getByPlaceholder("paste the value / token").fill(token);
+            // Custom "Authorization: Bearer " method renders the affixed field,
+            // whose value input placeholder is "token".
+            await page.getByRole("dialog").getByPlaceholder("token").fill(token);
             await page.getByRole("button", { name: "Add connection" }).click();
             await page.getByText("Connection added").waitFor();
           });

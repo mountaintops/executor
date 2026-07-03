@@ -8,9 +8,26 @@ import { getDomain } from "tldts";
 // Falls back to a neutral icon if the URL is missing or the image fails to load.
 // ---------------------------------------------------------------------------
 
-export function integrationFaviconUrl(url: string | undefined, size: number): string | null {
+const integrationFaviconDomain = (url: string | undefined): string | null => {
   if (!url) return null;
-  const domain = getDomain(url) ?? (URL.canParse(url) ? getDomain(new URL(url).hostname) : null);
+  return getDomain(url) ?? (URL.canParse(url) ? getDomain(new URL(url).hostname) : null);
+};
+
+// integrations.sh/logo proxies context.dev's Logo Link behind an edge cache
+// and is executor's single logo source; Google's favicon service remains in
+// the cascade as the fallback the <img> onError walks to when the proxy is
+// unreachable or serves nothing for the domain.
+export function integrationFaviconUrl(url: string | undefined, size: number): string | null {
+  const domain = integrationFaviconDomain(url);
+  if (!domain) return null;
+  return `https://integrations.sh/logo/${domain}?sz=${size * 2}`;
+}
+
+export function integrationFaviconFallbackUrl(
+  url: string | undefined,
+  size: number,
+): string | null {
+  const domain = integrationFaviconDomain(url);
   if (!domain) return null;
   return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size * 2}`;
 }
@@ -161,10 +178,11 @@ export function integrationPresetIconUrl(
 }
 
 // Resolution cascade for the rendered favicon: first non-null, non-failed of an
-// explicit preset icon, the bundled local icon for a known source id, then a
-// favicon-service URL derived from the source URL. The built-in executor source
-// has no preset icon and no URL, so it resolves ONLY through the sourceId branch:
-// callers that drop sourceId fall through to the neutral BoxIcon placeholder.
+// explicit preset icon, the bundled local icon for a known source id, the
+// integrations.sh logo proxy derived from the source URL, then the Google
+// favicon service as a last resort. The built-in executor source has no preset
+// icon and no URL, so it resolves ONLY through the sourceId branch: callers
+// that drop sourceId fall through to the neutral BoxIcon placeholder.
 export function integrationFaviconSrc(args: {
   icon?: string | null;
   sourceId?: string;
@@ -178,6 +196,7 @@ export function integrationFaviconSrc(args: {
       args.icon ?? null,
       integrationLocalIconUrl(args.sourceId),
       integrationFaviconUrl(args.url, args.size),
+      integrationFaviconFallbackUrl(args.url, args.size),
     ].find((candidate) => candidate !== null && !failedSrcs.includes(candidate)) ?? null
   );
 }

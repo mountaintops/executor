@@ -79,6 +79,9 @@ export const baseUrlFromSpecInput = (input: string): string => {
   return parsed.origin;
 };
 
+export const openApiPreviewFailureMessage = (message: string | null | undefined): string =>
+  `Couldn't load or parse this spec: ${message && message.trim().length > 0 ? message : "unknown error"}`;
+
 // ---------------------------------------------------------------------------
 // Component: single progressive form. Post-redesign: preview -> addSpec
 // (register the integration catalog entry with ALL detected auth methods) →
@@ -365,7 +368,7 @@ export default function AddOpenApiSource(props: {
   return (
     <div className="flex flex-1 flex-col gap-6">
       <div>
-        <h1 className="text-xl font-semibold text-foreground">Add OpenAPI Integration</h1>
+        <h1 className="text-xl font-semibold text-foreground">Add OpenAPI integration</h1>
       </div>
 
       {!preview ? (
@@ -376,7 +379,10 @@ export default function AddOpenApiSource(props: {
               <div className="relative">
                 <Textarea
                   value={specUrl}
-                  onChange={(e) => setSpecUrl((e.target as HTMLTextAreaElement).value)}
+                  onChange={(e) => {
+                    setSpecUrl((e.target as HTMLTextAreaElement).value);
+                    setAnalyzeError(null);
+                  }}
                   placeholder="https://api.example.com/openapi.json"
                   rows={3}
                   maxRows={10}
@@ -391,6 +397,26 @@ export default function AddOpenApiSource(props: {
               <p className="text-[11px] text-muted-foreground">
                 Paste a URL or raw JSON/YAML content.
               </p>
+              {analyzing && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <IOSSpinner className="size-3.5" />
+                  Checking spec…
+                </p>
+              )}
+              {analyzeError && !analyzing && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+                  <span>{openApiPreviewFailureMessage(analyzeError)}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => void handleAnalyze()}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
             </div>
           </CardStackContent>
         </CardStack>
@@ -433,8 +459,6 @@ export default function AddOpenApiSource(props: {
         />
       ) : null}
 
-      {analyzeError && <FormErrorAlert message={analyzeError} />}
-
       {preview && (
         <AuthMethodListEditor
           list={authMethodList}
@@ -476,11 +500,9 @@ export default function AddOpenApiSource(props: {
         <Button variant="ghost" onClick={() => props.onCancel()} disabled={adding}>
           Cancel
         </Button>
-        {preview && (
-          <Button onClick={() => void handleAdd()} disabled={!canAdd} loading={adding}>
-            Add integration
-          </Button>
-        )}
+        <Button onClick={() => void handleAdd()} disabled={!canAdd || analyzing} loading={adding}>
+          Add integration
+        </Button>
       </FloatActions>
     </div>
   );

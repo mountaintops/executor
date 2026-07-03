@@ -62,6 +62,12 @@ export interface MicrosoftGraphSpecBuild {
 }
 
 export interface MicrosoftGraphUrlPolicy {
+  /**
+   * When true, spec/base/OAuth endpoint URLs may point anywhere a trusted
+   * https URL could, plus plain http on loopback (local Graph emulators).
+   * Every other host is still rejected. Off by default — production leaves
+   * this unset so only the pinned Microsoft Graph URLs are accepted.
+   */
   readonly allowUnsafeUrlOverrides?: boolean;
 }
 
@@ -193,13 +199,36 @@ const parseTrustedHttpsUrl = (value: string): URL | null => {
   return parsed;
 };
 
+// Local emulators (microsoft-emulator.test.ts, `microsoft.emulators.dev` run
+// locally) serve plain http on loopback. Only these three hostnames count —
+// this is not a general SSRF-safe "is this private" check, just a narrow
+// allowance for the dev machine talking to itself.
+const isLoopbackHostname = (hostname: string): boolean => {
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower === "[::1]";
+};
+
+const parseTrustedLoopbackHttpUrl = (value: string): URL | null => {
+  if (!URL.canParse(value)) return null;
+  const parsed = new URL(value);
+  if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.hash) {
+    return null;
+  }
+  return isLoopbackHostname(parsed.hostname) ? parsed : null;
+};
+
+/**
+ * Under `allowUnsafeUrlOverrides`, accept either a trusted https URL or a
+ * plain-http URL on loopback (local emulators have no TLS). Every other URL
+ * shape is still rejected, override or not.
+ */
 const allowUnsafeUrl = (
   value: string | undefined,
   policy: MicrosoftGraphUrlPolicy | undefined,
 ): string | undefined | null => {
   if (!value) return undefined;
   if (policy?.allowUnsafeUrlOverrides !== true) return null;
-  return parseTrustedHttpsUrl(value) ? value : null;
+  return parseTrustedHttpsUrl(value) || parseTrustedLoopbackHttpUrl(value) ? value : null;
 };
 
 const normalizeMicrosoftGraphSpecUrl = (
@@ -508,6 +537,70 @@ const filterPathItem = (
   return kept;
 };
 
+const normalizedMediaType = (mediaType: string): string =>
+  mediaType.split(";")[0]?.trim().toLowerCase() ?? "";
+
+const isBinaryStringSchema = (schema: unknown): boolean =>
+  isRecord(schema) &&
+  (schema.type === "string" || (Array.isArray(schema.type) && schema.type.includes("string"))) &&
+  (schema.format === "binary" || schema.format === "byte");
+
+// Graph declares success responses with the OpenAPI wildcard status key "2XX",
+// never numeric codes like "200" (only "204" appears numerically in the spec).
+const isSuccessStatusKey = (status: string): boolean =>
+  /^2\d\d$/.test(status) || /^2xx$/i.test(status);
+
+// Rewrite any success response whose `application/octet-stream` media carries a
+// non-binary schema (report-style Graph endpoints declare `type: object` with a
+// `value` property there) to a plain binary string, so the OpenAPI extractor
+// emits a `binaryResponse` file hint. Already-binary media and all other media
+// types and response fields are left untouched.
+const normalizeMicrosoftGraphContentPathItem = (
+  pathItem: Record<string, unknown>,
+): Record<string, unknown> => {
+  let changed = false;
+  const next: Record<string, unknown> = { ...pathItem };
+
+  for (const [key, operation] of Object.entries(pathItem)) {
+    if (!HTTP_METHODS.has(key.toLowerCase()) || !isRecord(operation)) continue;
+    const responses = isRecord(operation.responses) ? operation.responses : undefined;
+    if (!responses) continue;
+
+    let responsesChanged = false;
+    const nextResponses: Record<string, unknown> = { ...responses };
+    for (const [status, response] of Object.entries(responses)) {
+      if (!isSuccessStatusKey(status) || !isRecord(response)) continue;
+      const content = isRecord(response.content) ? response.content : undefined;
+      if (!content) continue;
+
+      let contentChanged = false;
+      const nextContent: Record<string, unknown> = { ...content };
+      for (const [mediaType, media] of Object.entries(content)) {
+        if (normalizedMediaType(mediaType) !== "application/octet-stream") continue;
+        const schema = isRecord(media) ? media.schema : undefined;
+        if (isBinaryStringSchema(schema)) continue;
+        nextContent[mediaType] = {
+          ...(isRecord(media) ? media : {}),
+          schema: { type: "string", format: "binary" },
+        };
+        contentChanged = true;
+      }
+
+      if (contentChanged) {
+        nextResponses[status] = { ...response, content: nextContent };
+        responsesChanged = true;
+      }
+    }
+
+    if (responsesChanged) {
+      next[key] = { ...operation, responses: nextResponses };
+      changed = true;
+    }
+  }
+
+  return changed ? next : pathItem;
+};
+
 export const fetchMicrosoftGraphOpenApiSpec = Effect.fn("Microsoft.fetchGraphOpenApiSpec")(
   function* (specUrl: string) {
     const client = yield* HttpClient.HttpClient;
@@ -576,11 +669,13 @@ export const fetchMicrosoftGraphPermissionsReference = Effect.fn(
 
 /**
  * Build the per-path-item filter that the streaming compile applies to each
- * path-item as it parses the 37MB source. Returns `undefined` for a full-graph
- * selection (keep everything). The selection predicate is identical to the old
- * two-pass filter: the selected scopes are derived from the PRESET scopes
- * (`microsoftGraphScopesForPresetIds`), not the expanded OAuth scopes, so the
- * kept operation set matches regardless of caller.
+ * path-item as it parses the 37MB source. Full-graph selections keep every
+ * path-item, but still pass through this transform so octet-stream success
+ * responses are normalized to binary before the OpenAPI extractor runs. The
+ * selection predicate is identical to the old two-pass filter: the selected
+ * scopes are derived from the PRESET scopes (`microsoftGraphScopesForPresetIds`),
+ * not the expanded OAuth scopes, so the kept operation set matches regardless
+ * of caller.
  */
 export const microsoftGraphKeepPathItem = (selection: {
   readonly coversFullGraph: boolean;
@@ -589,19 +684,22 @@ export const microsoftGraphKeepPathItem = (selection: {
   readonly exactPaths: readonly string[];
   readonly pathPrefixes: readonly string[];
   readonly tagPrefixes: readonly string[];
-}): KeepPathItem | undefined => {
-  if (selection.coversFullGraph) return undefined;
+}): KeepPathItem => {
   const exactPaths = new Set(selection.exactPaths);
   const selectedScopes = new Set(
     microsoftGraphScopesForPresetIds(selection.presetIds, selection.customScopes),
   );
-  return (path, pathItem) =>
-    filterPathItem(path, pathItem, {
-      exactPaths,
-      pathPrefixes: selection.pathPrefixes,
-      tagPrefixes: selection.tagPrefixes,
-      selectedScopes,
-    });
+  return (path, pathItem) => {
+    const kept = selection.coversFullGraph
+      ? pathItem
+      : filterPathItem(path, pathItem, {
+          exactPaths,
+          pathPrefixes: selection.pathPrefixes,
+          tagPrefixes: selection.tagPrefixes,
+          selectedScopes,
+        });
+    return kept ? normalizeMicrosoftGraphContentPathItem(kept) : null;
+  };
 };
 
 /**
