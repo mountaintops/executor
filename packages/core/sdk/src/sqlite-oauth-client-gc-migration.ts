@@ -10,9 +10,12 @@
 // by primary key. Rewriting the DCR heuristic as SQLite LIKE/GLOB would be a
 // second, drift-prone source of truth for a query that DELETES user data; the
 // oauth_client table is tiny (a handful of rows per install), so reading it in
-// full at boot is cheap. Idempotent: a second run finds no orphaned DCR rows
-// and no null-issuer DCR survivors, so it is a no-op (and the ledger skips it
-// anyway once stamped).
+// full at boot is cheap. Every surviving row is left with an explicit
+// `origin_kind` (DCR survivors → `dynamic_client_registration`, everything else
+// → `manual`) so no row keeps a NULL classification. Idempotent: a second run
+// finds no orphaned DCR rows, no null-issuer DCR survivors, and no NULL
+// origin_kind rows, so it is a no-op (and the ledger skips it anyway once
+// stamped).
 // ---------------------------------------------------------------------------
 
 import { Effect } from "effect";
@@ -58,10 +61,19 @@ const tableExists = (
  */
 export const runSqliteOAuthClientGcMigration = (
   client: SqliteDataMigrationClient,
-): Effect.Effect<{ readonly deleted: number; readonly backfilled: number }, DataMigrationError> =>
+): Effect.Effect<
+  {
+    readonly deleted: number;
+    readonly backfilled: number;
+    readonly stampedDcr: number;
+    readonly stampedManual: number;
+  },
+  DataMigrationError
+> =>
   Effect.gen(function* () {
     // A pre-oauth database (or a partial baseline) simply has nothing to do.
-    if (!(yield* tableExists(client, "oauth_client"))) return { deleted: 0, backfilled: 0 };
+    if (!(yield* tableExists(client, "oauth_client")))
+      return { deleted: 0, backfilled: 0, stampedDcr: 0, stampedManual: 0 };
     const hasConnections = yield* tableExists(client, "connection");
 
     const rowsResult = yield* execute(
@@ -93,9 +105,25 @@ export const runSqliteOAuthClientGcMigration = (
     const applyAll = Effect.gen(function* () {
       let deleted = 0;
       let backfilled = 0;
+      let stampedDcr = 0;
+      let stampedManual = 0;
 
       for (const row of rows) {
-        if (!isDcrClassifiedRow(row)) continue; // manual apps: never touched.
+        const isDcr = isDcrClassifiedRow(row);
+
+        // Manual apps are never deleted or issuer-backfilled, but a legacy
+        // (null origin_kind) manual row still gets an explicit `manual` stamp so
+        // every surviving row ends this migration with a concrete classification.
+        if (!isDcr) {
+          if (row.origin_kind == null) {
+            yield* execute(client, {
+              sql: "UPDATE oauth_client SET origin_kind = 'manual' WHERE tenant = ? AND owner = ? AND slug = ?",
+              args: [row.tenant ?? null, row.owner ?? null, row.slug ?? null],
+            });
+            stampedManual += 1;
+          }
+          continue;
+        }
 
         const count = referenceCounts.get(referenceKey(row.tenant, row.owner, row.slug)) ?? 0;
         const decision = classifyOAuthClientGc(row, count);
@@ -109,24 +137,35 @@ export const runSqliteOAuthClientGcMigration = (
           continue;
         }
 
-        // Surviving (referenced) DCR row with no stored issuer: backfill it from
-        // the registrable origin of token_url so the per-AS reuse lookup keys on
-        // it and mints no new duplicate.
+        // Surviving DCR row. Stamp a legacy (null origin_kind) survivor as DCR,
+        // and backfill its `origin_issuer` from the registrable origin of
+        // token_url when it has none, so the per-AS reuse lookup keys on it and
+        // mints no new duplicate. Both live in one UPDATE per row.
+        const setClauses: string[] = [];
+        const setArgs: unknown[] = [];
+        if (row.origin_kind == null) {
+          setClauses.push("origin_kind = 'dynamic_client_registration'");
+          stampedDcr += 1;
+        }
         if (row.origin_issuer == null) {
           const issuer =
             row.token_url == null ? null : registrableOriginOfUrl(String(row.token_url));
           if (issuer !== null) {
-            yield* execute(client, {
-              sql: "UPDATE oauth_client SET origin_issuer = ? WHERE tenant = ? AND owner = ? AND slug = ?",
-              args: [issuer, row.tenant ?? null, row.owner ?? null, row.slug ?? null],
-            });
+            setClauses.push("origin_issuer = ?");
+            setArgs.push(issuer);
             backfilled += 1;
           }
+        }
+        if (setClauses.length > 0) {
+          yield* execute(client, {
+            sql: `UPDATE oauth_client SET ${setClauses.join(", ")} WHERE tenant = ? AND owner = ? AND slug = ?`,
+            args: [...setArgs, row.tenant ?? null, row.owner ?? null, row.slug ?? null],
+          });
         }
       }
 
       yield* execute(client, "COMMIT");
-      return { deleted, backfilled };
+      return { deleted, backfilled, stampedDcr, stampedManual };
     });
 
     yield* execute(client, "BEGIN");

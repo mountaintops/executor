@@ -94,9 +94,28 @@ export const gcDeadDcrOAuthClientsMigration: CodeMigration = {
     let deleted = 0;
     let backfilled = 0;
     let referencedDcr = 0;
+    let stampedDcr = 0;
+    let stampedManual = 0;
 
     for (const row of rows) {
-      if (!isDcrClassifiedRow(row)) continue; // manual apps: never touched.
+      const isDcr = isDcrClassifiedRow(row);
+
+      // Manual apps are never deleted or issuer-backfilled, but a legacy (null
+      // origin_kind) manual row still gets an explicit `manual` stamp so every
+      // surviving row ends this migration with a concrete classification.
+      if (!isDcr) {
+        if (row.origin_kind == null) {
+          if (!context.dryRun) {
+            await context.sql.unsafe(
+              `UPDATE oauth_client SET origin_kind = 'manual'
+                WHERE tenant = $1 AND owner = $2 AND slug = $3`,
+              [row.tenant, row.owner, row.slug],
+            );
+          }
+          stampedManual += 1;
+        }
+        continue;
+      }
 
       const count = referenceCounts.get(referenceKey(row.tenant, row.owner, row.slug)) ?? 0;
       const decision = classifyOAuthClientGc(row, count);
@@ -113,30 +132,43 @@ export const gcDeadDcrOAuthClientsMigration: CodeMigration = {
       }
 
       referencedDcr += 1;
-      // Surviving (referenced) DCR row with no stored issuer: backfill it from
-      // the registrable origin of token_url so the per-AS reuse lookup keys on
-      // it and mints no new duplicate.
+      // Surviving DCR row. Stamp a legacy (null origin_kind) survivor as DCR,
+      // and backfill its `origin_issuer` from the registrable origin of
+      // token_url when it has none, so the per-AS reuse lookup keys on it and
+      // mints no new duplicate. Both fold into one UPDATE per row.
+      const setClauses: string[] = [];
+      const setArgs: unknown[] = [];
+      if (row.origin_kind == null) {
+        setClauses.push(`origin_kind = 'dynamic_client_registration'`);
+        stampedDcr += 1;
+      }
       if (row.origin_issuer == null) {
         const issuer = row.token_url == null ? null : registrableOriginOfUrl(row.token_url);
         if (issuer !== null) {
-          if (!context.dryRun) {
-            await context.sql.unsafe(
-              `UPDATE oauth_client SET origin_issuer = $1
-                WHERE tenant = $2 AND owner = $3 AND slug = $4`,
-              [issuer, row.tenant, row.owner, row.slug],
-            );
-          }
+          setArgs.push(issuer);
+          setClauses.push(`origin_issuer = $${setArgs.length}`);
           backfilled += 1;
         }
+      }
+      if (setClauses.length > 0 && !context.dryRun) {
+        const whereBase = setArgs.length;
+        await context.sql.unsafe(
+          `UPDATE oauth_client SET ${setClauses.join(", ")}
+            WHERE tenant = $${whereBase + 1} AND owner = $${whereBase + 2} AND slug = $${whereBase + 3}`,
+          [...setArgs, row.tenant, row.owner, row.slug],
+        );
       }
     }
 
     const verb = context.dryRun ? "would delete" : "deleted";
     const backfillVerb = context.dryRun ? "would backfill" : "backfilled";
+    const stampVerb = context.dryRun ? "would stamp" : "stamped";
     return {
       summary:
         `${rows.length} oauth_client row(s): ${verb} ${deleted} orphaned DCR client(s), ` +
-        `${backfillVerb} ${backfilled} of ${referencedDcr} referenced DCR client(s)`,
+        `${backfillVerb} ${backfilled} of ${referencedDcr} referenced DCR client(s), ` +
+        `${stampVerb} ${stampedDcr + stampedManual} legacy row(s) ` +
+        `(${stampedDcr} dcr, ${stampedManual} manual)`,
     };
   },
 };

@@ -29,6 +29,7 @@ const makeFake = (input: {
 }) => {
   const deletes: string[] = [];
   const updates: { slug: string; issuer: string }[] = [];
+  const stamps: { slug: string; kind: string }[] = [];
 
   const sql: CodeMigrationSql = {
     unsafe: (query: string, params?: readonly unknown[]) => {
@@ -53,15 +54,27 @@ const makeFake = (input: {
         return Promise.resolve([] as never);
       }
       if (q.startsWith("UPDATE oauth_client")) {
-        const [issuer, , , slug] = params as [string, string, string, string];
-        updates.push({ slug, issuer });
+        // The slug is always the last positional param. The DCR-survivor UPDATE
+        // may set origin_issuer (an `origin_issuer = $N` clause with the issuer
+        // as its first param) and/or stamp origin_kind (a literal in the SQL).
+        const args = (params ?? []) as readonly string[];
+        const slug = args[args.length - 1];
+        if (q.includes("origin_kind = 'manual'")) {
+          stamps.push({ slug, kind: "manual" });
+        }
+        if (q.includes("origin_kind = 'dynamic_client_registration'")) {
+          stamps.push({ slug, kind: "dynamic_client_registration" });
+        }
+        if (q.includes("origin_issuer =")) {
+          updates.push({ slug, issuer: args[0] });
+        }
         return Promise.resolve([] as never);
       }
       throw new Error(`unexpected query: ${q}`);
     },
   };
 
-  return { sql, deletes, updates, rowsRef: () => input.rows };
+  return { sql, deletes, updates, stamps, rowsRef: () => input.rows };
 };
 
 const row = (over: Partial<OAuthClientRow> & { readonly slug: string }): OAuthClientRow => ({
@@ -109,6 +122,11 @@ describe("gcDeadDcrOAuthClientsMigration", () => {
 
       expect(fake.deletes.sort()).toEqual(["cloudflare-mcp-2", "dcr-cloudflare-com"]);
       expect(fake.updates).toEqual([{ slug: "cloudflare-mcp", issuer: "https://cloudflare.com" }]);
+      // The surviving legacy DCR row gets an explicit DCR stamp; the already
+      // explicitly-stamped manual app is never restamped.
+      expect(fake.stamps).toEqual([
+        { slug: "cloudflare-mcp", kind: "dynamic_client_registration" },
+      ]);
       expect(
         fake
           .rowsRef()
@@ -117,6 +135,31 @@ describe("gcDeadDcrOAuthClientsMigration", () => {
       ).toEqual(["cloudflare-mcp", "my-github-app"]);
       expect(result.summary).toContain("deleted 2 orphaned DCR client(s)");
       expect(result.summary).toContain("backfilled 1 of 1 referenced DCR client(s)");
+      expect(result.summary).toContain("stamped 1 legacy row(s) (1 dcr, 0 manual)");
+    }),
+  );
+
+  it.effect("stamps a legacy null-origin manual survivor as manual with no issuer", () =>
+    Effect.promise(async () => {
+      const fake = makeFake({
+        rows: [
+          // Legacy manual row: null origin_kind, auth-code, NO resource → manual.
+          row({
+            slug: "legacy-manual",
+            token_url: "https://github.com/login/oauth/access_token",
+            resource: null,
+          }),
+        ],
+        references: {},
+      });
+
+      const result = await runMigration(fake, false);
+
+      expect(fake.deletes).toEqual([]);
+      expect(fake.updates).toEqual([]);
+      expect(fake.stamps).toEqual([{ slug: "legacy-manual", kind: "manual" }]);
+      expect(fake.rowsRef().map((r) => r.slug)).toEqual(["legacy-manual"]);
+      expect(result.summary).toContain("stamped 1 legacy row(s) (0 dcr, 1 manual)");
     }),
   );
 
@@ -134,9 +177,13 @@ describe("gcDeadDcrOAuthClientsMigration", () => {
 
       expect(fake.deletes).toEqual([]);
       expect(fake.updates).toEqual([]);
+      expect(fake.stamps).toEqual([]);
       expect(fake.rowsRef()).toHaveLength(2);
       expect(result.summary).toContain("would delete 1 orphaned DCR client(s)");
       expect(result.summary).toContain("would backfill 1 of 1 referenced DCR client(s)");
+      // The referenced legacy DCR survivor WOULD be stamped, counted but not
+      // written.
+      expect(result.summary).toContain("would stamp 1 legacy row(s) (1 dcr, 0 manual)");
     }),
   );
 

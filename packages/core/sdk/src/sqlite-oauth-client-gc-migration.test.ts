@@ -97,6 +97,15 @@ const issuerOf = async (db: SqliteTestFumaDb, slug: string): Promise<string | nu
   return value == null ? null : String(value);
 };
 
+const originKindOf = async (db: SqliteTestFumaDb, slug: string): Promise<string | null> => {
+  const result = await db.client.execute({
+    sql: "SELECT origin_kind FROM oauth_client WHERE slug = ?",
+    args: [slug],
+  });
+  const value = result.rows[0]?.origin_kind;
+  return value == null ? null : String(value);
+};
+
 describe("runSqliteOAuthClientGcMigration", () => {
   it.effect("deletes orphaned DCR rows, keeps manual + referenced rows, backfills survivors", () =>
     Effect.gen(function* () {
@@ -137,17 +146,73 @@ describe("runSqliteOAuthClientGcMigration", () => {
           const applied = await Effect.runPromise(runSqliteOAuthClientGcMigration(db.client));
           const surviving = await slugs(db);
           const backfilled = await issuerOf(db, "cloudflare-mcp");
-          return { applied, surviving, backfilled };
+          const survivorKind = await originKindOf(db, "cloudflare-mcp");
+          const manualKind = await originKindOf(db, "my-github-app");
+          const manualIssuer = await issuerOf(db, "my-github-app");
+          return {
+            applied,
+            surviving,
+            backfilled,
+            survivorKind,
+            manualKind,
+            manualIssuer,
+          };
         }),
       );
 
-      expect(outcome.applied).toEqual({ deleted: 2, backfilled: 1 });
+      expect(outcome.applied).toEqual({
+        deleted: 2,
+        backfilled: 1,
+        stampedDcr: 1,
+        stampedManual: 0,
+      });
       // Both orphaned DCR rows gone; the referenced DCR row and the manual app
       // survive.
       expect(outcome.surviving).toEqual(["cloudflare-mcp", "my-github-app"]);
       // The surviving legacy DCR row got its issuer backfilled from token_url's
-      // registrable origin, so the per-AS reuse lookup can now key on it.
+      // registrable origin, so the per-AS reuse lookup can now key on it, and it
+      // is stamped as an explicit DCR row.
       expect(outcome.backfilled).toBe("https://cloudflare.com");
+      expect(outcome.survivorKind).toBe("dynamic_client_registration");
+      // The manual app was already explicitly stamped, so its stamp is untouched
+      // and it never gets an origin_issuer.
+      expect(outcome.manualKind).toBe("manual");
+      expect(outcome.manualIssuer).toBeNull();
+    }),
+  );
+
+  it.effect("stamps a legacy null-origin manual survivor as manual with no issuer", () =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.promise(() =>
+        withDb(async (db) => {
+          // Legacy manual row: null origin_kind, auth-code, but NO resource, so
+          // the classifier keeps it manual. It must survive, get an explicit
+          // `manual` stamp, and NOT receive an origin_issuer.
+          await insertOAuthClient(db, {
+            slug: "legacy-manual",
+            tokenUrl: "https://github.com/login/oauth/access_token",
+            resource: null,
+            originKind: null,
+            originIssuer: null,
+          });
+
+          const applied = await Effect.runPromise(runSqliteOAuthClientGcMigration(db.client));
+          const surviving = await slugs(db);
+          const kind = await originKindOf(db, "legacy-manual");
+          const issuer = await issuerOf(db, "legacy-manual");
+          return { applied, surviving, kind, issuer };
+        }),
+      );
+
+      expect(outcome.applied).toEqual({
+        deleted: 0,
+        backfilled: 0,
+        stampedDcr: 0,
+        stampedManual: 1,
+      });
+      expect(outcome.surviving).toEqual(["legacy-manual"]);
+      expect(outcome.kind).toBe("manual");
+      expect(outcome.issuer).toBeNull();
     }),
   );
 
@@ -178,10 +243,21 @@ describe("runSqliteOAuthClientGcMigration", () => {
         }),
       );
 
-      expect(outcome.first).toEqual({ deleted: 1, backfilled: 1 });
-      // Second pass is a no-op: the orphan is already gone and the survivor's
-      // issuer is already set (so it is no longer a null-issuer candidate).
-      expect(outcome.second).toEqual({ deleted: 0, backfilled: 0 });
+      expect(outcome.first).toEqual({
+        deleted: 1,
+        backfilled: 1,
+        stampedDcr: 1,
+        stampedManual: 0,
+      });
+      // Second pass is a no-op: the orphan is already gone, the survivor's issuer
+      // is set, and its origin_kind is stamped (so it is no longer a null-origin
+      // candidate for any of delete / backfill / stamp).
+      expect(outcome.second).toEqual({
+        deleted: 0,
+        backfilled: 0,
+        stampedDcr: 0,
+        stampedManual: 0,
+      });
       expect(outcome.afterSecond).toEqual(outcome.afterFirst);
       expect(outcome.afterSecond).toEqual(["cloudflare-mcp"]);
     }),
@@ -212,7 +288,7 @@ describe("runSqliteOAuthClientGcMigration", () => {
       const applied = yield* Effect.promise(() =>
         withDb((db) => Effect.runPromise(runSqliteOAuthClientGcMigration(db.client))),
       );
-      expect(applied).toEqual({ deleted: 0, backfilled: 0 });
+      expect(applied).toEqual({ deleted: 0, backfilled: 0, stampedDcr: 0, stampedManual: 0 });
     }),
   );
 });
