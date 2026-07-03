@@ -1593,6 +1593,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                 existingSlugs={clientSummaries.map((c: OAuthClientSummary) => String(c.slug))}
                 fixedSlug={editingClient.slug}
                 fixedOwner={editingClient.owner}
+                // Preserve the app's already-recorded origin verbatim (only a
+                // "manual" origin carries a recorded integration; DCR apps
+                // aren't edited through this form). Editing must never
+                // re-derive this from the current dialog's integration.
+                intentIntegration={
+                  editingClient.origin.kind === "manual"
+                    ? (editingClient.origin.integration ?? null)
+                    : null
+                }
                 prefill={{
                   authorizationUrl: editingClient.authorizationUrl,
                   tokenUrl: editingClient.tokenUrl,

@@ -76,6 +76,19 @@ export const registrationScopes = (
   discoveredScopes: readonly string[],
 ): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
 
+/** The `originIntegration` to send with a `createClient` payload. When the
+ *  caller passes an explicit `intentIntegration` (edit flow: the app's
+ *  preserved recorded intent, which may legitimately be `null`), it wins
+ *  verbatim — editing must never silently overwrite a stamp. Otherwise this is
+ *  a fresh registration from an integration's dialog, which stamps the current
+ *  integration as recorded intent (or `null` outside any integration
+ *  context). */
+export const resolveOriginIntegration = (
+  intentIntegration: IntegrationSlug | null | undefined,
+  integrationSlug: IntegrationSlug | undefined,
+): IntegrationSlug | null =>
+  intentIntegration !== undefined ? intentIntegration : (integrationSlug ?? null);
+
 export const canSubmitOAuthClientForm = (input: {
   readonly submitting: boolean;
   readonly name: string;
@@ -101,6 +114,13 @@ export function OAuthClientForm(props: {
    *  when editing (an existing app's origin is fixed) or when there is no single
    *  integration context. */
   readonly integrationSlug?: IntegrationSlug;
+  /** Explicit recorded-intent stamp to send verbatim, overriding the default
+   *  derivation from `integrationSlug`. Set this when editing an existing app
+   *  so its ALREADY-recorded origin (which may be `null`) is preserved rather
+   *  than re-derived from the current dialog's integration context. Omit for a
+   *  fresh registration, where the default (stamp `integrationSlug`, or `null`
+   *  outside an integration context) is correct. */
+  readonly intentIntegration?: IntegrationSlug | null;
   /** Existing client slugs, so the generated slug stays unique across apps. */
   readonly existingSlugs: readonly string[];
   /** Endpoints/scopes declared by the integration's OAuth method. */
@@ -125,6 +145,7 @@ export function OAuthClientForm(props: {
   const {
     integrationName,
     integrationSlug,
+    intentIntegration,
     existingSlugs,
     prefill,
     fixedSlug,
@@ -307,9 +328,10 @@ export function OAuthClientForm(props: {
         clientId: clientId.trim(),
         clientSecret: clientSecret.trim(),
         resource,
-        // Editing keeps the app's original origin; only a fresh registration
-        // from an integration's dialog stamps recorded intent.
-        originIntegration: fixedSlug ? null : (integrationSlug ?? null),
+        // Editing preserves the app's already-recorded origin (via
+        // `intentIntegration`, passed verbatim by the caller); a fresh
+        // registration from an integration's dialog stamps recorded intent.
+        originIntegration: resolveOriginIntegration(intentIntegration, integrationSlug),
       },
       reactivityKeys: oauthClientWriteKeys,
     });
