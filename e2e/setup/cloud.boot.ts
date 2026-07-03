@@ -90,6 +90,11 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     MCP_AUTHKIT_DOMAIN: workosUrl,
     MCP_RESOURCE_ORIGIN: options.publicUrl,
     ALLOW_LOCAL_NETWORK: "true",
+    // Shrink the per-org hourly execution cap (prod default 1000) to a number
+    // the rate-limit-backstop scenario can actually exhaust with real
+    // executions. Reaches the worker via CLOUDFLARE_INCLUDE_PROCESS_ENV, same
+    // as ALLOW_LOCAL_NETWORK.
+    EXECUTION_RATE_LIMIT_PER_HOUR: "3",
     // Throwaway PGlite on its own port + dir so it never fights `bun dev`.
     DEV_DB_PORT: String(options.dbPort),
     DEV_DB_PATH: dbPath,

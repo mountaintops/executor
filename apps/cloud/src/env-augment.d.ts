@@ -39,6 +39,13 @@ declare global {
       // limiter degrades to disabled when absent.
       EXECUTION_RATE_LIMITER?: import("@cloudflare/workers-types").DurableObjectNamespace;
 
+      // Optional per-org hourly execution rate-limit override, parsed as an
+      // integer (defaults to EXECUTIONS_PER_ORG_PER_HOUR = 1000 when unset or
+      // unparseable). Exists for e2e: the production cap of 1000/hour can't be
+      // exercised with real executions, so the e2e dev-server env sets a small
+      // number to drive the backstop. Production leaves it unset.
+      EXECUTION_RATE_LIMIT_PER_HOUR?: string;
+
       // Billing
       AUTUMN_SECRET_KEY?: string;
       /** Optional Autumn base-URL override (Autumn emulator in tests/dev). */
