@@ -25,6 +25,16 @@ develop on its `main`, publish a bump, then bump the dependency here. The
 
 ## Dev servers
 
+There is no `.claude/launch.json` here (ports are dynamic — see below), so
+there's no fixed server name to guess. Start what you need with the commands
+below, or check `.claude/launch.json` first if one has since been added.
+
+Never kill a running dev/preview server unless explicitly asked — the user
+may be actively using it (e.g. via `bun run cli up <target> --share`, see
+below). If you need a server and the port is taken, use another port rather
+than killing what's there; `bun run reap` is for orphaned/leaked stacks, not
+servers someone is using.
+
 - Everything except desktop/cloud: `bun run dev` (turbo, from root)
 - One app: `bun run dev` from its `apps/<name>` directory
 - Self-host boots standalone with just env vars — see

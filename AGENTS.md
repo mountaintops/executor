@@ -5,6 +5,14 @@ run, boot, share, or navigate things today, see [RUNNING.md](RUNNING.md); for
 e2e scenarios, [e2e/AGENTS.md](e2e/AGENTS.md). Run `bun run bootstrap` first in
 any fresh checkout or worktree.
 
+## Dev Server
+
+See [RUNNING.md → Dev servers](RUNNING.md#dev-servers) for how to start/preview
+each app. Ports are dynamic (`portless`, per-checkout derived ports), so there's
+no fixed `.claude/launch.json` — check it first if one exists before starting
+anything, and never guess a server name. Never kill a running dev/preview
+server unless explicitly asked; the user may be actively using it.
+
 ## Task Completion
 
 - Tests use Effect Vitest. Run scoped tests with `vitest run ...`. `bun run test`
