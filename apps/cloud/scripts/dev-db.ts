@@ -111,6 +111,12 @@ const server = new PGLiteSocketServer({
   port: PORT,
   host: "127.0.0.1",
   maxConnections: Number(process.env.DEV_DB_MAX_CONNECTIONS ?? 1000),
+  // Backstop for pipeline affinity: a client that stalls mid-pipeline (Parse
+  // sent, no Sync) with its socket still OPEN would hold the queue's handler
+  // affinity forever and starve every other connection, since affinity only
+  // releases on detach and detach needs close/error/idle-timeout. In ms; the
+  // timer resets on every data event, so only a genuinely dead client trips it.
+  idleTimeout: Number(process.env.DEV_DB_IDLE_TIMEOUT_MS ?? 30_000),
 });
 
 await server.start();
