@@ -1,4 +1,7 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   cmdSetValue,
@@ -11,6 +14,14 @@ import {
   parseNetstatListenerPids,
   parseSchtasksRunning,
 } from "./service";
+
+const tempDirs: Array<string> = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("service unit generation", () => {
   const launchdInput = {
@@ -36,16 +47,49 @@ describe("service unit generation", () => {
     workingDirectory: "/Users/x/.executor",
   };
 
+  const makeExecutorBundle = (bundleIdentifier: string): string => {
+    const root = mkdtempSync(join(tmpdir(), "executor-launchd-bundle-"));
+    tempDirs.push(root);
+    const contentsDir = join(root, "Executor.app", "Contents");
+    const executableDir = join(contentsDir, "Resources", "executor");
+    mkdirSync(executableDir, { recursive: true });
+    writeFileSync(
+      join(contentsDir, "Info.plist"),
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>${bundleIdentifier}</string>
+</dict>
+</plist>
+`,
+    );
+    return join(executableDir, "executor");
+  };
+
+  const expectLaunchdInvariants = (plist: string, input: typeof launchdInput): void => {
+    const programArguments = input.programArguments
+      .map((arg) => `    <string>${arg}</string>`)
+      .join("\n");
+
+    expect(plist).toContain("<key>Label</key>");
+    expect(plist).toContain(`<string>${input.label}</string>`);
+    expect(plist).toContain(
+      `  <key>ProgramArguments</key>\n  <array>\n${programArguments}\n  </array>`,
+    );
+    expect(plist).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/);
+    expect(plist).toMatch(
+      /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>\s*<\/dict>/,
+    );
+  };
+
   it("renders a launchd plist that restarts on crash but not clean stop", () => {
     const plist = generateLaunchdPlist(launchdInput);
+    expectLaunchdInvariants(plist, launchdInput);
     expect(plist).toContain('<plist version="1.0">');
-    expect(plist).toContain("<key>Label</key>");
-    expect(plist).toContain("<string>sh.executor.daemon</string>");
-    expect(plist).toMatch(/<key>RunAtLoad<\/key>\s*<true\/>/);
     // KeepAlive => restart only on non-zero/crash exit, not on a clean bootout.
-    expect(plist).toContain("<key>KeepAlive</key>");
     expect(plist).toContain("<key>SuccessfulExit</key>");
-    expect(plist).toMatch(/<key>SuccessfulExit<\/key>\s*<false\/>/);
     expect(plist).toContain("<key>ProcessType</key>");
     expect(plist).toContain("<string>Background</string>");
     expect(plist).toContain("--foreground");
@@ -57,6 +101,32 @@ describe("service unit generation", () => {
     const plist = generateLaunchdPlist(launchdInput);
     // No secret in the unit — the daemon reads the bearer from auth.json at boot.
     expect(plist).not.toContain("EXECUTOR_AUTH_PASSWORD");
+  });
+
+  it("associates an app-bundled launchd plist with the enclosing bundle identifier", () => {
+    const executablePath = makeExecutorBundle("sh.executor.desktop.test");
+    const input = {
+      ...launchdInput,
+      programArguments: [executablePath, ...launchdInput.programArguments.slice(1)],
+    };
+    const plist = generateLaunchdPlist(input);
+
+    expectLaunchdInvariants(plist, input);
+    expect(plist.match(/<key>AssociatedBundleIdentifiers<\/key>/g)).toHaveLength(1);
+    expect(plist).toMatch(
+      /<dict>\s*<key>Label<\/key>\s*<string>sh\.executor\.daemon<\/string>\s*<key>AssociatedBundleIdentifiers<\/key>\s*<array>\s*<string>sh\.executor\.desktop\.test<\/string>\s*<\/array>\s*<key>ProgramArguments<\/key>/,
+    );
+  });
+
+  it("omits app association for standalone launchd binaries", () => {
+    const input = {
+      ...launchdInput,
+      programArguments: ["/usr/local/bin/executor", ...launchdInput.programArguments.slice(1)],
+    };
+    const plist = generateLaunchdPlist(input);
+
+    expectLaunchdInvariants(plist, input);
+    expect(plist).not.toContain("AssociatedBundleIdentifiers");
   });
 
   it("xml-escapes environment values", () => {

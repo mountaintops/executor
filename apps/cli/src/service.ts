@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
@@ -143,6 +144,14 @@ const xmlEscape = (value: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
 
+const xmlUnescape = (value: string): string =>
+  value
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+
 // ---------------------------------------------------------------------------
 // Shared service environment + program args
 // ---------------------------------------------------------------------------
@@ -209,6 +218,36 @@ const launchdPlistPath = (path: Path.Path): string =>
 
 const serviceLogDir = (path: Path.Path): string => path.join(resolveExecutorDataDir(path), "logs");
 
+const DESKTOP_APP_BUNDLE_IDENTIFIER = "sh.executor.desktop";
+
+const enclosingAppBundlePath = (executablePath: string): string | null => {
+  const match = executablePath.match(/^(.*\.app)\/Contents\//);
+  return match?.[1] ?? null;
+};
+
+const readBundleIdentifier = (appBundlePath: string): string | null => {
+  try {
+    const plist = readFileSync(`${appBundlePath}/Contents/Info.plist`, "utf8");
+    const match = plist.match(/<key>\s*CFBundleIdentifier\s*<\/key>\s*<string>([^<]*)<\/string>/);
+    const bundleIdentifier = match ? xmlUnescape(match[1].trim()) : "";
+    return bundleIdentifier.length > 0 ? bundleIdentifier : null;
+  } catch {
+    return null;
+  }
+};
+
+const associatedBundleIdentifier = (programArguments: ReadonlyArray<string>): string | null => {
+  const executablePath = programArguments[0];
+  if (!executablePath) return null;
+  const appBundlePath = enclosingAppBundlePath(executablePath);
+  if (!appBundlePath) return null;
+  const bundleIdentifier = readBundleIdentifier(appBundlePath);
+  if (bundleIdentifier) return bundleIdentifier;
+  return /(?:^|\/)Executor\.app\/Contents\//.test(executablePath)
+    ? DESKTOP_APP_BUNDLE_IDENTIFIER
+    : null;
+};
+
 export interface LaunchdPlistOptions {
   readonly label: string;
   readonly programArguments: ReadonlyArray<string>;
@@ -219,7 +258,7 @@ export interface LaunchdPlistOptions {
 }
 
 /**
- * Render a user LaunchAgent plist. Pure (snapshot-tested). KeepAlive uses
+ * Render a user LaunchAgent plist. KeepAlive uses
  * `SuccessfulExit=false` so launchd restarts the daemon on a crash/non-zero
  * exit but leaves it stopped after a clean `bootout` (which sends SIGTERM →
  * the daemon exits 0). RunAtLoad starts it on login; ProcessType=Background
@@ -229,6 +268,10 @@ export const generateLaunchdPlist = (options: LaunchdPlistOptions): string => {
   const programArgs = options.programArguments
     .map((arg) => `    <string>${xmlEscape(arg)}</string>`)
     .join("\n");
+  const bundleIdentifier = associatedBundleIdentifier(options.programArguments);
+  const associatedBundleIdentifiers = bundleIdentifier
+    ? `  <key>AssociatedBundleIdentifiers</key>\n  <array>\n    <string>${xmlEscape(bundleIdentifier)}</string>\n  </array>\n`
+    : "";
   const envEntries = Object.entries(options.environment)
     .map(
       ([key, value]) =>
@@ -241,7 +284,7 @@ export const generateLaunchdPlist = (options: LaunchdPlistOptions): string => {
 <dict>
   <key>Label</key>
   <string>${xmlEscape(options.label)}</string>
-  <key>ProgramArguments</key>
+${associatedBundleIdentifiers}  <key>ProgramArguments</key>
   <array>
 ${programArgs}
   </array>
