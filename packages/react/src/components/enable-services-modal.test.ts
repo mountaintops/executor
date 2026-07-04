@@ -14,9 +14,13 @@ import {
   activeEnableServiceStep,
   applyEnableServiceStepResult,
   buildEnableServiceOAuthStartPayload,
+  continueEnableServiceStep,
   createEnableServicesQueue,
+  EnableServicesModal,
   retryEnableServiceStep,
   type EnableServiceIntegration,
+  type EnableServiceQueue,
+  type EnableServiceStepStatus,
 } from "./enable-services-modal";
 import type { OAuthStartPayload } from "../plugins/oauth-sign-in";
 
@@ -157,5 +161,108 @@ describe("buildEnableServiceOAuthStartPayload", () => {
         organizationId: "org_123",
       }),
     ).toBeNull();
+  });
+});
+
+describe("continueEnableServiceStep", () => {
+  /** Drives the queue exactly like EnableServicesModalBody: `continueStep`
+   *  mirrors handleContinue (Continue click), and step completion flows back
+   *  through markActive, so the opener-call count is observable per click. */
+  const harness = () => {
+    let queue: EnableServiceQueue<EnableServiceIntegration> = createEnableServicesQueue([
+      gmail,
+      calendar,
+    ]);
+    const started: {
+      readonly payload: OAuthStartPayload;
+      readonly onSuccess: () => void;
+      readonly onError: () => void;
+    }[] = [];
+    const markActive = (status: EnableServiceStepStatus) => {
+      const active = activeEnableServiceStep(queue);
+      if (active) queue = applyEnableServiceStepResult(queue, active.integration.slug, status);
+    };
+    const continueStep = () => {
+      const active = activeEnableServiceStep(queue);
+      if (!active) return;
+      continueEnableServiceStep({
+        account: account(),
+        integration: active.integration,
+        organizationId: "org_123",
+        start: (input) => started.push(input),
+        markActive,
+      });
+    };
+    return {
+      started,
+      continueStep,
+      queue: () => queue,
+    };
+  };
+
+  it("opens exactly one popup per Continue click and never auto-chains on success", () => {
+    const { started, continueStep, queue } = harness();
+
+    continueStep();
+    expect(started).toHaveLength(1);
+    expect(started[0]?.payload.integration).toBe(gmail.slug);
+
+    // The popup completes: the step is marked done and the queue advances,
+    // but no second popup opens without a fresh Continue click.
+    started[0]!.onSuccess();
+    expect(queue().steps[0]?.status).toBe("done");
+    expect(activeEnableServiceStep(queue())?.integration.slug).toBe(calendar.slug);
+    expect(started).toHaveLength(1);
+
+    continueStep();
+    expect(started).toHaveLength(2);
+    expect(started[1]?.payload.integration).toBe(calendar.slug);
+  });
+
+  it("does not auto-retry or auto-advance when a step fails", () => {
+    const { started, continueStep, queue } = harness();
+
+    continueStep();
+    started[0]!.onError();
+    expect(queue().steps[0]?.status).toBe("failed");
+    expect(activeEnableServiceStep(queue())?.integration.slug).toBe(gmail.slug);
+    expect(started).toHaveLength(1);
+  });
+
+  it("marks the step failed without opening a popup when no payload can be built", () => {
+    const started: OAuthStartPayload[] = [];
+    const statuses: EnableServiceStepStatus[] = [];
+    continueEnableServiceStep({
+      account: account({ label: "Personal Google" }),
+      integration: calendar,
+      organizationId: "org_123",
+      start: (input) => started.push(input.payload),
+      markActive: (status) => statuses.push(status),
+    });
+    expect(started).toHaveLength(0);
+    expect(statuses).toEqual(["failed"]);
+  });
+});
+
+describe("EnableServicesModal mount boundary", () => {
+  // The wrapper renders nothing while closed, so the body (and with it the
+  // useOAuthPopupFlow instance owning the in-flight popup) unmounts on close;
+  // the hook's unmount effect cancels the session. The wrapper has no hooks,
+  // so calling it as a plain function is safe here.
+  const wrapperProps = {
+    integrations: [gmail, calendar],
+    onOpenChange: () => {},
+  };
+
+  it("renders nothing when closed, unmounting the body and its OAuth flow", () => {
+    expect(EnableServicesModal({ ...wrapperProps, open: false, account: account() })).toBeNull();
+  });
+
+  it("renders nothing without an account", () => {
+    expect(EnableServicesModal({ ...wrapperProps, open: true, account: null })).toBeNull();
+  });
+
+  it("mounts the body only while open with an account", () => {
+    expect(EnableServicesModal({ ...wrapperProps, open: true, account: account() })).not.toBeNull();
   });
 });

@@ -141,6 +141,43 @@ export const buildEnableServiceOAuthStartPayload = (input: {
   };
 };
 
+/** Run one queue step: build the payload and open exactly one OAuth popup.
+ *  The completion callbacks only record the step result; advancing to the next
+ *  service always requires a fresh Continue click, so a finishing popup can
+ *  never auto-open the next one. */
+export const continueEnableServiceStep = (input: {
+  readonly account: ProviderAccount<Connection, EnableServiceIntegration>;
+  readonly integration: EnableServiceIntegration;
+  readonly organizationId: string | null;
+  readonly start: (input: {
+    readonly payload: OAuthStartPayload;
+    readonly onSuccess: () => void;
+    readonly onError: () => void;
+  }) => void;
+  readonly markActive: (status: EnableServiceStepStatus) => void;
+}): void => {
+  const payload = buildEnableServiceOAuthStartPayload({
+    account: input.account,
+    integration: input.integration,
+    organizationId: input.organizationId,
+  });
+  if (!payload) {
+    input.markActive("failed");
+    toast.error("This service cannot reuse the selected OAuth app");
+    return;
+  }
+  input.start({
+    payload,
+    onSuccess: () => {
+      input.markActive("done");
+      toast.success(`${input.integration.name} connected`);
+    },
+    onError: () => {
+      input.markActive("failed");
+    },
+  });
+};
+
 const serviceKey = (integration: EnableServiceIntegration): string => String(integration.slug);
 
 export function EnableServicesModal(props: {
@@ -203,25 +240,12 @@ function EnableServicesModalBody(props: {
 
   const handleContinue = () => {
     if (!active) return;
-    const payload = buildEnableServiceOAuthStartPayload({
+    continueEnableServiceStep({
       account: props.account,
       integration: active.integration,
       organizationId,
-    });
-    if (!payload) {
-      markActive("failed");
-      toast.error("This service cannot reuse the selected OAuth app");
-      return;
-    }
-    void oauthPopup.start({
-      payload,
-      onSuccess: () => {
-        markActive("done");
-        toast.success(`${active.integration.name} connected`);
-      },
-      onError: () => {
-        markActive("failed");
-      },
+      start: (input) => void oauthPopup.start(input),
+      markActive,
     });
   };
 
