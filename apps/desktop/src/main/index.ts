@@ -34,7 +34,7 @@ import {
   initErrorReporting,
   reportAProblem,
 } from "./diagnostics";
-import { sidecarCrashHtml } from "./crash-screen";
+import { sidecarCrashHtml, startupWindowHtml } from "./crash-screen";
 import { replaceSupervisedDaemonForDesktop } from "./supervised-connection";
 import {
   bundledExecutorPath,
@@ -137,6 +137,9 @@ const webUrlForConnection = (conn: SidecarConnection): string => {
   return url.toString();
 };
 
+const htmlDataUrl = (html: string): string =>
+  `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+
 // The supervised daemon (and the desktop sidecar) own this data dir — the same
 // path the CLI's `executor web`/daemon uses, so desktop and CLI share state.
 const DESKTOP_DATA_DIR = join(homedir(), ".executor");
@@ -216,6 +219,40 @@ const confirmEnableBackgroundService = async (): Promise<boolean> => {
   return response === 0;
 };
 
+const acceptSupervisedConnection = async (
+  attached: SidecarConnection,
+): Promise<SidecarConnection | null> => {
+  if (!shouldReplaceDaemonForDesktop(attached)) return attached;
+  const settings = getServerSettings();
+  return replaceSupervisedDaemonForDesktop(attached, {
+    install: () =>
+      installSupervisedService({
+        port: settings.port,
+        dataDir: DESKTOP_DATA_DIR,
+      }),
+    waitForAttach: () => waitForSupervisedAttach(30_000, { port: settings.port }),
+    attach: attachToSupervisedDaemon,
+    onInstallFailure: (error) => {
+      log.warn("Failed to replace older supervised daemon; re-checking before falling back", error);
+    },
+  });
+};
+
+const installSupervisedAndWait = async (reason: string): Promise<SidecarConnection | null> => {
+  const settings = getServerSettings();
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: install failure falls back to managed-spawn so the app still launches
+  try {
+    await installSupervisedService({
+      port: settings.port,
+      dataDir: DESKTOP_DATA_DIR,
+    });
+  } catch (error) {
+    log.warn(`Failed to install supervised service after ${reason}; using managed sidecar`, error);
+    return null;
+  }
+  return waitForSupervisedAttach(15_000, { port: settings.port });
+};
+
 /**
  * Resolve a connection to the OS-supervised daemon, installing it on first run
  * (with consent). Returns null when supervision is unavailable or the user
@@ -225,23 +262,7 @@ const ensureSupervisedConnection = async (): Promise<SidecarConnection | null> =
   // 1. Already running → attach.
   const attached = await attachToSupervisedDaemon();
   if (attached) {
-    if (!shouldReplaceDaemonForDesktop(attached)) return attached;
-    const settings = getServerSettings();
-    return replaceSupervisedDaemonForDesktop(attached, {
-      install: () =>
-        installSupervisedService({
-          port: settings.port,
-          dataDir: DESKTOP_DATA_DIR,
-        }),
-      waitForAttach: () => waitForSupervisedAttach(30_000, { port: settings.port }),
-      attach: attachToSupervisedDaemon,
-      onInstallFailure: (error) => {
-        log.warn(
-          "Failed to replace older supervised daemon; re-checking before falling back",
-          error,
-        );
-      },
-    });
+    return acceptSupervisedConnection(attached);
   }
 
   // Headless/e2e: the first-run background-service prompt and the systemd/
@@ -254,32 +275,41 @@ const ensureSupervisedConnection = async (): Promise<SidecarConnection | null> =
   const status = await supervisedServiceStatus();
   if (!status.supported) return null;
 
-  // 2. Registered but not currently serving → kick it and wait.
+  // 2. Registered and running, but the first attach missed it. Kick once and
+  // wait only when the kick command succeeds.
   if (status.registered) {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a restart failure just falls through to managed-spawn
+    if (status.running) {
+      const attachedAfterStatus = await attachToSupervisedDaemon();
+      if (attachedAfterStatus) return acceptSupervisedConnection(attachedAfterStatus);
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: a restart failure just falls through to managed-spawn
+      try {
+        await restartSupervisedService();
+      } catch (error) {
+        log.warn(
+          "Failed to restart running supervised service after attach failed; using managed sidecar",
+          error,
+        );
+        return null;
+      }
+      return waitForSupervisedAttach(15_000);
+    }
+
+    // 3. Registered but not running usually means a stale plist/unit/task. Try
+    // restart first, then reinstall the service if the OS manager cannot start it.
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: restart failure triggers supervised service self-heal
     try {
       await restartSupervisedService();
     } catch (error) {
-      log.warn("Failed to kickstart supervised service", error);
+      log.warn("Failed to restart registered supervised service; reinstalling", error);
+      return installSupervisedAndWait("registered service restart failure");
     }
     return waitForSupervisedAttach(15_000);
   }
 
-  // 3. First run → ask, then install + start. The unit carries no secret; the
+  // 4. First run → ask, then install + start. The unit carries no secret; the
   // supervised daemon mints/loads its bearer from auth.json under DESKTOP_DATA_DIR.
   if (!(await confirmEnableBackgroundService())) return null;
-  const settings = getServerSettings();
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: install failure falls back to managed-spawn so the app still launches
-  try {
-    await installSupervisedService({
-      port: settings.port,
-      dataDir: DESKTOP_DATA_DIR,
-    });
-  } catch (error) {
-    log.error("Failed to install supervised service; using managed sidecar", error);
-    return null;
-  }
-  return waitForSupervisedAttach(15_000);
+  return installSupervisedAndWait("first-run prompt");
 };
 
 // Crash monitor for the supervised daemon: the OS service manager restarts it
@@ -308,8 +338,7 @@ const armSupervisedMonitor = () => {
         if (supervisedMonitorMisses < SUPERVISED_MONITOR_MISSES_BEFORE_DOWN) return;
         if (!supervisedDaemonDown && window) {
           supervisedDaemonDown = true;
-          const html = sidecarCrashHtml({ reported: errorReportingEnabled });
-          void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+          showCrashScreen(window);
         }
         return;
       }
@@ -408,13 +437,11 @@ const installDockIcon = () => {
   log.info(`[dock-icon] set to ${iconPath} (${image.getSize().width}×${image.getSize().height})`);
 };
 
-const createWindow = async (conn: SidecarConnection) => {
+const createMainBrowserWindow = (options: { readonly show: boolean }): BrowserWindow => {
   const windowState = windowStateKeeper({
     defaultWidth: 1280,
     defaultHeight: 800,
   });
-
-  installBearerAuthHeader(conn.baseUrl, conn.authToken);
 
   const linuxIcon = resolveLinuxIcon();
 
@@ -431,7 +458,7 @@ const createWindow = async (conn: SidecarConnection) => {
     // header, which is offset to clear them (.desktop-macos-titlebar).
     minWidth: 768,
     minHeight: 480,
-    show: false,
+    show: options.show,
     backgroundColor: "#0a0a0a",
     autoHideMenuBar: true,
     ...(process.platform === "darwin"
@@ -488,15 +515,45 @@ const createWindow = async (conn: SidecarConnection) => {
     return { action: "deny" };
   });
 
+  return window;
+};
+
+const showStartupWindow = async (): Promise<void> => {
+  const window = liveMainWindow() ?? createMainBrowserWindow({ show: true });
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  window.focus();
+
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: local startup HTML should not block service startup
+  try {
+    await window.loadURL(htmlDataUrl(startupWindowHtml()));
+  } catch (error) {
+    log.warn("Failed to load startup window", error);
+  }
+};
+
+const showCrashScreen = (window: BrowserWindow | null = liveMainWindow()): void => {
+  if (!window) return;
+  const html = sidecarCrashHtml({ reported: errorReportingEnabled });
+  void window.loadURL(htmlDataUrl(html));
+};
+
+const createWindow = async (conn: SidecarConnection) => {
+  installBearerAuthHeader(conn.baseUrl, conn.authToken);
+
+  const existingWindow = liveMainWindow();
+  const window = existingWindow ?? createMainBrowserWindow({ show: false });
+
   // A supervised daemon can pass the health probe and still disappear before
   // navigation begins. Treat that as a failed connection instead of leaving the
   // user with a visible BrowserWindow that only shows the black background.
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Electron navigation rejects when the sidecar vanishes during startup
   try {
     await window.loadURL(webUrlForConnection(conn));
+    if (!window.isDestroyed() && !window.isVisible()) window.show();
   } catch (error) {
     log.error("Failed to load Executor web UI", error);
-    destroyWindow(window);
+    if (!existingWindow) destroyWindow(window);
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: caller decides whether to fall back or surface startup failure
     throw error;
   }
@@ -916,6 +973,7 @@ const runUpdateCheck = async ({ alertOnFail }: UpdateCheckOptions) => {
 // here, the boot-time update check never runs (it sits after a successful
 // sidecar start), so a broken app could never self-update its way out.
 const handleFatalSidecarFailure = async (error: unknown) => {
+  showCrashScreen();
   if (app.isPackaged) {
     // Install whatever finishes downloading by the time the user quits the
     // failure dialog; if it downloads while the dialog is open, the regular
@@ -1035,6 +1093,7 @@ const installApplicationMenu = () => {
 const boot = async () => {
   installDockIcon();
   installApplicationMenu();
+  await showStartupWindow();
   setupAutoUpdater();
   applyFakeUpdateFromEnv();
   registerIpcHandlers();
@@ -1042,10 +1101,7 @@ const boot = async () => {
   // every request with no explanation. Swap in the crash screen — its
   // buttons drive the regular preload bridge (restart / export diagnostics).
   onUnexpectedSidecarExit(() => {
-    const window = liveMainWindow();
-    if (!window) return;
-    const html = sidecarCrashHtml({ reported: errorReportingEnabled });
-    void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    showCrashScreen();
     // A crashing sidecar may be a broken release — quietly stage any
     // available update so the install prompt appears on its own (same
     // self-heal as the fatal startup path).
