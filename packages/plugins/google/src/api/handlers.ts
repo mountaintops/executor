@@ -28,6 +28,17 @@ export const GoogleHandlers = HttpApiBuilder.group(ExecutorApiWithGoogle, "googl
         }),
       ),
     )
+    .handle("addServices", ({ payload }) =>
+      capture(
+        Effect.gen(function* () {
+          const ext = yield* GoogleExtensionService;
+          return yield* ext.addServices({
+            services: payload.services,
+            baseUrl: payload.baseUrl,
+          });
+        }),
+      ),
+    )
     .handle("getIntegration", ({ params }) =>
       capture(
         Effect.gen(function* () {

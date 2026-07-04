@@ -19,6 +19,8 @@ export const googleConfigAtom = (slug: IntegrationSlug) =>
 
 export const addGoogleBundle = GoogleClient.mutation("google", "addBundle");
 
+export const addGoogleServices = GoogleClient.mutation("google", "addServices");
+
 export const updateGoogleBundle = GoogleClient.mutation("google", "updateBundle");
 
 export const removeGoogleBundle = GoogleClient.mutation("google", "removeBundle");

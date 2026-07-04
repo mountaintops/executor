@@ -59,6 +59,41 @@ const AddBundleResponse = Schema.Struct({
   toolCount: Schema.Number,
 });
 
+const AddServicePayload = Schema.Struct({
+  presetId: Schema.String,
+  slug: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+});
+
+const AddServicesPayload = Schema.Struct({
+  services: Schema.Array(AddServicePayload),
+  baseUrl: Schema.optional(Schema.String),
+});
+
+const AddServicesResponse = Schema.Struct({
+  added: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      toolCount: Schema.Number,
+    }),
+  ),
+  skipped: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      reason: Schema.Literal("already_exists"),
+    }),
+  ),
+  failed: Schema.Array(
+    Schema.Struct({
+      slug: IntegrationSlug,
+      presetId: Schema.String,
+      error: Schema.String,
+    }),
+  ),
+});
+
 const UpdateBundlePayload = Schema.Struct({
   urls: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -100,6 +135,13 @@ export const GoogleGroup = HttpApiGroup.make("google")
     HttpApiEndpoint.post("addBundle", "/google/bundles", {
       payload: AddBundlePayload,
       success: AddBundleResponse,
+      error: DomainErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("addServices", "/google/services", {
+      payload: AddServicesPayload,
+      success: AddServicesResponse,
       error: DomainErrors,
     }),
   )

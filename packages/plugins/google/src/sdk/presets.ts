@@ -276,6 +276,8 @@ export const googleOAuthConsentScopes: Readonly<Record<string, readonly string[]
 export const googleOAuthConsentScopesForPreset = (presetId: string): readonly string[] =>
   googleOAuthConsentScopes[presetId] ?? [];
 
+export const googleServiceSlug = (presetId: string): string => presetId.replaceAll("-", "_");
+
 // ---------------------------------------------------------------------------
 // Resolve a stored/normalized Discovery URL back to its preset, so a bundled
 // `google` integration can surface each selected API's `oauthAudience` (e.g. a

@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
@@ -43,8 +43,11 @@ import { decodeGoogleIntegrationConfig, type GoogleIntegrationConfig } from "./c
 import {
   googleOAuthConsentScopesForPreset,
   googleOpenApiBundlePreset,
+  googleOpenApiPresets,
   googlePhotosOpenApiBundlePreset,
   googlePhotosOpenApiPresets,
+  googleServiceSlug,
+  type GoogleOpenApiPreset,
 } from "./presets";
 
 const GOOGLE_OAUTH2_DISCOVERY_URL = "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest";
@@ -97,6 +100,41 @@ export interface GoogleBundleConfig {
   readonly baseUrl?: string;
 }
 
+export interface GoogleServiceConfig {
+  readonly presetId: string;
+  readonly slug?: string;
+  readonly name?: string;
+}
+
+export interface GoogleAddServicesInput {
+  readonly services: readonly GoogleServiceConfig[];
+  readonly baseUrl?: string;
+}
+
+export interface GoogleAddServicesAdded {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly toolCount: number;
+}
+
+export interface GoogleAddServicesSkipped {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly reason: "already_exists";
+}
+
+export interface GoogleAddServicesFailed {
+  readonly slug: IntegrationSlug;
+  readonly presetId: string;
+  readonly error: string;
+}
+
+export interface GoogleAddServicesResult {
+  readonly added: readonly GoogleAddServicesAdded[];
+  readonly skipped: readonly GoogleAddServicesSkipped[];
+  readonly failed: readonly GoogleAddServicesFailed[];
+}
+
 export interface GoogleConfigureInput {
   readonly authenticationTemplate: readonly AuthenticationInput[];
   readonly mode?: "merge" | "replace";
@@ -118,6 +156,23 @@ export interface GooglePluginOptions {
 }
 
 const DEFAULT_GOOGLE_SLUG = "google";
+
+const googleOpenApiPresetById: ReadonlyMap<string, GoogleOpenApiPreset> = new Map(
+  googleOpenApiPresets.map((preset) => [preset.id, preset]),
+);
+
+const ErrorMessage = Schema.Struct({ message: Schema.String });
+const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+const googleAddServicesErrorMessage = (error: unknown): string =>
+  Option.getOrElse(
+    Option.map(decodeErrorMessage(error), ({ message }) => message),
+    () => String(error),
+  );
+
+type GoogleAddServiceOutcome =
+  | { readonly _tag: "added"; readonly value: GoogleAddServicesAdded }
+  | { readonly _tag: "skipped"; readonly value: GoogleAddServicesSkipped }
+  | { readonly _tag: "failed"; readonly value: GoogleAddServicesFailed };
 
 const googlePhotosBundlePresetIdByUrl = new Map(
   googlePhotosOpenApiPresets.flatMap((preset) =>
@@ -289,6 +344,76 @@ const makeGooglePluginExtension = (
       baseUrl: config.baseUrl,
     });
 
+  const addOneService = (service: GoogleServiceConfig, baseUrl?: string) =>
+    Effect.gen(function* () {
+      const preset = googleOpenApiPresetById.get(service.presetId);
+      if (!preset?.url) {
+        return yield* new OpenApiParseError({
+          message: `Google service preset is not available: ${service.presetId}`,
+        });
+      }
+
+      return yield* addGoogleOpenApiIntegration({
+        urls: [preset.url],
+        slug: IntegrationSlug.make(service.slug?.trim() || googleServiceSlug(service.presetId)),
+        name: service.name?.trim() || preset.name,
+        description: preset.summary,
+        baseUrl,
+        consentScopes: googleOAuthConsentScopesForPreset(preset.id),
+      });
+    });
+
+  const addServices = (input: GoogleAddServicesInput) =>
+    Effect.gen(function* () {
+      const outcomes = yield* Effect.forEach(
+        input.services,
+        (service): Effect.Effect<GoogleAddServiceOutcome, never> => {
+          const slug = IntegrationSlug.make(
+            service.slug?.trim() || googleServiceSlug(service.presetId),
+          );
+          return addOneService(service, input.baseUrl).pipe(
+            Effect.map(
+              (result): GoogleAddServiceOutcome => ({
+                _tag: "added",
+                value: {
+                  slug: result.slug,
+                  presetId: service.presetId,
+                  toolCount: result.toolCount,
+                },
+              }),
+            ),
+            Effect.catchTag("IntegrationAlreadyExistsError", () =>
+              Effect.succeed({
+                _tag: "skipped" as const,
+                value: {
+                  slug,
+                  presetId: service.presetId,
+                  reason: "already_exists" as const,
+                },
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed({
+                _tag: "failed" as const,
+                value: {
+                  slug,
+                  presetId: service.presetId,
+                  error: googleAddServicesErrorMessage(error),
+                },
+              }),
+            ),
+          );
+        },
+        { concurrency: 1 },
+      );
+
+      return {
+        added: outcomes.flatMap((outcome) => (outcome._tag === "added" ? [outcome.value] : [])),
+        skipped: outcomes.flatMap((outcome) => (outcome._tag === "skipped" ? [outcome.value] : [])),
+        failed: outcomes.flatMap((outcome) => (outcome._tag === "failed" ? [outcome.value] : [])),
+      };
+    });
+
   const updateBundle = (rawSlug: string, input?: GoogleUpdateInput) =>
     Effect.gen(function* () {
       const slug = IntegrationSlug.make(rawSlug);
@@ -354,6 +479,7 @@ const makeGooglePluginExtension = (
 
   return {
     addBundle,
+    addServices,
     updateBundle,
     removeBundle: (slug: string) =>
       ctx.transaction(
