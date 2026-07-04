@@ -120,21 +120,19 @@ export const connectionsAllAtom = ExecutorApiClient.query("connections", "list",
   reactivityKeys: [ReactivityKey.connections],
 });
 
-export const providerAccountsAtom = Atom.make(
-  Effect.gen(function* () {
-    const connections = yield* Atom.get(connectionsAllAtom);
-    const integrations = yield* Atom.get(integrationsAtom);
-    return AsyncResult.map(AsyncResult.all({ connections, integrations }), (value) => {
-      const integrationsByKind = new Map(
-        value.integrations.map((integration) => [String(integration.slug), integration]),
-      );
-      return groupProviderAccounts({
-        connections: value.connections,
-        integrationsByKind,
-      });
+export const providerAccountsAtom = Atom.readable((get) => {
+  const connections = get(connectionsAllAtom);
+  const integrations = get(integrationsAtom);
+  return AsyncResult.map(AsyncResult.all({ connections, integrations }), (value) => {
+    const integrationsByKind = new Map(
+      value.integrations.map((integration) => [String(integration.slug), integration]),
+    );
+    return groupProviderAccounts({
+      connections: value.connections,
+      integrationsByKind,
     });
-  }),
-);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Providers — credential-backend discovery (new in v2).

@@ -25,10 +25,11 @@ import { connectionWriteKeys, integrationWriteKeys } from "../api/reactivity-key
 import { ToolTree } from "../components/tool-tree";
 import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
-import { AccountsSection } from "../components/accounts-section";
+import { AccountsSection, ProviderAccountsSection } from "../components/accounts-section";
 import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
+import { MULTI_SERVICE_FAMILIES } from "../lib/provider-accounts";
 import { usePolicyActions } from "../hooks/use-policy-actions";
 import { useIntegrationPlugins, type IntegrationAccountHandoff } from "@executor-js/sdk/client";
 import { Button } from "../components/button";
@@ -430,6 +431,11 @@ export function IntegrationDetailPage(props: { namespace: string }) {
               the plugin's config); otherwise we render the generic fallback. */}
         {!isBuiltInIntegration && (
           <TabsContent value="accounts" className="min-h-0 overflow-y-auto">
+            {integrationData && MULTI_SERVICE_FAMILIES.has(integrationData.kind) ? (
+              <div className="mx-auto max-w-3xl px-6 pt-8">
+                <ProviderAccountsSection family={integrationData.kind} />
+              </div>
+            ) : null}
             {editPlugin?.accounts ? (
               <Suspense fallback={<AccountsSkeleton />}>
                 <editPlugin.accounts

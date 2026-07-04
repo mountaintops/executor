@@ -8,7 +8,9 @@ import { toast } from "sonner";
 
 import {
   addConnectionOptimistic,
+  integrationsAtom,
   connectionsForIntegrationAtom,
+  providerAccountsAtom,
   refreshConnection,
   removeConnectionOptimistic,
   startOAuth,
@@ -21,6 +23,11 @@ import { ownerLabel, useOwnerDisplay } from "../api/owner-display";
 import { trackEvent } from "../api/analytics";
 import type { AuthMethod } from "../lib/auth-placements";
 import {
+  MULTI_SERVICE_FAMILIES,
+  normalizeEmail,
+  type ProviderAccount,
+} from "../lib/provider-accounts";
+import {
   connectionNeedsReconsent,
   oauthReconnectPayload,
   reconnectMode,
@@ -28,6 +35,7 @@ import {
 } from "../plugins/oauth-reconnect";
 import { useOAuthPopupFlow } from "../plugins/oauth-sign-in";
 import { AddAccountModal } from "./add-account-modal";
+import { EnableServicesModal, type EnableServiceIntegration } from "./enable-services-modal";
 import { ConnectionEditSheet } from "./metadata-edit-sheet";
 import type { CreateCustomMethod } from "./add-custom-method-modal";
 import { Badge } from "./badge";
@@ -48,6 +56,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
+import { PlusIcon } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Accounts section — the integration's connections, grouped by owner.
@@ -353,6 +362,142 @@ function OwnerAccounts(props: {
         ))}
       </CardStackContent>
     </CardStack>
+  );
+}
+
+type ProviderAccountForServices = ProviderAccount<Connection, EnableServiceIntegration>;
+
+const connectedServiceSlugs = (account: ProviderAccountForServices): ReadonlySet<string> =>
+  new Set(account.connections.map((entry) => String(entry.integration.slug)));
+
+const missingServicesFor = (
+  account: ProviderAccountForServices,
+  integrations: readonly EnableServiceIntegration[],
+): readonly EnableServiceIntegration[] => {
+  const connected = connectedServiceSlugs(account);
+  return integrations.filter((integration) => !connected.has(String(integration.slug)));
+};
+
+export function ProviderAccountsSection(props: { readonly family: string }) {
+  const accountsResult = useAtomValue(providerAccountsAtom);
+  const integrationsResult = useAtomValue(integrationsAtom);
+  const ownerDisplay = useOwnerDisplay();
+  const [selectedAccount, setSelectedAccount] = useState<ProviderAccountForServices | null>(null);
+
+  if (!MULTI_SERVICE_FAMILIES.has(props.family)) return null;
+
+  const integrations: readonly EnableServiceIntegration[] = AsyncResult.isSuccess(
+    integrationsResult,
+  )
+    ? (integrationsResult.value as readonly EnableServiceIntegration[])
+        .filter((integration) => integration.kind === props.family)
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+
+  const accounts: readonly ProviderAccountForServices[] = AsyncResult.isSuccess(accountsResult)
+    ? (accountsResult.value as readonly ProviderAccountForServices[]).filter(
+        (account) => account.family === props.family,
+      )
+    : [];
+
+  if (!AsyncResult.isSuccess(accountsResult) || !AsyncResult.isSuccess(integrationsResult)) {
+    return (
+      <section className="space-y-3">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Provider accounts
+        </h3>
+        <div className="flex items-center gap-2 py-3">
+          <div className="size-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">Loading provider accounts...</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (accounts.length === 0) return null;
+
+  const modalIntegrations = selectedAccount
+    ? missingServicesFor(selectedAccount, integrations)
+    : [];
+
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          Provider accounts
+        </h3>
+      </div>
+      <CardStack>
+        <CardStackContent>
+          {accounts.map((account) => {
+            const missing = missingServicesFor(account, integrations);
+            const canAdd =
+              missing.some((integration) =>
+                integration.authMethods.some((method) => method.kind === "oauth"),
+              ) && normalizeEmail(account.label) !== null;
+            return (
+              <CardStackEntry key={account.identityKey} className="flex-wrap items-start gap-3">
+                <CardStackEntryContent>
+                  <CardStackEntryTitle className="flex min-w-0 items-center gap-2">
+                    <span className="truncate">{account.label}</span>
+                    {ownerDisplay.showOwnerLabels ? (
+                      <Badge variant="outline">{ownerLabel(account.owner as Owner)}</Badge>
+                    ) : null}
+                  </CardStackEntryTitle>
+                  <CardStackEntryDescription className="mt-1 text-xs">
+                    {account.connections.length} connected{" "}
+                    {account.connections.length === 1 ? "service" : "services"}
+                  </CardStackEntryDescription>
+                  <div className="mt-3 divide-y divide-border rounded-md border border-border">
+                    {account.connections.map((entry) => (
+                      <div
+                        key={`${entry.connection.owner}:${String(entry.integration.slug)}:${String(
+                          entry.connection.name,
+                        )}`}
+                        className="flex items-center justify-between gap-3 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {entry.integration.name}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {entry.connection.identityLabel || String(entry.connection.name)}
+                          </p>
+                        </div>
+                        <Badge variant="outline">{String(entry.connection.name)}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </CardStackEntryContent>
+                <CardStackEntryActions className="self-start pt-0.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!canAdd}
+                    onClick={() => setSelectedAccount(account)}
+                  >
+                    <PlusIcon />
+                    Add services
+                  </Button>
+                </CardStackEntryActions>
+              </CardStackEntry>
+            );
+          })}
+        </CardStackContent>
+      </CardStack>
+
+      {selectedAccount ? (
+        <EnableServicesModal
+          open={true}
+          account={selectedAccount}
+          integrations={modalIntegrations}
+          onOpenChange={(open) => {
+            if (!open) setSelectedAccount(null);
+          }}
+        />
+      ) : null}
+    </section>
   );
 }
 
