@@ -23,8 +23,8 @@ import { RunDir } from "../src/services";
 const execFileAsync = promisify(execFile);
 const SERVICE_LABEL = "sh.executor.daemon";
 const SCENARIO_NAME =
-  "Desktop packaged supervised attach: stale launchd registration pins the 15s dead boot wait";
-const RECORDING_FILE = resolve("recordings/stale-launchd-slow-boot.mp4");
+  "Desktop packaged supervised attach: stale launchd registration self-heals without a dead boot wait";
+const RECORDING_FILE = resolve("recordings/stale-launchd-fast-boot.mp4");
 const RECORDING_WIDTH = 1280;
 const RECORDING_HEIGHT = 720;
 const STALE_PLIST_PORT = 58_251;
@@ -72,12 +72,15 @@ interface LaunchTiming {
 
 interface BootResult {
   readonly pageCdpMs: number;
+  readonly startupWindowMs: number;
   readonly sidecarReadyMs: number;
   readonly connectionKind: string;
   readonly origin: string;
   readonly manifestKind: string;
   readonly manifestPid: number;
-  readonly matchedLogLine: string | null;
+  readonly kickstartFailureLine: string | null;
+  readonly recoveryLogLine: string | null;
+  readonly launchdPrintSucceeded: boolean;
 }
 
 declare global {
@@ -270,6 +273,17 @@ const launchctl = async (args: ReadonlyArray<string>): Promise<boolean> => {
     return true;
   } catch {
     return false;
+  }
+};
+
+const launchctlPrintService = async (): Promise<string | null> => {
+  try {
+    const { stdout, stderr } = await execFileAsync("launchctl", ["print", serviceTarget()], {
+      encoding: "utf8",
+    });
+    return `${stdout}${stderr}`.trim();
+  } catch {
+    return null;
   }
 };
 
@@ -482,31 +496,51 @@ const readServerManifest = (home: string): ServerManifest => {
   return JSON.parse(readFileSync(manifestPath, "utf8")) as ServerManifest;
 };
 
-const readKickstartFailureLine = (home: string): string | null => {
+interface StaleRecoveryLog {
+  readonly kickstartFailureLine: string | null;
+  readonly recoveryLogLine: string | null;
+}
+
+// The desktop's own classification line for a stale registration; electron-log
+// appends the launchctl error on the same line. Production launchctl fails the
+// kickstart with exit 113 ("Could not find service"); a tart guest's
+// `launchctl asuser` session fails it with exit 125 ("Domain does not support
+// specified action"). Same stale state, same self-heal branch, so match the
+// kickstart failure without pinning the environment-specific exit code.
+const isKickstartFailureLine = (line: string): boolean =>
+  line.includes("Failed to restart registered supervised service; reinstalling") &&
+  line.includes("launchctl kickstart failed");
+
+const isRecoveryLogLine = (line: string): boolean =>
+  line.includes("installed supervised service via bundled executor") ||
+  line.includes("Failed to install supervised service after registered service restart failure") ||
+  line.includes("using managed sidecar");
+
+const readStaleRecoveryLog = (home: string): StaleRecoveryLog => {
   const logPath = join(home, "Library", "Logs", "Executor", "main.log");
-  if (!existsSync(logPath)) return null;
-  return (
-    readFileSync(logPath, "utf8")
-      .split("\n")
-      .find(
-        (line) =>
-          line.includes("launchctl kickstart failed (exit 113)") &&
-          line.includes('Could not find service "sh.executor.daemon"'),
-      ) ?? null
-  );
+  if (!existsSync(logPath)) return { kickstartFailureLine: null, recoveryLogLine: null };
+  const lines = readFileSync(logPath, "utf8").split("\n");
+  const kickstartIndex = lines.findIndex(isKickstartFailureLine);
+  if (kickstartIndex < 0) return { kickstartFailureLine: null, recoveryLogLine: null };
+  const recoveryLogLine =
+    lines.slice(kickstartIndex + 1).find((line) => isRecoveryLogLine(line)) ?? null;
+  return {
+    kickstartFailureLine: lines[kickstartIndex] ?? null,
+    recoveryLogLine,
+  };
 };
 
-const waitForKickstartFailureLine = async (home: string): Promise<string> => {
+const waitForStaleRecoveryLog = async (home: string): Promise<StaleRecoveryLog> => {
   const deadline = Date.now() + 30_000;
   for (;;) {
-    const line = readKickstartFailureLine(home);
-    if (line) return line;
+    const lines = readStaleRecoveryLog(home);
+    if (lines.kickstartFailureLine && lines.recoveryLogLine) return lines;
     if (Date.now() >= deadline) {
       const logPath = join(home, "Library", "Logs", "Executor", "main.log");
       const tail = existsSync(logPath)
         ? readFileSync(logPath, "utf8").split("\n").slice(-20).join("\n")
         : "<main.log missing>";
-      throw new Error(`Timed out waiting for kickstart failure log line\n${tail}`);
+      throw new Error(`Timed out waiting for stale launchd recovery log lines\n${tail}`);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
@@ -516,7 +550,8 @@ const bootPackagedApp = async (input: {
   readonly home: string;
   readonly env: NodeJS.ProcessEnv;
   readonly recorder: BootRecorder | null;
-  readonly expectKickstartFailure: boolean;
+  readonly expectStartupWindow: boolean;
+  readonly expectStaleRecoveryLog: boolean;
 }): Promise<BootResult> => {
   let app: PackagedApp | undefined;
   const startedAt = Date.now();
@@ -524,6 +559,15 @@ const bootPackagedApp = async (input: {
     const launched = await launchPackaged(input.env, input.recorder);
     app = launched.app;
     const page = app.cdp;
+    const startupWindowVisible = await page
+      .waitForText("Starting Executor", 5_000)
+      .then(() => true)
+      .catch(() => false);
+    const startupWindowMs = startupWindowVisible ? Date.now() - startedAt : launched.pageCdpMs;
+    expect(
+      !input.expectStartupWindow || startupWindowVisible,
+      "startup window shows before service recovery finishes when required",
+    ).toBe(true);
     await page.waitForText("Settings", 120_000);
     const sidecarReadyMs = Date.now() - startedAt;
     await input.recorder?.captureReadyFrame();
@@ -534,17 +578,21 @@ const bootPackagedApp = async (input: {
     } | null>("window.executor.getServerConnection()");
     expect(connection, "the app eventually exposes a server connection").not.toBeNull();
     const manifest = readServerManifest(input.home);
-    const matchedLogLine = input.expectKickstartFailure
-      ? await waitForKickstartFailureLine(input.home)
-      : readKickstartFailureLine(input.home);
+    const recoveryLog = input.expectStaleRecoveryLog
+      ? await waitForStaleRecoveryLog(input.home)
+      : readStaleRecoveryLog(input.home);
+    const launchdPrintSucceeded = (await launchctlPrintService()) !== null;
     return {
       pageCdpMs: launched.pageCdpMs,
+      startupWindowMs,
       sidecarReadyMs,
       connectionKind: connection!.kind,
       origin: connection!.origin,
       manifestKind: manifest.kind,
       manifestPid: manifest.pid,
-      matchedLogLine,
+      kickstartFailureLine: recoveryLog.kickstartFailureLine,
+      recoveryLogLine: recoveryLog.recoveryLogLine,
+      launchdPrintSucceeded,
     };
   } finally {
     await input.recorder?.stop();
@@ -680,7 +728,7 @@ class BootRecorder {
 
   static create = (runDir: string): BootRecorder | null => {
     if (process.env.E2E_RECORD !== "1") return null;
-    const frameDir = join(runDir, "stale-launchd-slow-boot-frames");
+    const frameDir = join(runDir, "stale-launchd-fast-boot-frames");
     rmSync(frameDir, { recursive: true, force: true });
     mkdirSync(frameDir, { recursive: true });
     mkdirSync(dirname(RECORDING_FILE), { recursive: true });
@@ -707,7 +755,7 @@ class BootRecorder {
 
   captureReadyFrame = async (): Promise<void> => {
     if (!this.enabled) return;
-    this.enqueueFrame("managed sidecar ready", this.page);
+    this.enqueueFrame("executor ready", this.page);
     await this.queue;
   };
 
@@ -802,7 +850,8 @@ const run = async (runDir: string): Promise<void> => {
       home: cleanHome,
       env: cleanBootEnv(cleanHome),
       recorder: null,
-      expectKickstartFailure: false,
+      expectStartupWindow: false,
+      expectStaleRecoveryLog: false,
     });
 
     writeStaleLaunchAgentPlist(staleHome);
@@ -811,53 +860,64 @@ const run = async (runDir: string): Promise<void> => {
       home: staleHome,
       env: packagedAppEnv(staleHome),
       recorder: staleRecorder,
-      expectKickstartFailure: true,
+      expectStartupWindow: true,
+      expectStaleRecoveryLog: true,
     });
 
     /*
-     * Regression pin for the current broken behavior:
-     * a stale plist makes `service status` report registered even though launchd
-     * cannot find the label. The packaged app logs the kickstart failure, then
-     * still pays the full 15s wait before falling back to managed-spawn.
-     *
-     * When the fix lands, invert the >=14s stale assertions. The desired
-     * behavior is a fast-fail to managed-spawn, close to the clean control.
+     * Regression guard for the production incident:
+     * a stale plist makes `service status` report registered while launchd cannot
+     * find the label. The app must show a window immediately, then repair or
+     * bypass that stale service without paying the old dead 15s wait.
      */
-    expect(stale.matchedLogLine, "stale boot logs the launchd kickstart failure").toContain(
-      "launchctl kickstart failed (exit 113)",
+    expect(stale.kickstartFailureLine, "stale boot logs the launchd kickstart failure").toContain(
+      "launchctl kickstart failed",
     );
-    expect(stale.matchedLogLine, "stale boot says launchd cannot find the label").toContain(
-      'Could not find service "sh.executor.daemon"',
-    );
+    expect(
+      stale.kickstartFailureLine,
+      "the failed kickstart is classified as a stale registration to repair",
+    ).toContain("Failed to restart registered supervised service; reinstalling");
+    expect(
+      stale.recoveryLogLine,
+      "kickstart failure is followed by self-heal or fallback logging",
+    ).not.toBeNull();
     expect(
       stale.pageCdpMs,
-      "window/CDP is not reachable until the dead wait is paid",
-    ).toBeGreaterThanOrEqual(14_000);
+      "the Electron page target is reachable before service recovery finishes",
+    ).toBeLessThan(3_000);
     expect(
-      stale.sidecarReadyMs,
-      "managed sidecar readiness is delayed by the dead wait",
-    ).toBeGreaterThanOrEqual(14_000);
-    expect(stale.connectionKind, "the app eventually recovers through managed-spawn").toBe(
-      "desktop-sidecar",
+      stale.startupWindowMs,
+      "the startup window appears promptly in the stale launchd case",
+    ).toBeLessThan(3_000);
+    expect(new URL(stale.origin).port, "recovery must not attach to the stale plist port").not.toBe(
+      String(STALE_PLIST_PORT),
     );
-    expect(
-      new URL(stale.origin).port,
-      "managed recovery must not be a launchd attach to the stale plist port",
-    ).not.toBe(String(STALE_PLIST_PORT));
     expect(
       clean.sidecarReadyMs,
       "the clean control skips supervision and boots quickly",
     ).toBeLessThan(10_000);
     expect(
       stale.sidecarReadyMs,
-      "the stale launchd path is dramatically slower than the clean control",
-    ).toBeGreaterThan(clean.sidecarReadyMs + 5_000);
+      "stale launchd recovery stays within the fast boot budget",
+    ).toBeLessThan(10_000);
+    expect(
+      stale.sidecarReadyMs,
+      "the stale launchd path stays close to the clean control",
+    ).toBeLessThan(clean.sidecarReadyMs + 7_500);
+    const repairedLaunchd = stale.launchdPrintSucceeded && stale.manifestKind === "cli-daemon";
+    const managedFallback =
+      !stale.launchdPrintSucceeded && stale.manifestKind === "desktop-sidecar";
+    expect(
+      repairedLaunchd || managedFallback,
+      "stale state is either repaired into launchd or cleanly falls back to managed spawn",
+    ).toBe(true);
 
     const recording = staleRecorder?.recordingStats();
     emitEvidence(
-      `[stale-launchd-repro] clean=${clean.sidecarReadyMs}ms stale=${stale.sidecarReadyMs}ms stalePageCdp=${stale.pageCdpMs}ms cleanOrigin=${clean.origin} staleOrigin=${stale.origin} staleConnectionKind=${stale.connectionKind} staleManifestKind=${stale.manifestKind} stalePid=${stale.manifestPid}`,
+      `[stale-launchd-repro] clean=${clean.sidecarReadyMs}ms stale=${stale.sidecarReadyMs}ms staleStartup=${stale.startupWindowMs}ms stalePageCdp=${stale.pageCdpMs}ms cleanOrigin=${clean.origin} staleOrigin=${stale.origin} staleConnectionKind=${stale.connectionKind} staleManifestKind=${stale.manifestKind} stalePid=${stale.manifestPid} launchdPrintAfterBoot=${stale.launchdPrintSucceeded}`,
     );
-    emitEvidence(`[stale-launchd-repro] matchedLogLine=${stale.matchedLogLine}`);
+    emitEvidence(`[stale-launchd-repro] kickstartFailureLine=${stale.kickstartFailureLine}`);
+    emitEvidence(`[stale-launchd-repro] recoveryLogLine=${stale.recoveryLogLine}`);
     if (recording) {
       emitEvidence(
         `[stale-launchd-repro] recording=${recording.path} frames=${recording.frames} size=${recording.size}`,
