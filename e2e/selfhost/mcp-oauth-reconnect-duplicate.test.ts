@@ -105,7 +105,6 @@ const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
   Effect.gen(function* () {
     const oauth = yield* serveOAuthTestServer({
       scopes: ["channels:history", "users:read"],
-      supportRefresh: false,
       tokenExpiresInSeconds: 0,
       invalidRefreshTokenDescription: "Grant not found",
     });
@@ -167,6 +166,7 @@ const seedExpiredDcrMcpOAuthConnection = (client: Client, prefix: string) =>
 
     const callback = yield* completeAuthorizationHeadlessly(started.authorizationUrl);
     yield* client.oauth.complete({ payload: { state: started.state, code: callback.code } });
+    yield* oauth.clearRefreshTokens;
     yield* Effect.addFinalizer(() =>
       Effect.all(
         [
@@ -200,11 +200,37 @@ const oauthRequestSummary = (
 ) => requests.map((request) => `${request.method} ${request.path}`).join(", ");
 
 scenario(
+  "MCP OAuth add creates one normalized DCR connection",
+  {
+    timeout: 180_000,
+  },
+  Effect.scoped(
+    Effect.gen(function* () {
+      const target = yield* Target;
+      const { client: makeApiClient } = yield* Api;
+      const identity = yield* target.newIdentity();
+      const client = yield* makeApiClient(api, identity);
+      const { slug } = yield* seedExpiredDcrMcpOAuthConnection(client, "mcp-dcr-add-normalize");
+
+      const rows = yield* listScenarioConnections(client, slug);
+      console.info(`[DCR add regression] API connections: ${summarizeConnections(rows)}`);
+
+      expect(rows, "DCR add should create exactly one connection").toHaveLength(1);
+      expect(String(rows[0]?.name), "DCR add should keep create normalization unchanged").toBe(
+        String(originalName),
+      );
+      expect(
+        rows.map((connection) => String(connection.name)),
+        "DCR add should not create the reconnect-only lower-case duplicate",
+      ).not.toContain(String(duplicateName));
+    }),
+  ),
+);
+
+scenario(
   "MCP OAuth reconnect updates the existing DCR connection",
   {
     timeout: 180_000,
-    expectedFailure:
-      "DCR reconnect currently remints mcpLinearAppOauth as mcplinearappoauth and leaves the expired row behind.",
   },
   Effect.scoped(
     Effect.gen(function* () {
@@ -247,7 +273,7 @@ scenario(
         });
 
         await step("Read the connection list after reconnect", async () => {
-          await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
+          await page.goto(`/integrations/${slug}`, { waitUntil: "domcontentloaded" });
           await connections
             .getByText(displayLabel, { exact: true })
             .first()
