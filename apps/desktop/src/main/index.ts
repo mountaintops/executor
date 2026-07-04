@@ -61,6 +61,14 @@ import {
   UPDATE_STATUS_CHANNEL,
   UPDATE_STATUS_GET_CHANNEL,
 } from "../shared/update";
+import {
+  planCompletedUpdateCheck,
+  planDownloadedUpdate,
+  planFatalAutoInstallOnQuit,
+  planUpdateCheck,
+  statusAfterUpdateError,
+  type UpdateCheckTrigger,
+} from "./updater-state";
 
 // Pin userData to a friendly app-name-scoped dir BEFORE app.ready so every
 // Electron-side consumer (electron-store, electron-log, window-state) lands
@@ -741,7 +749,9 @@ const registerIpcHandlers = () => {
   // Crash-screen escape hatch: a recurring sidecar crash may already be
   // fixed upstream. Reuses the menu flow — staged updates prompt to install,
   // "no updates" / failures surface in their own dialogs.
-  ipcMain.handle("executor:updates:check", () => runUpdateCheck({ alertOnFail: true }));
+  ipcMain.handle("executor:updates:check", () =>
+    runUpdateCheck({ alertOnFail: true, trigger: "manual" }),
+  );
   ipcMain.handle(UPDATE_STATUS_GET_CHANNEL, (): DesktopUpdateStatus => updateStatus);
   ipcMain.handle(UPDATE_INSTALL_CHANNEL, async (): Promise<void> => {
     const version = "version" in updateStatus ? updateStatus.version : "";
@@ -754,6 +764,7 @@ const registerIpcHandlers = () => {
     }
     // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle, matching
     // the native dialog's restart path.
+    stopSupervisedMonitor();
     if (connection) {
       await stopConnection(connection);
       connection = null;
@@ -804,6 +815,7 @@ const registerIpcHandlers = () => {
 // ──────────────────────────────────────────────────────────────────────
 
 let downloadedUpdateVersion: string | null = null;
+let declinedUpdateVersion: string | null = null;
 let updateDialogOpen = false;
 
 // Renderer-facing auto-update status. The web shell renders a desktop-native
@@ -845,11 +857,16 @@ const applyFakeUpdateFromEnv = () => {
       state === "available" ||
       state === "downloaded" ||
       state === "downloading" ||
+      state === "error" ||
       state === "installing"
     ) {
       if (state === "downloaded") downloadedUpdateVersion = version;
       setUpdateStatus(
-        state === "downloading" ? { state, version, percent: 100 } : { state, version },
+        state === "downloading"
+          ? { state, version, percent: 100 }
+          : state === "error"
+            ? { state, version, message: "Update failed" }
+            : { state, version },
       );
     }
   } catch (error) {
@@ -874,12 +891,15 @@ const promptInstallUpdate = async (version: string) => {
     if (response.response === 0) {
       // Stop the sidecar cleanly before Squirrel.Mac swaps the bundle. A
       // supervised daemon is left running — it's independent of this bundle.
+      stopSupervisedMonitor();
       if (connection) {
         await stopConnection(connection);
         connection = null;
       }
       autoUpdater.quitAndInstall(false, true);
+      return;
     }
+    declinedUpdateVersion = version;
   } finally {
     updateDialogOpen = false;
   }
@@ -910,25 +930,41 @@ const setupAutoUpdater = () => {
     }
   });
   autoUpdater.on("update-downloaded", (info: UpdateInfo) => {
-    downloadedUpdateVersion = info.version;
-    setUpdateStatus({ state: "downloaded", version: info.version });
-    void promptInstallUpdate(info.version);
+    const decision = planDownloadedUpdate({
+      stagedVersion: downloadedUpdateVersion,
+      declinedVersion: declinedUpdateVersion,
+      incomingVersion: info.version,
+      trigger: "boot",
+    });
+    downloadedUpdateVersion = decision.stagedVersion;
+    declinedUpdateVersion = decision.declinedVersion;
+    setUpdateStatus(decision.status);
+    if (decision.promptVersion) void promptInstallUpdate(decision.promptVersion);
   });
   autoUpdater.on("error", (err: Error) => {
     log.warn("[updater] error", err);
+    setUpdateStatus(
+      statusAfterUpdateError(updateStatus, "Update failed. Check again from the menu."),
+    );
+    pendingUpdateVersion = null;
   });
 
   setInterval(() => {
-    if (downloadedUpdateVersion) return; // already staged; waiting on the user
-    void runUpdateCheck({ alertOnFail: false });
+    void runUpdateCheck({ alertOnFail: false, trigger: "interval" });
   }, UPDATE_POLL_INTERVAL_MS);
 };
 
 interface UpdateCheckOptions {
   readonly alertOnFail: boolean;
+  readonly trigger: UpdateCheckTrigger;
 }
 
-const runUpdateCheck = async ({ alertOnFail }: UpdateCheckOptions) => {
+type UpdateCheckResult = {
+  readonly isUpdateAvailable?: boolean;
+  readonly updateInfo?: { readonly version?: string };
+};
+
+const runUpdateCheck = async ({ alertOnFail, trigger }: UpdateCheckOptions) => {
   if (!app.isPackaged) {
     if (alertOnFail) {
       await dialog.showMessageBox({
@@ -939,14 +975,23 @@ const runUpdateCheck = async ({ alertOnFail }: UpdateCheckOptions) => {
     }
     return;
   }
-  if (downloadedUpdateVersion) {
-    await promptInstallUpdate(downloadedUpdateVersion);
-    return;
-  }
+  const checkPlan = planUpdateCheck({ stagedVersion: downloadedUpdateVersion, trigger });
+  if (!checkPlan.check) return;
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: surface network/update failures only when the user asked
   try {
-    const result = await autoUpdater.checkForUpdates();
+    const result = (await autoUpdater.checkForUpdates()) as UpdateCheckResult | null;
     const newer = result?.isUpdateAvailable === true;
+    const promptAfterCheck = planCompletedUpdateCheck({
+      stagedVersion: checkPlan.promptVersionAfterCheck,
+      trigger,
+      updateAvailable: newer,
+      availableVersion:
+        typeof result?.updateInfo?.version === "string" ? result.updateInfo.version : null,
+    }).promptVersion;
+    if (promptAfterCheck) {
+      await promptInstallUpdate(promptAfterCheck);
+      return;
+    }
     if (!alertOnFail) return;
     if (newer) return; // 'update-downloaded' handler will fire the install dialog
     await dialog.showMessageBox({
@@ -956,6 +1001,9 @@ const runUpdateCheck = async ({ alertOnFail }: UpdateCheckOptions) => {
     });
   } catch (error) {
     log.warn("[updater] check failed", error);
+    setUpdateStatus(
+      statusAfterUpdateError(updateStatus, "Update failed. Check again from the menu."),
+    );
     if (!alertOnFail) return;
     await dialog.showMessageBox({
       type: "error",
@@ -978,8 +1026,12 @@ const handleFatalSidecarFailure = async (error: unknown) => {
     // Install whatever finishes downloading by the time the user quits the
     // failure dialog; if it downloads while the dialog is open, the regular
     // 'update-downloaded' prompt offers an immediate restart instead.
-    autoUpdater.autoInstallOnAppQuit = true;
-    void runUpdateCheck({ alertOnFail: false });
+    const autoInstallPlan = planFatalAutoInstallOnQuit({
+      packaged: true,
+      retryAfterReset: false,
+    });
+    if (autoInstallPlan.enableDuringFailure) autoUpdater.autoInstallOnAppQuit = true;
+    void runUpdateCheck({ alertOnFail: false, trigger: "boot" });
   }
   // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: sidecar startup failures arrive as plain Node errors and render in a native dialog
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -995,7 +1047,13 @@ const handleFatalSidecarFailure = async (error: unknown) => {
   // Damaged executor state (failed migration, corrupt SQLite) makes startup
   // fail forever — updating can't fix it. Offer the move-aside reset and one
   // immediate retry. Returns true when boot should be attempted again.
-  if (response === 1 && (await confirmResetState())) {
+  const retryAfterReset = response === 1 && (await confirmResetState());
+  const autoInstallPlan = planFatalAutoInstallOnQuit({
+    packaged: app.isPackaged,
+    retryAfterReset,
+  });
+  if (retryAfterReset) {
+    if (autoInstallPlan.restoreAfterRecovery) autoUpdater.autoInstallOnAppQuit = false;
     const { backupDir } = resetExecutorState();
     await announceBackup(backupDir);
     return true;
@@ -1011,7 +1069,7 @@ const installApplicationMenu = () => {
       { role: "about" },
       {
         label: "Check for Updates…",
-        click: () => void runUpdateCheck({ alertOnFail: true }),
+        click: () => void runUpdateCheck({ alertOnFail: true, trigger: "manual" }),
       },
       {
         label: "Export Diagnostics…",
@@ -1105,7 +1163,7 @@ const boot = async () => {
     // A crashing sidecar may be a broken release — quietly stage any
     // available update so the install prompt appears on its own (same
     // self-heal as the fatal startup path).
-    void runUpdateCheck({ alertOnFail: false });
+    void runUpdateCheck({ alertOnFail: false, trigger: "boot" });
   });
   // Prefer an OS-supervised daemon: attach to one that's running, kick one
   // that's installed, or offer to install on first run. Quitting the app then
@@ -1121,7 +1179,7 @@ const boot = async () => {
       try {
         await createWindow(supervised);
         armSupervisedMonitor();
-        void runUpdateCheck({ alertOnFail: false });
+        void runUpdateCheck({ alertOnFail: false, trigger: "boot" });
         return;
       } catch (error) {
         log.warn("Failed to load supervised daemon; falling back to managed sidecar", error);
@@ -1196,7 +1254,7 @@ const boot = async () => {
   // Check at boot. If an update is available, autoDownload pulls it and
   // the 'update-downloaded' handler fires the install dialog. Silent on
   // no-update / failure so we don't bother users on every launch.
-  void runUpdateCheck({ alertOnFail: false });
+  void runUpdateCheck({ alertOnFail: false, trigger: "boot" });
 };
 
 if (ensureSingleInstance()) {
