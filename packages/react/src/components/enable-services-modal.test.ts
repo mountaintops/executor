@@ -112,12 +112,31 @@ describe("buildEnableServiceOAuthStartPayload", () => {
       client: OAuthClientSlug.make("google-app"),
       clientOwner: "org",
       owner: "user",
-      name: ConnectionName.make("personalGoogleCalendar"),
+      name: ConnectionName.make("userGoogleCalendar"),
       integration: IntegrationSlug.make("google_calendar"),
       template: AuthTemplateSlug.make("calendar_oauth"),
-      identityLabel: "Personal Google Calendar",
+      identityLabel: "user Google Calendar",
       loginHint: "user@example.com",
     });
+  });
+
+  it("derives distinct names for two same-owner accounts enabling the same service", () => {
+    const first = buildEnableServiceOAuthStartPayload({
+      account: account({ label: "rhys@example.com" }),
+      integration: calendar,
+      organizationId: "org_123",
+    });
+    const second = buildEnableServiceOAuthStartPayload({
+      account: account({ label: "work@example.com" }),
+      integration: calendar,
+      organizationId: "org_123",
+    });
+
+    expect(first?.name).toBe(ConnectionName.make("rhysGoogleCalendar"));
+    expect(second?.name).toBe(ConnectionName.make("workGoogleCalendar"));
+    expect(first?.identityLabel).toBe("rhys Google Calendar");
+    expect(second?.identityLabel).toBe("work Google Calendar");
+    expect(first?.name).not.toBe(second?.name);
   });
 
   it("uses the connection owner when the existing connection has no client owner", () => {

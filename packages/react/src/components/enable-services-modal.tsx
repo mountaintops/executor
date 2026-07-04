@@ -118,8 +118,12 @@ export const buildEnableServiceOAuthStartPayload = (input: {
   const mirrored = mirrorConnectionFor(input.account);
   if (!mirrored?.oauthClient) return null;
   const owner = input.account.owner as Owner;
+  // Seed the label with the account email's localpart ("rhys Google Calendar")
+  // so two same-owner accounts enabling the same service don't collide on
+  // (owner, integration, name) and clobber each other's connection.
+  const accountLabel = `${loginHint.split("@")[0] ?? ""} ${input.integration.name}`;
   const identityLabel = connectionLabelForHost(
-    "",
+    accountLabel,
     owner,
     input.integration.name,
     input.organizationId,
@@ -129,7 +133,7 @@ export const buildEnableServiceOAuthStartPayload = (input: {
     client: mirrored.oauthClient,
     clientOwner: mirrored.oauthClientOwner ?? mirrored.owner,
     owner,
-    name: connectionNameFrom("", owner, input.integration.name, input.organizationId),
+    name: connectionNameFrom(accountLabel, owner, input.integration.name, input.organizationId),
     integration: input.integration.slug,
     template: AuthTemplateSlug.make(method.template),
     identityLabel,
