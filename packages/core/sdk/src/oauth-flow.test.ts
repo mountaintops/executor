@@ -114,6 +114,109 @@ const routeTokenEndpointToLoopback = (
 };
 
 describe("oauth.start / oauth.complete", () => {
+  it.effect("carries login_hint on provider authorize URLs when provided", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main-account"),
+          integration: INTEG,
+          template: TEMPLATE,
+          loginHint: " user@example.com ",
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const url = new URL(started.authorizationUrl);
+        const params = url.searchParams;
+        expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+        expect([...params.keys()].sort()).toEqual([
+          "access_type",
+          "client_id",
+          "code_challenge",
+          "code_challenge_method",
+          "login_hint",
+          "prompt",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state",
+        ]);
+        expect(params.get("client_id")).toBe("test-client");
+        expect(params.get("redirect_uri")).toBe("http://localhost/oauth/callback");
+        expect(params.get("response_type")).toBe("code");
+        expect(params.get("scope")).toBe("read");
+        expect(params.get("code_challenge_method")).toBe("S256");
+        expect(params.get("access_type")).toBe("offline");
+        expect(params.get("prompt")).toBe("consent");
+        expect(params.get("login_hint")).toBe("user@example.com");
+        expect(params.has("include_granted_scopes")).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("omits login_hint on provider authorize URLs when absent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed(["read"]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main-account"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+
+        const params = new URL(started.authorizationUrl).searchParams;
+        expect([...params.keys()].sort()).toEqual([
+          "access_type",
+          "client_id",
+          "code_challenge",
+          "code_challenge_method",
+          "prompt",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state",
+        ]);
+        expect(params.has("login_hint")).toBe(false);
+        expect(params.has("include_granted_scopes")).toBe(false);
+      }),
+    ),
+  );
+
   it.effect(
     "createClient → start (redirect) → complete mints a connection + tools, executable",
     () =>

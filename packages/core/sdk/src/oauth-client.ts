@@ -122,6 +122,8 @@ export interface OAuthStartInput {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string | null;
+  /** Provider login UX hint. It is never assumed to identify the granted account. */
+  readonly loginHint?: string | null;
   /** Browser-facing callback URL for this flow. Defaults to the executor's configured redirectUri. */
   readonly redirectUri?: string | null;
 }

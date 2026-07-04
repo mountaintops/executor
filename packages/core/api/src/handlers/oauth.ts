@@ -160,6 +160,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             integration: payload.integration,
             template: payload.template,
             identityLabel: payload.identityLabel,
+            loginHint: payload.loginHint,
             redirectUri: payload.redirectUri,
           });
           return startResultToResponse(result);

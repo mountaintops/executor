@@ -1096,7 +1096,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
             // Provider quirks (Google: access_type=offline + prompt=consent) —
             // without these Google returns no refresh token and won't re-consent
             // to widen scopes on reconnect.
-            extraParams: providerAuthorizeExtras(client.authorizationUrl),
+            extraParams: providerAuthorizeExtras(client.authorizationUrl, input.loginHint),
             endpointUrlPolicy: deps.endpointUrlPolicy,
           }),
         catch: (cause) =>

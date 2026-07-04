@@ -180,12 +180,18 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
  *  can fail inside accounts.google.com before returning to our callback. */
 export const providerAuthorizeExtras = (
   authorizationUrl: string,
+  loginHint?: string | null,
 ): Readonly<Record<string, string>> => {
+  const trimmedLoginHint = loginHint?.trim();
+  const loginHintParam = trimmedLoginHint ? { login_hint: trimmedLoginHint } : {};
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input → no provider extras
   try {
-    const host = new URL(authorizationUrl).host.toLowerCase();
+    const host = new URL(authorizationUrl).hostname.toLowerCase();
     if (host === "accounts.google.com") {
-      return { access_type: "offline", prompt: "consent" };
+      return { access_type: "offline", prompt: "consent", ...loginHintParam };
+    }
+    if (host === "login.microsoftonline.com") {
+      return loginHintParam;
     }
   } catch {
     // Unparseable authorization URL — let buildAuthorizationUrl surface the error.

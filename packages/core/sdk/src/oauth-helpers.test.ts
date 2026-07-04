@@ -141,6 +141,48 @@ describe("providerAuthorizeExtras (Google offline/consent quirk)", () => {
     expect(providerAuthorizeExtras("https://oauth2.googleapis.com/token")).toEqual({});
     expect(providerAuthorizeExtras("not a url")).toEqual({});
   });
+
+  it("adds a trimmed login_hint for Google without include_granted_scopes", () => {
+    const extras = providerAuthorizeExtras(
+      "https://accounts.google.com/o/oauth2/v2/auth",
+      " user@example.com ",
+    );
+    expect(extras).toEqual({
+      access_type: "offline",
+      prompt: "consent",
+      login_hint: "user@example.com",
+    });
+    expect("include_granted_scopes" in extras).toBe(false);
+  });
+
+  it("adds only login_hint for the Microsoft authorize host", () => {
+    expect(
+      providerAuthorizeExtras(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        " user@example.com ",
+      ),
+    ).toEqual({ login_hint: "user@example.com" });
+  });
+
+  it("omits login_hint when the hint is absent or blank", () => {
+    expect(providerAuthorizeExtras("https://accounts.google.com/o/oauth2/v2/auth")).toEqual({
+      access_type: "offline",
+      prompt: "consent",
+    });
+    expect(providerAuthorizeExtras("https://accounts.google.com/o/oauth2/v2/auth", "  ")).toEqual({
+      access_type: "offline",
+      prompt: "consent",
+    });
+    expect(
+      providerAuthorizeExtras("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"),
+    ).toEqual({});
+    expect(
+      providerAuthorizeExtras(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        "  ",
+      ),
+    ).toEqual({});
+  });
 });
 
 describe("buildAuthorizationUrl", () => {
