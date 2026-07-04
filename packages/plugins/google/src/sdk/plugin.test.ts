@@ -431,28 +431,59 @@ const DISCOVERY_BODIES: Readonly<Record<string, string>> = {
   [OAUTH2_URL]: toJson(oauth2Doc),
 };
 
+interface DiscoveryHttpClientOptions {
+  readonly failedUrls?: ReadonlySet<string>;
+  readonly beforeResponse?: (url: string) => Effect.Effect<void, never, never>;
+}
+
+const waitOneTurn: Effect.Effect<void, never, never> = Effect.promise(() => Promise.resolve()).pipe(
+  Effect.orDie,
+);
+
 // A stub HTTP client that serves the canned Discovery document for whichever
 // URL the bundle converter fetches. Service-hosted Discovery URLs carry their
 // version in the query string, so match the full URL before falling back to the
 // path-only key used by central Discovery URLs.
-const discoveryHttpClientLayer = Layer.succeed(HttpClient.HttpClient)(
-  HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
-    const url = new URL(request.url);
-    const key = `${url.origin}${url.pathname}`;
-    const body = DISCOVERY_BODIES[url.toString()] ?? DISCOVERY_BODIES[key];
-    return Effect.succeed(
-      HttpClientResponse.fromWeb(
+const makeDiscoveryHttpClientLayer = (options: DiscoveryHttpClientOptions = {}) =>
+  Layer.succeed(HttpClient.HttpClient)(
+    HttpClient.make((request: HttpClientRequest.HttpClientRequest) => {
+      const url = new URL(request.url);
+      const key = `${url.origin}${url.pathname}`;
+      const body = DISCOVERY_BODIES[url.toString()] ?? DISCOVERY_BODIES[key];
+      const discoveryUrl = DISCOVERY_BODIES[url.toString()] !== undefined ? url.toString() : key;
+      const failed =
+        options.failedUrls?.has(url.toString()) === true || options.failedUrls?.has(key) === true;
+      const response = HttpClientResponse.fromWeb(
         request,
-        body === undefined
-          ? new Response("not found", { status: 404 })
-          : new Response(body, {
-              status: 200,
-              headers: { "content-type": "application/json" },
-            }),
-      ),
-    );
-  }),
-);
+        failed
+          ? new Response("forced failure", { status: 503 })
+          : body === undefined
+            ? new Response("not found", { status: 404 })
+            : new Response(body, {
+                status: 200,
+                headers: { "content-type": "application/json" },
+              }),
+      );
+      return (options.beforeResponse?.(discoveryUrl) ?? Effect.void).pipe(Effect.as(response));
+    }),
+  );
+
+const discoveryHttpClientLayer = makeDiscoveryHttpClientLayer();
+
+const oauthScopesFromConfig = (
+  config: {
+    readonly authenticationTemplate?: readonly {
+      readonly kind: string;
+      readonly scopes?: readonly string[];
+    }[];
+  } | null,
+): readonly string[] | undefined => {
+  const oauth = config?.authenticationTemplate?.find((entry) => entry.kind === "oauth2");
+  return oauth?.scopes ? [...oauth.scopes].sort() : undefined;
+};
+
+const googleDiscoveryToolNames = (toolName: string): readonly string[] =>
+  [toolName, "oauth2.tokeninfo", "oauth2.userinfo.get", "oauth2.userinfo.v2.me.get"].sort();
 
 const bundlePlugins = () =>
   [googlePlugin({ httpClientLayer: discoveryHttpClientLayer }), memoryCredentialsPlugin()] as const;
@@ -696,6 +727,238 @@ describe("Google bundle add flow", () => {
         expect(toolNames).toContain("photoslibrary.mediaItems.search");
         expect(toolNames).not.toContain("photospicker.mediaItems.list");
         expect(toolNames).not.toContain("photoslibrary.albums.list");
+      }),
+    ),
+  );
+});
+
+describe("Google per-service add flow", () => {
+  const serviceExpectations = [
+    {
+      presetId: "google-calendar",
+      slug: "google_calendar",
+      name: "Google Calendar",
+      description: "Calendars, events, ACLs, and scheduling.",
+      discoveryUrl: CALENDAR_URL,
+      scopes: ["email", "https://www.googleapis.com/auth/calendar", "openid", "profile"],
+      toolNames: googleDiscoveryToolNames("calendar.events.list"),
+    },
+    {
+      presetId: "google-gmail",
+      slug: "google_gmail",
+      name: "Gmail",
+      description: "Messages, threads, labels, and drafts.",
+      discoveryUrl: GMAIL_URL,
+      scopes: ["email", "https://mail.google.com/", "openid", "profile"],
+      toolNames: googleDiscoveryToolNames("gmail.users.messages.list"),
+    },
+    {
+      presetId: "google-drive",
+      slug: "google_drive",
+      name: "Google Drive",
+      description: "Files, folders, permissions, and shared drives.",
+      discoveryUrl: DRIVE_URL,
+      scopes: ["email", "https://www.googleapis.com/auth/drive", "openid", "profile"],
+      toolNames: googleDiscoveryToolNames("drive.files.list"),
+    },
+  ] as const;
+
+  it.effect(
+    "addServices creates one integration per preset with exact scopes and health checks",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+          const connectedToolNames = (slug: string) =>
+            Effect.gen(function* () {
+              yield* executor.connections.create({
+                owner: "org",
+                name: ConnectionName.make(slug),
+                integration: IntegrationSlug.make(slug),
+                template: AuthTemplateSlug.make("googleOAuth2"),
+                value: "token-xyz",
+              });
+              return (yield* executor.tools.list({ integration: IntegrationSlug.make(slug) }))
+                .map((tool) => String(tool.name))
+                .sort();
+            });
+
+          const result = yield* executor.google.addServices({
+            services: serviceExpectations.map((service) => ({ presetId: service.presetId })),
+          });
+
+          expect(result).toEqual({
+            added: serviceExpectations.map((service) => ({
+              slug: IntegrationSlug.make(service.slug),
+              presetId: service.presetId,
+              toolCount: 4,
+            })),
+            skipped: [],
+            failed: [],
+          });
+
+          const integrations = yield* executor.integrations.list();
+          for (const service of serviceExpectations) {
+            const integration = integrations.find((item) => String(item.slug) === service.slug);
+            expect(integration?.name).toBe(service.name);
+            expect(integration?.description).toBe(service.description);
+
+            const config = yield* executor.google.getConfig(service.slug);
+            expect(config?.googleDiscoveryUrls).toEqual([service.discoveryUrl, OAUTH2_URL]);
+            expect(oauthScopesFromConfig(config)).toEqual([...service.scopes].sort());
+
+            const stored = yield* executor.integrations.healthCheck.get(
+              IntegrationSlug.make(service.slug),
+            );
+            expect(stored?.operation).toBe("oauth2.userinfo.get");
+            expect(stored?.args).toBeUndefined();
+            expect(stored?.identityField).toBe("email");
+
+            expect(yield* connectedToolNames(service.slug)).toEqual(service.toolNames);
+          }
+        }),
+      ),
+  );
+
+  it.effect(
+    "addServices isolates a Discovery fetch failure and keeps other services registered",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const failingLayer = makeDiscoveryHttpClientLayer({
+            failedUrls: new Set([GMAIL_URL]),
+          });
+          const executor = yield* createExecutor(
+            makeTestConfig({
+              plugins: [googlePlugin({ httpClientLayer: failingLayer }), memoryCredentialsPlugin()],
+            }),
+          );
+          const connectedToolNames = (slug: string) =>
+            Effect.gen(function* () {
+              yield* executor.connections.create({
+                owner: "org",
+                name: ConnectionName.make(slug),
+                integration: IntegrationSlug.make(slug),
+                template: AuthTemplateSlug.make("googleOAuth2"),
+                value: "token-xyz",
+              });
+              return (yield* executor.tools.list({ integration: IntegrationSlug.make(slug) }))
+                .map((tool) => String(tool.name))
+                .sort();
+            });
+
+          const result = yield* executor.google.addServices({
+            services: [
+              { presetId: "google-calendar" },
+              { presetId: "google-gmail" },
+              { presetId: "google-drive" },
+            ],
+          });
+
+          expect(result).toEqual({
+            added: [
+              {
+                slug: IntegrationSlug.make("google_calendar"),
+                presetId: "google-calendar",
+                toolCount: 4,
+              },
+              {
+                slug: IntegrationSlug.make("google_drive"),
+                presetId: "google-drive",
+                toolCount: 4,
+              },
+            ],
+            skipped: [],
+            failed: [
+              {
+                slug: IntegrationSlug.make("google_gmail"),
+                presetId: "google-gmail",
+                error: "Failed to fetch Google Discovery document: HTTP 503",
+              },
+            ],
+          });
+
+          expect(yield* executor.google.getIntegration("google_gmail")).toBeNull();
+          expect(yield* connectedToolNames("google_calendar")).toEqual(
+            googleDiscoveryToolNames("calendar.events.list"),
+          );
+          expect(yield* connectedToolNames("google_drive")).toEqual(
+            googleDiscoveryToolNames("drive.files.list"),
+          );
+        }),
+      ),
+  );
+
+  it.effect("addServices skips an existing service without duplicating integration rows", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: bundlePlugins() }));
+
+        yield* executor.google.addServices({
+          services: [{ presetId: "google-calendar" }],
+        });
+        const result = yield* executor.google.addServices({
+          services: [{ presetId: "google-calendar" }],
+        });
+
+        expect(result).toEqual({
+          added: [],
+          skipped: [
+            {
+              slug: IntegrationSlug.make("google_calendar"),
+              presetId: "google-calendar",
+              reason: "already_exists",
+            },
+          ],
+          failed: [],
+        });
+
+        const integrations = yield* executor.integrations.list();
+        expect(
+          integrations.filter((integration) => String(integration.slug) === "google_calendar"),
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("addServices starts each service Discovery fetch sequentially", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let activeServiceFetches = 0;
+        let maxActiveServiceFetches = 0;
+        const serviceFetchOrder: string[] = [];
+        const sequentialLayer = makeDiscoveryHttpClientLayer({
+          beforeResponse: (url) => {
+            if (url === OAUTH2_URL) return Effect.void;
+            return Effect.gen(function* () {
+              activeServiceFetches += 1;
+              maxActiveServiceFetches = Math.max(maxActiveServiceFetches, activeServiceFetches);
+              serviceFetchOrder.push(url);
+              yield* waitOneTurn;
+              activeServiceFetches -= 1;
+            });
+          },
+        });
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              googlePlugin({ httpClientLayer: sequentialLayer }),
+              memoryCredentialsPlugin(),
+            ],
+          }),
+        );
+
+        const result = yield* executor.google.addServices({
+          services: [
+            { presetId: "google-calendar" },
+            { presetId: "google-gmail" },
+            { presetId: "google-drive" },
+          ],
+        });
+
+        expect(result.failed).toEqual([]);
+        expect(serviceFetchOrder).toEqual([CALENDAR_URL, GMAIL_URL, DRIVE_URL]);
+        expect(maxActiveServiceFetches).toBe(1);
       }),
     ),
   );
