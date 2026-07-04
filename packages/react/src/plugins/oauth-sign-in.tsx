@@ -69,6 +69,7 @@ export type OAuthStartPayload = {
   readonly integration: IntegrationSlug;
   readonly template: AuthTemplateSlug;
   readonly identityLabel?: string;
+  readonly loginHint?: string;
   readonly redirectUri?: string;
 };
 
@@ -381,6 +382,7 @@ export function useOAuthPopupFlow<
               integration: input.payload.integration,
               template: input.payload.template,
               identityLabel: input.payload.identityLabel,
+              loginHint: input.payload.loginHint,
               redirectUri: input.payload.redirectUri ?? oauthCallbackUrl(callbackPath),
             },
           }).then((exit) =>

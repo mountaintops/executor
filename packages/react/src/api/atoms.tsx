@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 
 import { ExecutorApiClient } from "./client";
 import { connectionWriteKeys, ReactivityKey } from "./reactivity-keys";
+import { groupProviderAccounts } from "../lib/provider-accounts";
 
 // ---------------------------------------------------------------------------
 // Query atoms — typed, cached, reactive. v2: owner-scoped (org | user) instead
@@ -118,6 +119,22 @@ export const connectionsAllAtom = ExecutorApiClient.query("connections", "list",
   timeToLive: "30 seconds",
   reactivityKeys: [ReactivityKey.connections],
 });
+
+export const providerAccountsAtom = Atom.make(
+  Effect.gen(function* () {
+    const connections = yield* Atom.get(connectionsAllAtom);
+    const integrations = yield* Atom.get(integrationsAtom);
+    return AsyncResult.map(AsyncResult.all({ connections, integrations }), (value) => {
+      const integrationsByKind = new Map(
+        value.integrations.map((integration) => [String(integration.slug), integration]),
+      );
+      return groupProviderAccounts({
+        connections: value.connections,
+        integrationsByKind,
+      });
+    });
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Providers — credential-backend discovery (new in v2).

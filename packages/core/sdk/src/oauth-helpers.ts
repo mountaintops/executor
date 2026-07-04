@@ -183,7 +183,9 @@ export const providerAuthorizeExtras = (
   loginHint?: string | null,
 ): Readonly<Record<string, string>> => {
   const trimmedLoginHint = loginHint?.trim();
-  const loginHintParam = trimmedLoginHint ? { login_hint: trimmedLoginHint } : {};
+  const loginHintParam: Readonly<Record<string, string>> = trimmedLoginHint
+    ? { login_hint: trimmedLoginHint }
+    : {};
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL() throws on invalid input → no provider extras
   try {
     const host = new URL(authorizationUrl).hostname.toLowerCase();
