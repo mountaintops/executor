@@ -39,6 +39,7 @@ import {
   buildMicrosoftGraphOpenApiSpec,
   decodeMicrosoftGraphIntegrationConfig,
   microsoftGraphKeepPathItem,
+  type MicrosoftGraphSelectionInput,
   type MicrosoftGraphUrlPolicy,
   type MicrosoftGraphIntegrationConfig,
   type MicrosoftGraphSpecBuild,
@@ -155,10 +156,20 @@ const makeMicrosoftPluginExtension = (
       keepPathItem: microsoftGraphKeepPathItem(graph),
     });
 
-  const addGraph = (config: MicrosoftGraphConfig) =>
+  const addMicrosoftGraphIntegration = (input: {
+    readonly selection: MicrosoftGraphSelectionInput;
+    readonly slug: IntegrationSlug;
+    readonly name: string;
+    readonly description: string;
+    readonly baseUrl?: string;
+  }) =>
     Effect.gen(function* () {
-      const graph = yield* buildMicrosoftGraphOpenApiSpec(config, httpClientLayer, urlPolicy);
-      const slug = IntegrationSlug.make(config.slug?.trim() || DEFAULT_MICROSOFT_SLUG);
+      const graph = yield* buildMicrosoftGraphOpenApiSpec(
+        input.selection,
+        httpClientLayer,
+        urlPolicy,
+      );
+      const slug = input.slug;
 
       const existing = yield* ctx.core.integrations.get(slug);
       if (existing) {
@@ -180,7 +191,7 @@ const makeMicrosoftPluginExtension = (
         microsoftGraphTokenUrl: graph.tokenUrl,
         microsoftGraphClientCredentialsTokenUrl: graph.clientCredentialsTokenUrl,
         authenticationTemplate: graph.authenticationTemplate,
-        ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
       };
 
       yield* ctx.storage.putSpec(specHash, graph.specText);
@@ -189,8 +200,8 @@ const makeMicrosoftPluginExtension = (
         Effect.gen(function* () {
           yield* ctx.core.integrations.register({
             slug,
-            name: config.name?.trim() || "Microsoft Graph",
-            description: config.description ?? "Selected Microsoft Graph workloads.",
+            name: input.name,
+            description: input.description,
             config:
               integrationConfig satisfies MicrosoftGraphIntegrationConfig as IntegrationConfig,
             canRemove: true,
@@ -217,6 +228,15 @@ const makeMicrosoftPluginExtension = (
       }
 
       return { slug, toolCount: persisted.toolCount };
+    });
+
+  const addGraph = (config: MicrosoftGraphConfig) =>
+    addMicrosoftGraphIntegration({
+      selection: config,
+      slug: IntegrationSlug.make(config.slug?.trim() || DEFAULT_MICROSOFT_SLUG),
+      name: config.name?.trim() || "Microsoft Graph",
+      description: config.description ?? "Selected Microsoft Graph workloads.",
+      baseUrl: config.baseUrl,
     });
 
   const updateGraph = (rawSlug: string, input?: MicrosoftUpdateInput) =>
