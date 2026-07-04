@@ -27,12 +27,10 @@ import { isGoogleDiscoveryUrl } from "../sdk/discovery";
 // GoogleProductPicker - the "customize your Google connection" surface.
 //
 // A checkable card grid over `googleOpenApiPresets`, grouped/annotated by
-// `oauthAudience`. The user picks which Google APIs to bundle into the single
-// `google` integration; the parent turns the selected discovery URLs into a
-// `{ kind: "googleDiscoveryBundle", urls }` add. A "View scopes" panel previews
-// the unioned OAuth consent (via `googleOAuthConsentBatches`) BEFORE connecting,
-// and a custom-URL escape hatch lets advanced users paste any Google Discovery
-// document the preset list doesn't cover.
+// `oauthAudience`. The user picks which Google APIs to add as separate
+// integrations. A "View scopes" panel previews the selected OAuth scopes, and a
+// custom-URL escape hatch lets advanced users paste any Google Discovery document
+// the preset list doesn't cover.
 // ---------------------------------------------------------------------------
 
 // Audience groups, ordered from least- to most-privileged. The warning tiers
@@ -219,9 +217,9 @@ export function GoogleProductPicker({
     [],
   );
 
-  // The "View scopes" preview unions the selected presets' representative
-  // consent scopes through `googleOAuthConsentBatches`, mirroring the unioned
-  // scopes the bundle converter ultimately stores on the integration.
+  // The "View scopes" preview groups the selected presets' representative
+  // consent scopes so the user can review the requested OAuth surface before
+  // adding separate integrations.
   const consentBatches = useMemo(
     () =>
       googleOAuthConsentBatches(
@@ -244,8 +242,7 @@ export function GoogleProductPicker({
       <div className="space-y-1">
         <FieldLabel>Customize your Google connection</FieldLabel>
         <p className="text-[11px] text-muted-foreground">
-          Pick the Google APIs to bundle into one connection. They share a single OAuth consent and
-          appear as merged tools under one Google integration.
+          Pick Google APIs to add. Each selected product becomes its own integration.
         </p>
       </div>
 
@@ -311,8 +308,8 @@ export function GoogleProductPicker({
           <Badge variant="secondary">OAuth</Badge>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          The selected Google APIs share one OAuth consent. Review the scopes below, then connect a
-          Google account from the integration page after adding.
+          Each selected Google product gets its own OAuth setup. Connect accounts from each
+          integration page after adding.
         </p>
       </div>
 
