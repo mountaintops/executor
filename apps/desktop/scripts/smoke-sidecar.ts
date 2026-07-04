@@ -16,8 +16,9 @@
  * Run after `bun ./scripts/build-sidecar.ts`. Exits non-zero on any
  * deviation so it can gate CI.
  */
-import { chmod, cp, mkdtemp, rm } from "node:fs/promises";
+import { chmod, cp, mkdtemp, rename, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawn, type Subprocess } from "bun";
@@ -26,6 +27,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const ROOT = resolve(import.meta.dir, "..");
+const REPO_ROOT = resolve(ROOT, "../..");
 const APPS_LOCAL_DRIZZLE = resolve(ROOT, "../local/drizzle-legacy-v1");
 const BINARY = resolve(
   ROOT,
@@ -37,6 +39,16 @@ const AUTH_TOKEN = "smoke-test-token";
 const AUTH_HEADER = `Bearer ${AUTH_TOKEN}`;
 const READY_TIMEOUT_MS = 30_000;
 const EXECUTOR_BINARY_NAME = process.platform === "win32" ? "executor.exe" : "executor";
+const requireFromOnePasswordPlugin = createRequire(
+  join(REPO_ROOT, "packages/plugins/onepassword/package.json"),
+);
+const requireFromOnePasswordSdk = createRequire(
+  requireFromOnePasswordPlugin.resolve("@1password/sdk/package.json"),
+);
+const ONEPASSWORD_SDK_CORE_WASM = join(
+  dirname(requireFromOnePasswordSdk.resolve("@1password/sdk-core/package.json")),
+  "nodejs/core_bg.wasm",
+);
 
 // Throw instead of process.exit so main()'s finally still tears down the
 // spawned daemon + temp dirs — exiting here leaks a running process.
@@ -339,6 +351,41 @@ const stageSidecarWithUnavailableOp = async (
   return { binary: join(stagedDir, EXECUTOR_BINARY_NAME) };
 };
 
+interface HiddenWorkspaceWasm {
+  readonly original: string;
+  readonly hidden: string;
+}
+
+const hideWorkspaceOnePasswordWasm = async (): Promise<HiddenWorkspaceWasm> => {
+  const hidden = `${ONEPASSWORD_SDK_CORE_WASM}.hidden`;
+  if (!(await Bun.file(ONEPASSWORD_SDK_CORE_WASM).exists())) {
+    fail(`workspace 1Password SDK WASM not found at ${ONEPASSWORD_SDK_CORE_WASM}`);
+  }
+
+  await rm(hidden, { force: true });
+  await rename(ONEPASSWORD_SDK_CORE_WASM, hidden);
+  console.log(`[smoke-sidecar] hid workspace 1Password SDK WASM: ${ONEPASSWORD_SDK_CORE_WASM}`);
+  return { original: ONEPASSWORD_SDK_CORE_WASM, hidden };
+};
+
+const restoreWorkspaceOnePasswordWasm = async (
+  hiddenWorkspaceWasm: HiddenWorkspaceWasm | null,
+): Promise<void> => {
+  if (!hiddenWorkspaceWasm) return;
+
+  if (await Bun.file(hiddenWorkspaceWasm.original).exists()) {
+    await rm(hiddenWorkspaceWasm.hidden, { force: true });
+    return;
+  }
+
+  if (!(await Bun.file(hiddenWorkspaceWasm.hidden).exists())) {
+    fail(`workspace 1Password SDK WASM restore source missing at ${hiddenWorkspaceWasm.hidden}`);
+  }
+
+  await rename(hiddenWorkspaceWasm.hidden, hiddenWorkspaceWasm.original);
+  console.log(`[smoke-sidecar] restored workspace 1Password SDK WASM`);
+};
+
 const assertOnePasswordSdkLoads = async (origin: string): Promise<void> => {
   const url = new URL("/api/onepassword/vaults", origin);
   url.searchParams.set("authKind", "service-account");
@@ -374,6 +421,7 @@ const main = async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "executor-smoke-data-"));
   const sidecarRoot = await mkdtemp(join(tmpdir(), "executor-smoke-sidecar-"));
   const sidecar = await stageSidecarWithUnavailableOp(sidecarRoot);
+  let hiddenWorkspaceWasm: HiddenWorkspaceWasm | null = null;
   await seedLegacyScopedSqlite(dataDir, makeScopeId(scopeDir));
   // v2 connections reference credentials by provider item instead of carrying
   // raw values, so seed the file-secrets provider (auth.json under
@@ -427,6 +475,7 @@ const main = async () => {
       if (exitCode === null) proc.kill("SIGKILL");
     }
     openapi.server.stop(true);
+    await restoreWorkspaceOnePasswordWasm(hiddenWorkspaceWasm);
     // oxlint-disable-next-line executor/no-promise-catch -- boundary: best-effort tempdir cleanup in a standalone smoke harness
     await rm(scopeDir, { recursive: true, force: true }).catch(() => {});
     // oxlint-disable-next-line executor/no-promise-catch -- boundary: best-effort tempdir cleanup in a standalone smoke harness
@@ -443,6 +492,7 @@ const main = async () => {
     await assertV1MigrationCompleted(dataDir);
     const mcpUrl = new URL(`http://127.0.0.1:${port}/mcp`);
     console.log(`[smoke-sidecar] ready on ${mcpUrl.origin}`);
+    hiddenWorkspaceWasm = await hideWorkspaceOnePasswordWasm();
     await assertOnePasswordSdkLoads(mcpUrl.origin);
 
     const transport = new StreamableHTTPClientTransport(mcpUrl, {
