@@ -32,11 +32,7 @@ import {
   authorizeOrganizationSelector,
   resolveOrganization,
 } from "./organization";
-import { mcpSessionDurableObjectName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
-import type {
-  McpSessionApprovalResult,
-  McpSessionResumeApprovalResult,
-} from "../mcp/session-durable-object";
+import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -123,8 +119,7 @@ const requireSelectedOrganization = Effect.gen(function* () {
   };
 });
 
-const getMcpSessionStub = (mcpSessionId: string) =>
-  env.MCP_SESSION.get(env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(mcpSessionId)));
+const getMcpSessionStub = (mcpSessionId: string) => mcpSessionStub(env.MCP_SESSION, mcpSessionId);
 
 const failMcpApprovalResult = (
   result: { readonly status: "not_found" | "forbidden" },
@@ -515,12 +510,11 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
           const stub = getMcpSessionStub(params.mcpSessionId);
-          const result = yield* Effect.promise(
-            () =>
-              stub.getPausedExecutionForApproval(params.executionId, {
-                accountId: owner.accountId,
-                organizationId: owner.organizationId,
-              }) as Promise<McpSessionApprovalResult>,
+          const result = yield* Effect.promise(() =>
+            stub.getPausedExecutionForApproval(params.executionId, {
+              accountId: owner.accountId,
+              organizationId: owner.organizationId,
+            }),
           );
 
           if (result.status !== "ok") {
@@ -537,19 +531,18 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
           const stub = getMcpSessionStub(params.mcpSessionId);
-          const result = yield* Effect.promise(
-            () =>
-              stub.resumeExecutionForApproval(
-                params.executionId,
-                {
-                  accountId: owner.accountId,
-                  organizationId: owner.organizationId,
-                },
-                {
-                  action: payload.action,
-                  content: payload.content as Record<string, unknown> | undefined,
-                },
-              ) as Promise<McpSessionResumeApprovalResult>,
+          const result = yield* Effect.promise(() =>
+            stub.resumeExecutionForApproval(
+              params.executionId,
+              {
+                accountId: owner.accountId,
+                organizationId: owner.organizationId,
+              },
+              {
+                action: payload.action,
+                content: payload.content as Record<string, unknown> | undefined,
+              },
+            ),
           );
 
           if (result.status !== "ok") {
