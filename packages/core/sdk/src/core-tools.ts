@@ -21,6 +21,7 @@ import {
   ProviderKey,
   type Owner,
 } from "./ids";
+import { HealthCheckResult } from "./health-check";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
@@ -102,6 +103,7 @@ const ConnectionListItem = Schema.Struct({
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScopeCount: Schema.NullOr(Schema.Number),
   oauthScope: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHealth: Schema.optional(Schema.NullOr(HealthCheckResult)),
 });
 const ConnectionsListOutput = Schema.Struct({
   connections: Schema.Array(ConnectionListItem),
@@ -397,6 +399,7 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
+  lastHealth: connection.lastHealth ?? null,
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 

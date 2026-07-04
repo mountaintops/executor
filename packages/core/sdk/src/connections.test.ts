@@ -55,6 +55,12 @@ const demoPlugin = definePlugin(() => ({
     }),
   invokeTool: ({ toolRow, credential }) =>
     Effect.succeed({ ran: toolRow.name, value: credential.value }),
+  checkHealth: () =>
+    Effect.succeed({
+      status: "healthy" as const,
+      identity: "account@example.com",
+      checkedAt: 1234,
+    }),
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -75,6 +81,12 @@ const setup = () =>
   makeTestExecutor({ plugins: [demoPlugin] as const }).pipe(
     Effect.tap((executor) => executor.demo.seed()),
   );
+
+const setupCoreTools = () =>
+  makeTestExecutor({
+    plugins: [demoPlugin] as const,
+    coreTools: { webBaseUrl: "http://localhost:3000" },
+  }).pipe(Effect.tap((executor) => executor.demo.seed()));
 
 describe("connections.create", () => {
   it.effect("inline value writes to the default writable provider and produces tools", () =>
@@ -262,6 +274,57 @@ describe("connections.create", () => {
 });
 
 describe("connections.list / get", () => {
+  it.effect("core tool list exposes lastHealth after a health check runs", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupCoreTools();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("health"),
+        integration: INTEG,
+        template: TEMPLATE,
+        value: "v",
+      });
+
+      type ListOutput = {
+        readonly connections: readonly {
+          readonly name: string;
+          readonly lastHealth?: {
+            readonly status: string;
+            readonly identity?: string;
+            readonly checkedAt: number;
+          } | null;
+        }[];
+      };
+
+      const before = (yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.list"),
+        { integration: String(INTEG), owner: "org" },
+      )) as ListOutput;
+      expect(before.connections[0]?.lastHealth ?? null).toBeNull();
+
+      const health = yield* executor.connections.checkHealth({
+        owner: "org",
+        integration: INTEG,
+        name: ConnectionName.make("health"),
+      });
+      expect(health).toEqual({
+        status: "healthy",
+        identity: "account@example.com",
+        checkedAt: 1234,
+      });
+
+      const after = (yield* executor.execute(
+        ToolAddress.make("executor.coreTools.connections.list"),
+        { integration: String(INTEG), owner: "org" },
+      )) as ListOutput;
+      expect(after.connections[0]?.lastHealth).toEqual({
+        status: "healthy",
+        identity: "account@example.com",
+        checkedAt: 1234,
+      });
+    }),
+  );
+
   it.effect("lists created connections and filters by integration", () =>
     Effect.gen(function* () {
       const executor = yield* setup();
