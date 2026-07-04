@@ -32,6 +32,7 @@ import {
   authorizeOrganizationSelector,
   resolveOrganization,
 } from "./organization";
+import { mcpSessionDurableObjectName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import type {
   McpSessionApprovalResult,
   McpSessionResumeApprovalResult,
@@ -123,22 +124,7 @@ const requireSelectedOrganization = Effect.gen(function* () {
 });
 
 const getMcpSessionStub = (mcpSessionId: string) =>
-  Effect.try({
-    try: () => {
-      const ns = env.MCP_SESSION;
-      return ns.get(ns.idFromString(mcpSessionId));
-    },
-    catch: () => undefined,
-  }).pipe(Effect.orElseSucceed(() => null));
-
-const requireMcpSessionStub = (mcpSessionId: string, executionId: string) =>
-  Effect.gen(function* () {
-    const stub = yield* getMcpSessionStub(mcpSessionId);
-    if (!stub) {
-      return yield* new McpExecutionNotFoundError({ executionId });
-    }
-    return stub;
-  });
+  env.MCP_SESSION.get(env.MCP_SESSION.idFromName(mcpSessionDurableObjectName(mcpSessionId)));
 
 const failMcpApprovalResult = (
   result: { readonly status: "not_found" | "forbidden" },
@@ -528,7 +514,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       .handle("getMcpPaused", ({ params }) =>
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const stub = getMcpSessionStub(params.mcpSessionId);
           const result = yield* Effect.promise(
             () =>
               stub.getPausedExecutionForApproval(params.executionId, {
@@ -550,7 +536,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
       .handle("resumeMcpExecution", ({ params, payload }) =>
         Effect.gen(function* () {
           const owner = yield* requireSelectedOrganization;
-          const stub = yield* requireMcpSessionStub(params.mcpSessionId, params.executionId);
+          const stub = getMcpSessionStub(params.mcpSessionId);
           const result = yield* Effect.promise(
             () =>
               stub.resumeExecutionForApproval(
