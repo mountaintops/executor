@@ -7,6 +7,7 @@ import type { ReactElement, ReactNode } from "react";
 import {
   MicrosoftWorkloadResultPanel,
   microsoftAddWorkloadsPayload,
+  microsoftCustomGraphPayload,
   submitMicrosoftWorkloadsSelection,
   type AddMicrosoftWorkloadsMutation,
 } from "./AddMicrosoftSource";
@@ -167,6 +168,27 @@ describe("AddMicrosoftSource per-workload submit", () => {
           name: "Team Mail",
         },
       ],
+    });
+  });
+
+  it("mixed flow: the custom Graph payload carries only custom scopes, never the fanned-out presets", () => {
+    // Checked workloads go through addWorkloads as their own integrations in
+    // the same submit; if the custom addGraph payload repeated their preset
+    // ids, the custom bundle would duplicate the same tools.
+    expect(
+      microsoftCustomGraphPayload({
+        customScopes: ["Sites.Read.All", "Custom.Scope"],
+        slug: "microsoft_graph_custom",
+        name: "Custom Microsoft Graph",
+        description: "Custom Microsoft Graph scopes.",
+        baseUrl: "",
+      }),
+    ).toEqual({
+      presetIds: [],
+      customScopes: ["Sites.Read.All", "Custom.Scope"],
+      slug: "microsoft_graph_custom",
+      name: "Custom Microsoft Graph",
+      description: "Custom Microsoft Graph scopes.",
     });
   });
 });

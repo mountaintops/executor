@@ -124,12 +124,17 @@ const uniqueStrings = (values: Iterable<string>): readonly string[] => {
 };
 
 const normalizeSelection = (input: MicrosoftGraphSelectionInput) => {
+  const customScopes = uniqueStrings(input.customScopes ?? []);
+  // Explicitly empty presetIds alongside custom scopes means "custom scopes
+  // only": the add flow fans checked workloads out as their own integrations
+  // through addWorkloads, so folding the default presets back into the custom
+  // bundle would duplicate their tools. An empty selection without custom
+  // scopes still falls back to the default workloads.
   const presetIds = uniqueStrings(
-    input.presetIds && input.presetIds.length > 0
+    input.presetIds && (input.presetIds.length > 0 || customScopes.length > 0)
       ? input.presetIds
       : MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   );
-  const customScopes = uniqueStrings(input.customScopes ?? []);
   const scopes = microsoftGraphScopesForPresetIds(presetIds, customScopes);
   const exactPaths = microsoftGraphExactPathsForPresetIds(presetIds);
   const pathPrefixes = microsoftGraphPathPrefixesForPresetIds(presetIds);

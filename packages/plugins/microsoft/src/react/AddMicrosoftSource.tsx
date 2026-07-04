@@ -273,14 +273,25 @@ type MicrosoftGraphAddPayload = MicrosoftGraphConfig & {
   readonly presetIds: readonly string[];
 };
 
-const microsoftGraphPayload = (config: MicrosoftGraphAddPayload): MicrosoftGraphAddPayload => {
-  const baseUrl = config.baseUrl?.trim() ?? "";
-  const description = config.description?.trim() ?? "";
+// The payload for the legacy addGraph call that carries the custom scopes.
+// The checked workloads already fan out as their own integrations through
+// addWorkloads in the same submit, so the custom bundle must carry only the
+// custom scopes (presetIds stays empty): folding the preset ids in again
+// would create a second integration containing the same tools.
+export const microsoftCustomGraphPayload = (input: {
+  readonly customScopes: readonly string[];
+  readonly slug: string;
+  readonly name: string;
+  readonly description: string;
+  readonly baseUrl: string;
+}): MicrosoftGraphAddPayload => {
+  const baseUrl = input.baseUrl.trim();
+  const description = input.description.trim();
   return {
-    presetIds: config.presetIds,
-    ...(config.customScopes !== undefined ? { customScopes: config.customScopes } : {}),
-    ...(config.slug !== undefined ? { slug: config.slug } : {}),
-    ...(config.name !== undefined ? { name: config.name } : {}),
+    presetIds: [],
+    customScopes: [...input.customScopes],
+    slug: input.slug,
+    name: input.name,
     ...(description.length > 0 ? { description } : {}),
     ...(baseUrl.length > 0 ? { baseUrl } : {}),
   };
@@ -366,9 +377,8 @@ export default function AddMicrosoftSource(props: {
   const addCustomGraphScopes = async (): Promise<boolean> => {
     if (customScopes.length === 0) return true;
     const exit = await doAddGraph({
-      payload: microsoftGraphPayload({
-        presetIds: selectedIds,
-        customScopes: [...customScopes],
+      payload: microsoftCustomGraphPayload({
+        customScopes,
         slug: resolvedSourceId,
         name: resolvedDisplayName,
         description: resolvedDescription,

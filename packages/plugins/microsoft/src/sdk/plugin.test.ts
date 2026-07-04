@@ -407,6 +407,33 @@ describe("Microsoft Graph provider", () => {
     ),
   );
 
+  it.effect("empty presetIds with custom scopes stays custom-only, no default workloads", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+
+        // The add flow fans checked workloads out through addWorkloads and
+        // sends the custom scopes here with presetIds: []. Folding the
+        // defaults back in would duplicate the fanned-out workloads' tools.
+        yield* executor.microsoft.addGraph({
+          slug: "microsoft_graph_custom",
+          presetIds: [],
+          customScopes: ["Custom.Scope"],
+        });
+
+        const config = yield* executor.microsoft.getConfig("microsoft_graph_custom");
+        expect(config?.microsoftGraphPresetIds).toEqual([]);
+        expect(config?.microsoftGraphCustomScopes).toEqual(["Custom.Scope"]);
+        expect(config?.microsoftGraphCoversFullGraph).toBe(false);
+        expect(config?.microsoftGraphScopes).toEqual([
+          "offline_access",
+          "User.Read",
+          "Custom.Scope",
+        ]);
+      }),
+    ),
+  );
+
   it.effect("uses the app registration default scope when every Graph workload is selected", () =>
     Effect.scoped(
       Effect.gen(function* () {
