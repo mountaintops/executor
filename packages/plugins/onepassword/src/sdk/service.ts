@@ -2,6 +2,7 @@ import { Context, Duration, Effect, Semaphore } from "effect";
 import * as op from "@1password/op-js";
 
 import { OnePasswordError } from "./errors";
+import type { OnePasswordSdkModule } from "./onepassword-sdk";
 
 // ---------------------------------------------------------------------------
 // Canonical service interface — all backends (SDK, CLI) implement this
@@ -50,7 +51,6 @@ export type ResolvedAuth =
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_ERROR_MESSAGE_LENGTH = 300;
 const SERVICE_ACCOUNT_TOKEN_RE = /ops_[A-Za-z0-9_-]+/g;
-type OnePasswordSdkModule = typeof import("@1password/sdk");
 
 const formatCause = (cause: unknown): string => {
   // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: normalizing untyped op-js/SDK throwables into OnePasswordError.message
@@ -72,15 +72,33 @@ const messageWithCause = (prefix: string, cause: unknown): string => {
     : message;
 };
 
+const hasOnePasswordSdkShape = (value: unknown): value is OnePasswordSdkModule => {
+  const sdk = value as Partial<OnePasswordSdkModule> | null | undefined;
+  return typeof sdk?.createClient === "function" && typeof sdk.DesktopAuth === "function";
+};
+
+const invalidOnePasswordSdkError = () =>
+  new OnePasswordError({
+    operation: "sdk module load",
+    message: [
+      "Failed to load 1Password SDK: the packaged SDK module did not expose createClient and DesktopAuth.",
+      "Install the 1Password CLI (`op`) in /opt/homebrew/bin or /usr/local/bin and retry, or update Executor.",
+    ].join(" "),
+  });
+
 const loadOnePasswordSdk = (): Effect.Effect<OnePasswordSdkModule, OnePasswordError> =>
   Effect.tryPromise({
-    try: () => import("@1password/sdk"),
+    try: () => import("./onepassword-sdk").then((module) => module.onePasswordSdk),
     catch: (cause) =>
       new OnePasswordError({
         operation: "sdk module load",
         message: messageWithCause("Failed to load 1Password SDK", cause),
       }),
-  });
+  }).pipe(
+    Effect.flatMap((sdk) =>
+      hasOnePasswordSdkShape(sdk) ? Effect.succeed(sdk) : Effect.fail(invalidOnePasswordSdkError()),
+    ),
+  );
 
 const makeTimeoutMessage = (operation: string, timeoutMs: number): string =>
   [

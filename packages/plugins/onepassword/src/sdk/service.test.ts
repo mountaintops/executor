@@ -17,6 +17,10 @@ const opMocks = vi.hoisted(() => ({
 const sdkMocks = vi.hoisted(() => ({
   createClient: vi.fn(),
   DesktopAuth: vi.fn((accountName: string) => ({ accountName })),
+  exports: {} as {
+    createClient?: unknown;
+    DesktopAuth?: unknown;
+  },
 }));
 
 vi.mock("@1password/op-js", () => ({
@@ -27,10 +31,7 @@ vi.mock("@1password/op-js", () => ({
   read: { parse: opMocks.readParse },
 }));
 
-vi.mock("@1password/sdk", () => ({
-  createClient: sdkMocks.createClient,
-  DesktopAuth: sdkMocks.DesktopAuth,
-}));
+vi.mock("@1password/sdk", () => sdkMocks.exports);
 
 describe("makeOnePasswordService", () => {
   beforeEach(() => {
@@ -38,6 +39,8 @@ describe("makeOnePasswordService", () => {
     opMocks.vaultList.mockReturnValue([]);
     opMocks.itemList.mockReturnValue([]);
     opMocks.readParse.mockReturnValue("secret");
+    sdkMocks.exports.createClient = sdkMocks.createClient;
+    sdkMocks.exports.DesktopAuth = sdkMocks.DesktopAuth;
     sdkMocks.createClient.mockResolvedValue({
       secrets: { resolve: vi.fn(async () => "secret") },
       vaults: { list: vi.fn(async () => []) },
@@ -100,6 +103,32 @@ describe("makeOnePasswordService", () => {
       expect(error.message).toContain("1Password SDK vault listing failed:");
       expect(error.message).toContain("desktop approval refused for account");
       expect(error.message).not.toBe("1Password CLI vault listing failed");
+      // oxlint-enable executor/no-unknown-error-message
+    }),
+  );
+
+  it.effect("reports a clear SDK load error when the compiled namespace is empty", () =>
+    Effect.gen(function* () {
+      opMocks.vaultList.mockImplementation(() => {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: simulates the untyped op-js CLI wrapper throwing
+        throw new Error("spawn op ENOENT");
+      });
+      sdkMocks.exports.createClient = undefined;
+      sdkMocks.exports.DesktopAuth = undefined;
+
+      const error = yield* makeOnePasswordService(
+        { kind: "service-account", token: "ops_test_token" },
+        { timeoutMs: 1_000 },
+      ).pipe(
+        Effect.flatMap((service) => service.listVaults()),
+        Effect.flip,
+      );
+
+      expect(error).toBeInstanceOf(OnePasswordError);
+      expect(error.operation).toBe("sdk module load");
+      // oxlint-disable executor/no-unknown-error-message -- boundary: OnePasswordError carries a typed message; asserting its contents
+      expect(error.message).toContain("did not expose createClient and DesktopAuth");
+      expect(error.message).toContain("/opt/homebrew/bin");
       // oxlint-enable executor/no-unknown-error-message
     }),
   );

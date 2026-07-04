@@ -10,6 +10,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cliRoot = resolve(repoRoot, "apps/cli");
 const webRoot = resolve(repoRoot, "apps/local");
 const distDir = resolve(cliRoot, "dist");
+const ONEPASSWORD_CORE_WASM_FILENAME = "onepassword-core_bg.wasm";
 
 const resolveQuickJsWasmPath = (): string => {
   const req = createRequire(join(repoRoot, "packages/kernel/runtime-quickjs/package.json"));
@@ -19,6 +20,16 @@ const resolveQuickJsWasmPath = (): string => {
     "../@jitl/quickjs-wasmfile-release-sync/dist/emscripten-module.wasm",
   );
   if (!existsSync(wasmPath)) throw new Error(`QuickJS WASM not found at ${wasmPath}`);
+  return wasmPath;
+};
+
+const resolveOnePasswordCoreWasmPath = (): string => {
+  const req = createRequire(join(repoRoot, "packages/plugins/onepassword/package.json"));
+  const sdkPkg = req.resolve("@1password/sdk/package.json");
+  const sdkReq = createRequire(sdkPkg);
+  const sdkCorePkg = sdkReq.resolve("@1password/sdk-core/package.json");
+  const wasmPath = join(dirname(sdkCorePkg), "nodejs/core_bg.wasm");
+  if (!existsSync(wasmPath)) throw new Error(`1Password SDK core WASM not found at ${wasmPath}`);
   return wasmPath;
 };
 
@@ -321,6 +332,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
   await writeFile(embeddedMigrationsPath, `${embeddedMigrations}\n`);
 
   const quickJsWasmPath = resolveQuickJsWasmPath();
+  const onePasswordCoreWasmPath = resolveOnePasswordCoreWasmPath();
 
   try {
     for (const target of targets) {
@@ -342,6 +354,11 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
 
       // Copy QuickJS WASM next to binary — loaded at runtime by the server
       await cp(quickJsWasmPath, join(binDir, "emscripten-module.wasm"));
+
+      // Copy 1Password's sdk-core WASM next to the binary. The patched
+      // sdk-core loader falls back to this sibling file when bun --compile
+      // bakes a build-machine node_modules path into __dirname.
+      await cp(onePasswordCoreWasmPath, join(binDir, ONEPASSWORD_CORE_WASM_FILENAME));
 
       // Copy @napi-rs/keyring native binding next to executor — bun --compile
       // doesn't bundle .node files, so the loader needs to find it on disk
