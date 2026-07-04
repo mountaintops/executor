@@ -105,6 +105,11 @@ jobs:
     name: Typecheck
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
+    env:
+      TURBO_API: ${{ vars.TURBO_API }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -137,6 +142,10 @@ jobs:
     timeout-minutes: 15
     # Tuned for Blacksmith's 4 vCPU runners.
     env:
+      TURBO_API: ${{ vars.TURBO_API }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
       TURBO_TEST_CONCURRENCY: 4
     steps:
       - uses: actions/checkout@v4
