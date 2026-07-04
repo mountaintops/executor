@@ -4,13 +4,20 @@ import "./native-bindings";
 
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-// Make sibling binaries (if any are added later) discoverable on $PATH so
-// child processes spawned without an absolute path still find them.
+import { delimiter, dirname, join, resolve } from "node:path";
+// Make sibling binaries and standard GUI-missing CLI install locations
+// discoverable on $PATH so child processes spawned without an absolute path
+// still find them.
 const execDir = dirname(process.execPath);
-if (process.env.PATH && !process.env.PATH.includes(execDir)) {
-  process.env.PATH = `${execDir}:${process.env.PATH}`;
-}
+const prependPathEntries = (entries: ReadonlyArray<string>): void => {
+  const current = process.env.PATH?.split(delimiter).filter(Boolean) ?? [];
+  const next = [...entries.filter((entry) => !current.includes(entry)), ...current];
+  process.env.PATH = next.join(delimiter);
+};
+prependPathEntries([
+  execDir,
+  ...(process.platform === "darwin" ? ["/opt/homebrew/bin", "/usr/local/bin"] : []),
+]);
 
 // Pre-load QuickJS WASM for compiled binaries — must run before server imports
 const wasmOnDisk = join(execDir, "emscripten-module.wasm");
