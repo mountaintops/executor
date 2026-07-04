@@ -21,7 +21,7 @@ import {
   ProviderKey,
   type Owner,
 } from "./ids";
-import { HealthCheckResult } from "./health-check";
+import { HealthStatus } from "./health-check";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
@@ -85,6 +85,16 @@ const ConnectionsListInput = Schema.Struct({
   verbose: Schema.optional(Schema.Boolean),
 });
 
+/** Lean health verdict for list scans: just the status, extracted identity,
+ *  and timestamp. The diagnostic fields (`httpStatus`, `detail`,
+ *  `responseSample`) stay on the connections DETAIL surface; a list of N
+ *  connections must not carry N response-body samples. */
+const ConnectionListHealth = Schema.Struct({
+  status: HealthStatus,
+  identity: Schema.optional(Schema.String),
+  checkedAt: Schema.optional(Schema.Number),
+});
+
 /** Lean per-connection shape for list scans. Omits the full `oauthScope`
  *  grant string (a single connection's scope list can run to thousands of
  *  characters and dominates the payload) in favor of `oauthScopeCount`. The
@@ -103,7 +113,7 @@ const ConnectionListItem = Schema.Struct({
   oauthClientOwner: Schema.NullOr(OwnerSchema),
   oauthScopeCount: Schema.NullOr(Schema.Number),
   oauthScope: Schema.optional(Schema.NullOr(Schema.String)),
-  lastHealth: Schema.optional(Schema.NullOr(HealthCheckResult)),
+  lastHealth: Schema.optional(Schema.NullOr(ConnectionListHealth)),
 });
 const ConnectionsListOutput = Schema.Struct({
   connections: Schema.Array(ConnectionListItem),
@@ -384,6 +394,19 @@ const connectionToOutput = (connection: Connection) => ({
 const oauthScopeCount = (scope: string | null | undefined): number | null =>
   scope == null ? null : scope.split(/\s+/).filter(Boolean).length;
 
+/** Project a persisted health verdict down to the list shape, dropping the
+ *  diagnostic fields (`httpStatus`, `detail`, `responseSample`). */
+const lastHealthToListItem = (
+  lastHealth: Connection["lastHealth"],
+): typeof ConnectionListHealth.Type | null =>
+  lastHealth == null
+    ? null
+    : {
+        status: lastHealth.status,
+        ...(lastHealth.identity !== undefined ? { identity: lastHealth.identity } : {}),
+        checkedAt: lastHealth.checkedAt,
+      };
+
 /** Lean projection for `connections.list`. Summarizes `oauthScope` to a count
  *  unless `verbose`, where the full grant string is included too. */
 const connectionToListItem = (connection: Connection, verbose: boolean) => ({
@@ -399,7 +422,7 @@ const connectionToListItem = (connection: Connection, verbose: boolean) => ({
   oauthClient: connection.oauthClient == null ? null : String(connection.oauthClient),
   oauthClientOwner: connection.oauthClientOwner ?? null,
   oauthScopeCount: oauthScopeCount(connection.oauthScope),
-  lastHealth: connection.lastHealth ?? null,
+  lastHealth: lastHealthToListItem(connection.lastHealth),
   ...(verbose ? { oauthScope: connection.oauthScope ?? null } : {}),
 });
 

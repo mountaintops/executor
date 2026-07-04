@@ -60,6 +60,9 @@ const demoPlugin = definePlugin(() => ({
       status: "healthy" as const,
       identity: "account@example.com",
       checkedAt: 1234,
+      httpStatus: 200,
+      detail: "GET /me returned 200",
+      responseSample: [{ path: "user.email", value: "account@example.com" }],
     }),
   extension: (ctx) => ({
     seed: () =>
@@ -311,6 +314,9 @@ describe("connections.list / get", () => {
         status: "healthy",
         identity: "account@example.com",
         checkedAt: 1234,
+        httpStatus: 200,
+        detail: "GET /me returned 200",
+        responseSample: [{ path: "user.email", value: "account@example.com" }],
       });
 
       const after = (yield* executor.execute(
@@ -322,6 +328,9 @@ describe("connections.list / get", () => {
         identity: "account@example.com",
         checkedAt: 1234,
       });
+      expect(after.connections[0]?.lastHealth).not.toHaveProperty("responseSample");
+      expect(after.connections[0]?.lastHealth).not.toHaveProperty("httpStatus");
+      expect(after.connections[0]?.lastHealth).not.toHaveProperty("detail");
     }),
   );
 
