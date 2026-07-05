@@ -46,7 +46,13 @@ process.env.EXECUTOR_ALLOW_LOCAL_NETWORK = "true";
 
 const SCOPE = "default";
 const GITHUB_INTEGRATION = "github";
-const GITHUB_CONNECTION = "github-emu";
+// The connection name matches the integration slug, which is the apps binding
+// contract (a role defaults to a connection of the same name as its integration).
+// The catalog-invoke path uses that default binding, and the resolver now
+// requires an EXACT connection match (no silent conns[0] fallback, Fix 4), so the
+// connection MUST be named after the integration for the default binding to
+// resolve.
+const GITHUB_CONNECTION = "github";
 
 type LocalEmulator = Awaited<ReturnType<typeof createEmulator>>;
 

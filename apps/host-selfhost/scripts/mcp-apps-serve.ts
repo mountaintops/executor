@@ -119,7 +119,11 @@ await api("/api/connections", {
   method: "POST",
   body: JSON.stringify({
     owner: "user",
-    name: "github-emu",
+    // Name the connection after its integration: the apps default binding maps a
+    // role to a connection of the same name as its integration, and the resolver
+    // requires an exact match (no silent conns[0] fallback), so the catalog-invoke
+    // path only resolves when the connection is named "github".
+    name: "github",
     integration: "github",
     template: "bearer",
     value: ghToken,

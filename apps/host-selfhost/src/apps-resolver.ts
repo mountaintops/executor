@@ -133,11 +133,20 @@ export const makeCtxResolver = (
         const conns = yield* ctx.connections
           .list({ integration: integrationSlug })
           .pipe(Effect.orElseSucceed(() => [] as readonly AppsResolverConnection[]));
-        const conn = conns.find((c) => c.name === connection) ?? conns[0];
+        // The binding MUST name a real connection: match by name exactly, never
+        // fall back to `conns[0]`. A silent fallback would dispatch the call with
+        // some OTHER connection's credential (whichever happens to sort first),
+        // leaking the wrong owner's token to the upstream. A missing/misnamed
+        // binding is a typed error naming the role + surface, and no upstream
+        // call is made.
+        const conn = conns.find((c) => c.name === connection);
         if (!conn) {
           return yield* Effect.fail(
             new BindingError({
-              message: `no "${integrationSlug}" connection named "${connection}" for this owner`,
+              message:
+                `no "${integrationSlug}" connection named "${connection}" is bound for role ` +
+                `"${integration}"; bind a connection for this role before invoking (refusing to ` +
+                `fall back to another connection's credential)`,
               role: integration,
               surface: integrationSlug,
             }),
