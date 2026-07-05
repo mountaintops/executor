@@ -44,3 +44,12 @@ export { makeLibsqlScopeDb } from "./backing/libsql-scope-db";
 export { makeQuickjsToolSandbox } from "./backing/quickjs-tool-sandbox";
 export { makeSqliteWorkflowRunner } from "./backing/sqlite-workflow-runner";
 export { makeInProcessLiveChannel } from "./backing/in-process-live-channel";
+export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
+
+// Workflow scheduler.
+export {
+  makeScheduler,
+  cronMatches,
+  type Scheduler,
+  type SchedulerOptions,
+} from "./workflow/scheduler";

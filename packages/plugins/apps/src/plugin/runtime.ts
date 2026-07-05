@@ -213,10 +213,20 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     runTool: async (address: string, toolArgs: unknown) => {
       const toolDesc = descriptor.tools.find((t) => t.name === address);
       if (!toolDesc) throw new Error(`workflow step.tool: unknown tool "${address}"`);
+      // Bind the called tool's declared connections: use the run's recorded
+      // bindings where present, else default each role to a same-named
+      // connection (self-host single-tenant convention).
+      const toolBindings: Record<string, Bindings[string]> = { ...recordedBindings };
+      for (const [role, decl] of Object.entries(toolDesc.connections)) {
+        if (toolBindings[role]) continue;
+        if (decl.kind === "array") {
+          toolBindings[role] = { kind: "array", connections: [decl.integration] };
+        } else if (decl.kind !== "catalog") {
+          toolBindings[role] = { kind: "single", connection: decl.integration };
+        }
+      }
       return Effect.runPromise(
-        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, recordedBindings).pipe(
-          Effect.orDie,
-        ),
+        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, toolBindings).pipe(Effect.orDie),
       );
     },
     notify: async (_msg: { title: string; body?: string; link?: string }) => {
