@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { Effect } from "effect";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AppsRuntime } from "../plugin/runtime";
+import { UI_APP_MIME } from "./ui-shell";
 
 // ---------------------------------------------------------------------------
 // MCP surface for the apps subsystem. Registers, on a McpServer:
@@ -23,17 +25,24 @@ interface McpToolResult {
   content: { type: "text"; text: string }[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
+  _meta?: Record<string, unknown>;
 }
 
 export interface McpServerLike {
   registerTool: (
     name: string,
-    config: { description?: string; inputSchema?: Record<string, unknown> },
+    config: {
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+      /** MCP `_meta`. Carries the MCP-Apps UI extension (`ui.resourceUri`) that
+       *  links a tool to a `ui://` resource a host renders when it runs. */
+      _meta?: Record<string, unknown>;
+    },
     handler: (args: Record<string, unknown>) => Promise<McpToolResult> | McpToolResult,
   ) => unknown;
   registerResource: (
     name: string,
-    uri: string,
+    uriOrTemplate: string | ResourceTemplate,
     metadata: Record<string, unknown>,
     reader: (uri: URL) => Promise<{ contents: unknown[] }> | { contents: unknown[] },
   ) => unknown;
@@ -45,11 +54,12 @@ export interface AppsMcpDeps {
   readonly scope: string;
 }
 
-const UI_MIME = "application/mcp-resource+json;type=html";
-
 const text = (value: unknown): McpToolResult => ({
   content: [
-    { type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) },
+    {
+      type: "text",
+      text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+    },
   ],
   structuredContent:
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined,
@@ -91,7 +101,10 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
           skills: out.descriptor.skills.map((s) => s.name),
         });
       } catch (cause) {
-        return { ...text(cause instanceof Error ? cause.message : String(cause)), isError: true };
+        return {
+          ...text(cause instanceof Error ? cause.message : String(cause)),
+          isError: true,
+        };
       }
     },
   );
@@ -117,7 +130,9 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
     "apps_read_skill",
     {
       description: "Read a published skill's full SKILL.md body by name.",
-      inputSchema: { name: z.string().describe("The skill name (== its directory)") },
+      inputSchema: {
+        name: z.string().describe("The skill name (== its directory)"),
+      },
     },
     async ({ name }) => {
       const descriptor = await run(runtime.getDescriptor(scope));
@@ -128,32 +143,71 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
     },
   );
 
+  // --- open-ui tool: the MCP-Apps entry point for a ui view -----------------
+  // A UI tool a host runs to MOUNT a published view. It declares the MCP-Apps UI
+  // extension (`_meta.ui.resourceUri`) linking it to the view's `ui://` resource,
+  // so an MCP-Apps host (Claude / ChatGPT, or the sunpeak host simulation) reads
+  // that resource and renders the widget when the tool runs.
+  //
+  // The extension keys off a CONCRETE resourceUri: a host reads it verbatim, so a
+  // `{name}` template placeholder is NOT expanded on read. The daily-brief app's
+  // primary view is `dashboard`; that is this tool's fixed target.
+  const defaultUiView = "dashboard";
+  server.registerTool(
+    "apps_open_ui",
+    {
+      description: `Open the published \`${defaultUiView}\` UI view (renders its widget).`,
+      inputSchema: {},
+      _meta: { ui: { resourceUri: `ui://${scope}/${defaultUiView}` } },
+    },
+    async () => {
+      const uri = `ui://${scope}/${defaultUiView}`;
+      return {
+        content: [{ type: "text", text: `Opening ${defaultUiView}` }],
+        structuredContent: { uri, view: defaultUiView },
+        _meta: { ui: { resourceUri: uri } },
+      } as McpToolResult;
+    },
+  );
+
   // --- ui views as MCP Apps resources --------------------------------------
-  // We register a single dynamic resource whose URI carries the ui name; the
-  // reader resolves the compiled bundle + config for that view. `_meta.ui`
-  // marks it renderable in an MCP Apps client.
+  // A dynamic resource TEMPLATE whose URI carries the ui view name; the reader
+  // resolves the view's self-booting HTML document (React + the executor:ui
+  // runtime + the compiled component + the current scope-db rows inlined). It is
+  // served as `text/html;profile=mcp-app` so a real MCP-Apps host (Claude /
+  // ChatGPT, or the sunpeak host simulation) mounts and renders it. `_meta.ui`
+  // marks it renderable.
+  //
+  // It MUST be a ResourceTemplate (not a fixed URI string): a fixed URI only
+  // matches itself, so `resources/read` of `ui://<scope>/<name>` would 404
+  // against a `ui://<scope>/` literal. The template `ui://<scope>/{name}`
+  // matches every published view under the scope.
   server.registerResource(
     "apps-ui",
-    `ui://${scope}/`,
-    { description: "Published app UI views", mimeType: UI_MIME },
+    new ResourceTemplate(`ui://${scope}/{name}`, { list: undefined }),
+    { description: "Published app UI views", mimeType: UI_APP_MIME },
     async (uri: URL) => {
       // uri like ui://<scope>/<name>
       const name = uri.pathname.replace(/^\//, "") || uri.hostname;
       const viewName = name.includes("/") ? name.split("/").pop()! : name;
-      const bundle = await run(runtime.getUiBundle(scope, viewName));
-      if (!bundle) {
-        return { contents: [{ uri: uri.toString(), mimeType: "text/plain", text: "not found" }] };
+      const doc = await run(runtime.getUiDocument(scope, viewName));
+      if (!doc) {
+        return {
+          contents: [{ uri: uri.toString(), mimeType: "text/plain", text: "not found" }],
+        };
       }
       return {
         contents: [
           {
             uri: uri.toString(),
-            mimeType: UI_MIME,
-            text: bundle.code,
+            mimeType: UI_APP_MIME,
+            text: doc.html,
             _meta: {
               ui: {
-                title: bundle.title,
-                maxHeight: bundle.maxHeight,
+                title: doc.title,
+                maxHeight: doc.maxHeight,
+                // No external network needed: React, the runtime, and the initial
+                // rows are all inline in the document.
                 csp: { connectDomains: [], resourceDomains: [] },
               },
             },

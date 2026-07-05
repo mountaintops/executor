@@ -45,8 +45,13 @@ class FakeMcpServer implements McpServerLike {
     this.tools.set(name, handler);
     return undefined;
   }
-  registerResource(name: string, uri: string, _metadata: unknown, reader: (uri: URL) => unknown) {
-    this.resources.set(name, { uriTemplate: uri, reader });
+  registerResource(
+    name: string,
+    uri: string | { uriTemplate?: unknown },
+    _metadata: unknown,
+    reader: (uri: URL) => unknown,
+  ) {
+    this.resources.set(name, { uriTemplate: String(uri), reader });
     return undefined;
   }
 }
@@ -65,7 +70,9 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
   beforeAll(async () => {
     // --- real-shaped GitHub (emulate) + seed a repo with two issues --------
     github = await createEmulator({ service: "github" });
-    const cred = (await github.credentials.mint({ type: "api-key" })) as unknown as {
+    const cred = (await github.credentials.mint({
+      type: "api-key",
+    })) as unknown as {
       token: string;
       login: string;
     };
@@ -120,7 +127,12 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
     const result = (await publishTool({
       files: Object.fromEntries(dailyBriefFileSet()),
     })) as {
-      structuredContent: { tools: string[]; workflows: string[]; ui: string[]; skills: string[] };
+      structuredContent: {
+        tools: string[];
+        workflows: string[];
+        ui: string[];
+        skills: string[];
+      };
     };
     expect(result.structuredContent.tools.sort()).toEqual(["issues-sync", "search-all-mail"]);
     expect(result.structuredContent.workflows).toEqual(["morning-sync"]);
@@ -128,7 +140,9 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
     expect(result.structuredContent.skills).toEqual(["issues-brief"]);
   });
 
-  const bindings: Bindings = { github: { kind: "single", connection: CONNECTION } };
+  const bindings: Bindings = {
+    github: { kind: "single", connection: CONNECTION },
+  };
 
   it("invokes the published tool over HTTP, hitting the real GitHub emulator", async () => {
     const res = await http.handler(
@@ -138,7 +152,9 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
       }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { result: { synced: number; repos: number } };
+    const body = (await res.json()) as {
+      result: { synced: number; repos: number };
+    };
     expect(body.result.repos).toBe(1);
     expect(body.result.synced).toBe(2);
 
@@ -166,27 +182,39 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
       }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { run: { status: string; output: unknown } };
+    const body = (await res.json()) as {
+      run: { status: string; output: unknown };
+    };
     expect(body.run.status).toBe("completed");
 
     // History is queryable and the step.tool call is journaled.
     const histRes = await http.handler(
-      new Request(`${base}/api/apps/${SCOPE}/workflows/runs/e2e-morning`, { method: "GET" }),
+      new Request(`${base}/api/apps/${SCOPE}/workflows/runs/e2e-morning`, {
+        method: "GET",
+      }),
     );
-    const hist = (await histRes.json()) as { steps: { name: string; status: string }[] };
+    const hist = (await histRes.json()) as {
+      steps: { name: string; status: string }[];
+    };
     expect(hist.steps.some((s) => s.name === "tool:issues-sync" && s.status === "completed")).toBe(
       true,
     );
   });
 
-  it("serves the ui view as an MCP resource and a raw bundle over HTTP", async () => {
-    // MCP Apps resource (ui:// + _meta).
+  it("serves the ui view as an MCP-Apps HTML document and a raw bundle over HTTP", async () => {
+    // MCP Apps resource: a complete, self-booting HTML document (ui:// + _meta),
+    // the shape a real host mounts.
     const resource = mcp.resources.get("apps-ui")!;
     const read = (await resource.reader(new URL(`ui://${SCOPE}/dashboard`))) as {
-      contents: Array<{ mimeType: string; text: string; _meta?: { ui?: { title?: string } } }>;
+      contents: Array<{
+        mimeType: string;
+        text: string;
+        _meta?: { ui?: { title?: string } };
+      }>;
     };
-    expect(read.contents[0].mimeType).toContain("mcp-resource");
-    expect(read.contents[0].text).toContain("issues"); // compiled bundle mentions the table
+    expect(read.contents[0].mimeType).toContain("text/html");
+    expect(read.contents[0].text).toContain("<!doctype html>"); // a real document
+    expect(read.contents[0].text).toContain('<div id="root">'); // a mount point
     expect(read.contents[0]._meta?.ui?.title).toBe("GitHub Issues");
 
     // Raw bundle endpoint.
@@ -236,7 +264,9 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
     expect(listed.structuredContent.skills.map((s) => s.name)).toEqual(["issues-brief"]);
 
     const readSkill = mcp.tools.get("apps_read_skill")!;
-    const body = (await readSkill({ name: "issues-brief" })) as { content: { text: string }[] };
+    const body = (await readSkill({ name: "issues-brief" })) as {
+      content: { text: string }[];
+    };
     expect(body.content[0].text).toContain("GitHub issues brief");
   });
 });

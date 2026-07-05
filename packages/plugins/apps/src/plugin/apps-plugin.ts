@@ -2,7 +2,11 @@ import { Effect } from "effect";
 
 import {
   definePlugin,
+  tool,
   ToolName,
+  ConnectionName,
+  IntegrationSlug,
+  AuthTemplateSlug,
   type ResolveToolsInput,
   type ResolveToolsResult,
   type InvokeToolInput,
@@ -28,6 +32,9 @@ import type { Bindings, ClientResolver } from "./bindings";
 
 export const APPS_INTEGRATION_SLUG = "apps";
 export const APPS_PLUGIN_ID = "apps";
+
+/** The scope a single-tenant self-host serves when the caller names none. */
+const DEFAULT_CATALOG_SCOPE = "default";
 
 export interface AppsPluginOptions {
   /** The shared runtime (seams + store). Built at host boot. */
@@ -108,6 +115,104 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
 
     extension: () => ({ runtime }),
 
+    // A tiny built-in tool that wires the scope's published app into the
+    // catalog: it registers the `apps` integration (idempotent) and creates the
+    // `apps/<scope>` connection for the caller. After it runs, the scope's
+    // published tools resolve as real catalog citizens (tools.list + execute
+    // through the same policy/audit path). This runs with the REAL request-scoped
+    // ctx (owner + core.integrations + connections), so it is the honest wiring
+    // point rather than a boot-time singleton guess at the owner.
+    staticSources: () => [
+      {
+        id: APPS_PLUGIN_ID,
+        kind: "executor",
+        name: "Apps",
+        tools: [
+          tool<AppsStoreShape>({
+            name: "connect_catalog",
+            description:
+              "Wire this scope's published app into the tool catalog: registers the `apps` " +
+              "integration and creates the apps/<scope> connection so published tools become " +
+              "catalog citizens. Idempotent; call once per scope after publishing.",
+            execute: (args, { ctx }) =>
+              Effect.gen(function* () {
+                // Single-tenant self-host serves one scope ("default"); a caller
+                // may pass an explicit scope for other layouts.
+                const scope =
+                  (args as { scope?: string } | undefined)?.scope ?? DEFAULT_CATALOG_SCOPE;
+                const slug = IntegrationSlug.make(APPS_INTEGRATION_SLUG);
+                const existing = yield* ctx.core.integrations
+                  .get(slug)
+                  .pipe(Effect.orElseSucceed(() => null));
+                if (!existing) {
+                  yield* ctx.core.integrations.register({
+                    slug,
+                    name: "Apps",
+                    description: "User-authored, published custom tools, workflows, ui and skills.",
+                    config: {},
+                    canRemove: false,
+                    canRefresh: true,
+                  });
+                }
+                const connName = ConnectionName.make(connectionNameForScope(scope));
+                const conns = yield* ctx.connections
+                  .list({ integration: slug })
+                  .pipe(Effect.orElseSucceed(() => []));
+                if (!conns.some((c) => String(c.name) === String(connName))) {
+                  yield* ctx.connections.create({
+                    owner: "user",
+                    name: connName,
+                    integration: slug,
+                    template: AuthTemplateSlug.make("none"),
+                    value: "",
+                  });
+                }
+                return { scope, connection: String(connName) };
+              }),
+          }),
+          tool<AppsStoreShape>({
+            name: "start_workflow",
+            description:
+              "Start a published workflow by name (manual start). Runs its durable body " +
+              "with journal replay; `step.tool` external calls route through the caller's " +
+              "connections. Returns the run view (status + output).",
+            execute: (args, { ctx }) =>
+              Effect.gen(function* () {
+                const a = (args ?? {}) as {
+                  workflow?: string;
+                  scope?: string;
+                  input?: unknown;
+                  bindings?: Bindings;
+                  runId?: string;
+                };
+                if (!a.workflow) {
+                  return yield* Effect.fail(new Error("start_workflow requires a `workflow` name"));
+                }
+                const scope = a.scope ?? DEFAULT_CATALOG_SCOPE;
+                // The per-request resolver (built from the invoking ctx) is what
+                // lets the workflow's `step.tool` reach real integrations through
+                // the caller's connections + credentials, rather than the runtime's
+                // boot-time NotImplemented default.
+                const resolver = makeResolver
+                  ? makeResolver({ ctx, scope, tool: a.workflow })
+                  : undefined;
+                const run = yield* runtime
+                  .startWorkflow({
+                    scope,
+                    workflow: a.workflow,
+                    input: a.input ?? {},
+                    bindings: a.bindings,
+                    runId: a.runId,
+                    resolver,
+                  })
+                  .pipe(Effect.mapError((cause) => new Error(cause.message)));
+                return run;
+              }),
+          }),
+        ],
+      },
+    ],
+
     // Per-connection tool production: project the published descriptor into
     // ToolDefs. Called at connection create/refresh; the SDK stamps addresses
     // and persists per connection.
@@ -181,23 +286,48 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
 });
 
 // ---------------------------------------------------------------------------
-// Formalized scope <-> connection mapping. An apps connection is named
-// `apps/<scope>` (integration-prefixed), so the scope is the segment after the
-// first slash. A bare name (no slash) IS the scope (self-host single-tenant,
-// where the sole connection is named for its scope). This is the ONE place the
-// mapping lives; resolveTools and invokeTool both go through it.
+// Formalized scope <-> connection mapping.
+//
+// The executor normalizes every connection name to a JS identifier (camelCase,
+// no slashes: `connectionIdentifier`). So an `apps/<scope>` form does NOT
+// survive create -> the row is stored as `appsDefault`, and resolveTools would
+// fail to recover the scope. The mapping is therefore identifier-native: the
+// connection name is `apps` + PascalCase(scope), which round-trips through the
+// normalizer unchanged. The inverse strips the `apps` prefix and lowercases the
+// first character. Scopes are lowercase slugs (self-host single-tenant uses
+// `default`), so `default <-> appsDefault` round-trips exactly. The legacy
+// slash form (`apps/<scope>`) is still parsed for back-compat.
+//
+// This is the ONE place the mapping lives; resolveTools, invokeTool, and the
+// host wiring all go through it.
 // ---------------------------------------------------------------------------
-export const APPS_CONNECTION_PREFIX = `${APPS_INTEGRATION_SLUG}/`;
+export const APPS_CONNECTION_PREFIX = APPS_INTEGRATION_SLUG;
 
-/** The connection name that addresses a scope's published app. */
+const pascal = (value: string): string =>
+  value.length === 0 ? value : `${value[0]!.toUpperCase()}${value.slice(1)}`;
+
+/** The connection name that addresses a scope's published app. Identifier-safe,
+ *  so it survives the executor's connection-name normalization unchanged. */
 export const connectionNameForScope = (scope: string): string =>
-  `${APPS_CONNECTION_PREFIX}${scope}`;
+  `${APPS_CONNECTION_PREFIX}${pascal(scope)}`;
 
-/** The scope a connection name addresses (inverse of `connectionNameForScope`). */
+/** The scope a connection name addresses (inverse of `connectionNameForScope`).
+ *  Handles the identifier form (`appsDefault`), the legacy slash form
+ *  (`apps/<scope>`), and a bare scope name. */
 export const scopeFromConnection = (connectionName: string): string => {
-  if (connectionName.startsWith(APPS_CONNECTION_PREFIX)) {
-    return connectionName.slice(APPS_CONNECTION_PREFIX.length);
+  // Legacy slash form.
+  if (connectionName.startsWith(`${APPS_INTEGRATION_SLUG}/`)) {
+    return connectionName.slice(APPS_INTEGRATION_SLUG.length + 1);
   }
+  // Identifier form: apps + PascalCase(scope).
+  if (
+    connectionName.startsWith(APPS_CONNECTION_PREFIX) &&
+    connectionName.length > APPS_CONNECTION_PREFIX.length
+  ) {
+    const rest = connectionName.slice(APPS_CONNECTION_PREFIX.length);
+    return `${rest[0]!.toLowerCase()}${rest.slice(1)}`;
+  }
+  // Bare name IS the scope.
   const slash = connectionName.indexOf("/");
   return slash === -1 ? connectionName : connectionName.slice(slash + 1);
 };

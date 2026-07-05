@@ -1,0 +1,15 @@
+{
+  "name": "@executor-js/e2e-mcp-apps",
+  "private": true,
+  "description": "Mount + test executor apps' published UI in a real MCP-Apps host (sunpeak), headless, no VM.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "sunpeak": "^0.20.60"
+  }
+}

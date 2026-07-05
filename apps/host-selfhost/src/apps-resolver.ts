@@ -46,6 +46,22 @@ export interface AppsResolverCtx {
       readonly integration: string;
     }) => Effect.Effect<string | null, unknown>;
   };
+  /** Catalog integration lookup, used to resolve an integration's base URL from
+   *  its registered record. An operator can register a `github` integration
+   *  (OpenAPI-shaped) pointed at a loopback emulator; the base URL it stores in
+   *  the integration's opaque config is what the resolver dispatches against.
+   *  Kept structural so the host does not import the SDK's ctx type. */
+  readonly core?: {
+    readonly integrations: {
+      readonly get: (slug: string) => Effect.Effect<AppsResolverIntegration | null, unknown>;
+    };
+  };
+}
+
+interface AppsResolverIntegration {
+  /** The owning plugin's opaque config. OpenAPI-shaped integrations carry the
+   *  spec server URL here as `baseUrl`. */
+  readonly config?: { readonly baseUrl?: string } | null;
 }
 
 interface AppsResolverConnection {
@@ -94,7 +110,11 @@ const methodPathToRequest = (
       const { owner: _o, repo: _r, ...rest } = query as Record<string, string>;
       void _o;
       void _r;
-      return { method: "GET", url: `/repos/${owner}/${repo}/issues`, query: rest };
+      return {
+        method: "GET",
+        url: `/repos/${owner}/${repo}/issues`,
+        query: rest,
+      };
     }
     default:
       return null;
@@ -124,7 +144,11 @@ export const makeCtxResolver = (
           );
         }
         const token = yield* ctx.connections
-          .resolveValue({ owner: conn.owner, name: conn.name, integration: conn.integration })
+          .resolveValue({
+            owner: conn.owner,
+            name: conn.name,
+            integration: conn.integration,
+          })
           .pipe(Effect.orElseSucceed(() => null));
 
         const req = methodPathToRequest(path, (args[0] ?? {}) as Record<string, unknown>);
@@ -137,7 +161,22 @@ export const makeCtxResolver = (
             }),
           );
         }
-        const baseUrl = conn.config?.baseUrl ?? DEFAULT_BASE_URLS[integrationSlug];
+        // Base URL precedence: the connection's own config override (rare), then
+        // the registered integration record's non-secret displayUrl (an operator
+        // registering `github` against a loopback emulator sets it there), then
+        // the built-in default. Reading it from the integration record is the
+        // right seam: the base URL is an integration property, not a credential.
+        const integrationBaseUrl = ctx.core
+          ? yield* ctx.core.integrations.get(integrationSlug).pipe(
+              Effect.map((rec) => {
+                const base = rec?.config?.baseUrl;
+                return typeof base === "string" && base.length > 0 ? base : undefined;
+              }),
+              Effect.orElseSucceed(() => undefined),
+            )
+          : undefined;
+        const baseUrl =
+          conn.config?.baseUrl ?? integrationBaseUrl ?? DEFAULT_BASE_URLS[integrationSlug];
         if (!baseUrl) {
           return yield* Effect.fail(
             new BindingError({

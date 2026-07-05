@@ -15,6 +15,7 @@ import {
 import { PublishError } from "../pipeline/discover";
 import type { AppDescriptor, ToolDescriptor } from "../pipeline/descriptor";
 import { bundleEntry } from "../pipeline/bundle";
+import { buildUiDocument } from "../mcp/ui-shell";
 import {
   buildBridge,
   rootsFor,
@@ -73,6 +74,9 @@ export interface AppsRuntime {
     readonly input?: unknown;
     readonly bindings?: Bindings;
     readonly runId?: string;
+    /** Per-request resolver for the workflow's `step.tool` external calls (the
+     *  real per-request executor path). Falls back to the boot-time default. */
+    readonly resolver?: ClientResolver;
   }) => Effect.Effect<RunView, PublishError | BindingError>;
   readonly signalWorkflow: (input: {
     readonly scope: string;
@@ -87,7 +91,22 @@ export interface AppsRuntime {
   readonly getUiBundle: (
     scope: string,
     name: string,
-  ) => Effect.Effect<{ code: string; title?: string; maxHeight?: number } | null>;
+  ) => Effect.Effect<{
+    code: string;
+    title?: string;
+    maxHeight?: number;
+  } | null>;
+  /** Serve a ui view as a COMPLETE, self-booting MCP-Apps HTML document (the
+   *  shape a real host mounts). Reads current scope-db rows into the document so
+   *  the mounted widget renders live data on first paint. */
+  readonly getUiDocument: (
+    scope: string,
+    name: string,
+  ) => Effect.Effect<{
+    html: string;
+    title?: string;
+    maxHeight?: number;
+  } | null>;
   /** Subscribe to a scope's live invalidations (SSE adapter drives this). */
   readonly subscribeLive: (
     scope: string,
@@ -116,20 +135,26 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       const cacheKey = `${descriptor.snapshotId}:${sourcePath}`;
       const cached = bundleCache.get(cacheKey);
       if (cached) return cached;
-      const scopeStore = yield* deps.artifactStore
-        .forScope(descriptor.scope)
-        .pipe(
-          Effect.mapError(
-            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-          ),
-        );
-      const files = yield* scopeStore
-        .read(descriptor.snapshotId as never)
-        .pipe(
-          Effect.mapError(
-            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-          ),
-        );
+      const scopeStore = yield* deps.artifactStore.forScope(descriptor.scope).pipe(
+        Effect.mapError(
+          (c) =>
+            new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [],
+            }),
+        ),
+      );
+      const files = yield* scopeStore.read(descriptor.snapshotId as never).pipe(
+        Effect.mapError(
+          (c) =>
+            new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [],
+            }),
+        ),
+      );
       const bundle = yield* bundleEntry({ files, entry: sourcePath }).pipe(
         Effect.mapError(
           (c) =>
@@ -147,7 +172,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   const requireDescriptor = (scope: string): Effect.Effect<AppDescriptor, PublishError> =>
     deps.store.getDescriptor(scope).pipe(
       Effect.mapError(
-        (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
+        (c) =>
+          new PublishError({
+            message: String(c),
+            stage: "project",
+            diagnostics: [],
+          }),
       ),
       Effect.flatMap((d) =>
         d ? Effect.succeed(d) : recoverFromSnapshot(scope).pipe(Effect.orElseSucceed(() => null)),
@@ -157,42 +187,54 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
 
   // A content-addressed blob write, mapped into the pipeline's PublishError.
   const putBlobAsProjection = (hash: string, value: string): Effect.Effect<void, PublishError> =>
-    deps.store
-      .putBlob(hash, value)
-      .pipe(
-        Effect.mapError(
-          (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
-        ),
-      );
+    deps.store.putBlob(hash, value).pipe(
+      Effect.mapError(
+        (c) =>
+          new PublishError({
+            message: String(c),
+            stage: "project",
+            diagnostics: [],
+          }),
+      ),
+    );
 
   // The published-descriptor pointer projection.
   const putDescriptorPointer = (descriptor: AppDescriptor): Effect.Effect<void, PublishError> =>
-    deps.store
-      .putDescriptor("org", descriptor)
-      .pipe(
-        Effect.mapError(
-          (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
-        ),
-      );
+    deps.store.putDescriptor("org", descriptor).pipe(
+      Effect.mapError(
+        (c) =>
+          new PublishError({
+            message: String(c),
+            stage: "project",
+            diagnostics: [],
+          }),
+      ),
+    );
 
   // Load the latest committed snapshot's descriptor for a scope (recompute-on-
   // read source of truth), or null if the scope has never published.
   const recoverFromSnapshot = (scope: string): Effect.Effect<AppDescriptor | null, PublishError> =>
     Effect.gen(function* () {
-      const scopeStore = yield* deps.artifactStore
-        .forScope(scope)
-        .pipe(
-          Effect.mapError(
-            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-          ),
-        );
-      const latest = yield* scopeStore
-        .latest()
-        .pipe(
-          Effect.mapError(
-            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-          ),
-        );
+      const scopeStore = yield* deps.artifactStore.forScope(scope).pipe(
+        Effect.mapError(
+          (c) =>
+            new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [],
+            }),
+        ),
+      );
+      const latest = yield* scopeStore.latest().pipe(
+        Effect.mapError(
+          (c) =>
+            new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [],
+            }),
+        ),
+      );
       if (!latest) return null;
       return yield* loadDescriptorFromSnapshot(deps.artifactStore, scope, latest.id);
     });
@@ -209,6 +251,29 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       return descriptor;
     });
 
+  // Read current rows from a scope's own data tables, for the ui data island.
+  // Self-host scope dbs hold the app's tables plus one bookkeeping table for
+  // per-table version counters; we skip the latter and sqlite internals, and
+  // return rows from the first user table that has any.
+  const readScopeRows = (scope: string): Effect.Effect<readonly unknown[], never> =>
+    Effect.gen(function* () {
+      const db = yield* deps.scopeDb.forScope(scope).pipe(Effect.orElseSucceed(() => null));
+      if (!db) return [];
+      const tables = yield* db
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_\\_%' ESCAPE '\\'",
+        )
+        .pipe(Effect.orElseSucceed(() => [] as readonly { name: string }[]));
+      for (const { name } of tables) {
+        // Table name comes from sqlite_master (not user input), safe to inline.
+        const rows = yield* db
+          .exec(`SELECT * FROM "${name}" LIMIT 500`)
+          .pipe(Effect.orElseSucceed(() => [] as readonly unknown[]));
+        if (rows.length > 0) return rows;
+      }
+      return [];
+    });
+
   const invokeToolInternal = (
     scope: string,
     descriptor: AppDescriptor,
@@ -220,13 +285,16 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     Effect.gen(function* () {
       const roots = yield* rootsFor(toolDesc.connections, bindings);
       const code = yield* bundleFor(descriptor, toolDesc.sourcePath);
-      const db = yield* deps.scopeDb
-        .forScope(scope)
-        .pipe(
-          Effect.mapError(
-            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-          ),
-        );
+      const db = yield* deps.scopeDb.forScope(scope).pipe(
+        Effect.mapError(
+          (c) =>
+            new PublishError({
+              message: c.message,
+              stage: "project",
+              diagnostics: [],
+            }),
+        ),
+      );
       const bridge = buildBridge({
         declared: toolDesc.connections,
         bindings,
@@ -260,6 +328,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     scope: string,
     descriptor: AppDescriptor,
     recordedBindings: Bindings,
+    resolver?: ClientResolver,
   ): WorkflowBindings => ({
     runTool: async (address: string, toolArgs: unknown) => {
       const toolDesc = descriptor.tools.find((t) => t.name === address);
@@ -267,17 +336,24 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       // Bind the called tool's declared connections: use the run's recorded
       // bindings where present, else default each role to a same-named
       // connection (self-host single-tenant convention).
-      const toolBindings: Record<string, Bindings[string]> = { ...recordedBindings };
+      const toolBindings: Record<string, Bindings[string]> = {
+        ...recordedBindings,
+      };
       for (const [role, decl] of Object.entries(toolDesc.connections)) {
         if (toolBindings[role]) continue;
         if (decl.kind === "array") {
-          toolBindings[role] = { kind: "array", connections: [decl.integration] };
+          toolBindings[role] = {
+            kind: "array",
+            connections: [decl.integration],
+          };
         } else if (decl.kind !== "catalog") {
           toolBindings[role] = { kind: "single", connection: decl.integration };
         }
       }
       return Effect.runPromise(
-        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, toolBindings).pipe(Effect.orDie),
+        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, toolBindings, resolver).pipe(
+          Effect.orDie,
+        ),
       );
     },
     notify: async (_msg: { title: string; body?: string; link?: string }) => {
@@ -308,7 +384,11 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             sandbox: deps.sandbox,
             putBlob: putBlobAsProjection,
           },
-          { scope: input.scope, files: input.files, commitMessage: input.message },
+          {
+            scope: input.scope,
+            files: input.files,
+            commitMessage: input.message,
+          },
         );
         yield* putDescriptorPointer(out.descriptor);
         return out;
@@ -376,24 +456,32 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
               input: input.input ?? {},
               runId: input.runId,
             },
-            bindingsForRun(input.scope, descriptor, bindings),
+            bindingsForRun(input.scope, descriptor, bindings, input.resolver),
           )
           .pipe(
             Effect.mapError(
-              (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+              (c) =>
+                new PublishError({
+                  message: c.message,
+                  stage: "project",
+                  diagnostics: [],
+                }),
             ),
           );
       }),
 
     signalWorkflow: (input) =>
       Effect.gen(function* () {
-        const run = yield* deps.workflows
-          .get(input.runId)
-          .pipe(
-            Effect.mapError(
-              (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-            ),
-          );
+        const run = yield* deps.workflows.get(input.runId).pipe(
+          Effect.mapError(
+            (c) =>
+              new PublishError({
+                message: c.message,
+                stage: "project",
+                diagnostics: [],
+              }),
+          ),
+        );
         if (!run) {
           return yield* Effect.fail(
             new PublishError({
@@ -423,7 +511,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           )
           .pipe(
             Effect.mapError(
-              (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+              (c) =>
+                new PublishError({
+                  message: c.message,
+                  stage: "project",
+                  diagnostics: [],
+                }),
             ),
           );
       }),
@@ -447,6 +540,35 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           .pipe(Effect.orElseSucceed(() => null));
         if (!code) return null;
         return { code, title: uiDesc.title, maxHeight: uiDesc.maxHeight };
+      }),
+
+    getUiDocument: (scope, name) =>
+      Effect.gen(function* () {
+        const descriptor = yield* deps.store
+          .getDescriptor(scope)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (!descriptor) return null;
+        const uiDesc = descriptor.ui.find((u) => u.name === name);
+        if (!uiDesc) return null;
+        const code = yield* deps.store
+          .getBlob(`ui/${uiDesc.bundleHash}`)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (!code) return null;
+
+        // Read current scope-db rows into the document so the mounted widget
+        // renders live data on first paint. We pull rows from the first non-empty
+        // user table (self-host scope dbs hold the app's own tables); the widget's
+        // `useQuery` reads them from the injected data island.
+        const rows = yield* readScopeRows(scope).pipe(Effect.orElseSucceed(() => [] as unknown[]));
+
+        const html = yield* buildUiDocument({
+          compiledBundle: code,
+          title: uiDesc.title ?? name,
+          maxHeight: uiDesc.maxHeight,
+          rows,
+        }).pipe(Effect.orElseSucceed(() => ""));
+        if (!html) return null;
+        return { html, title: uiDesc.title, maxHeight: uiDesc.maxHeight };
       }),
 
     subscribeLive: (scope, listener) =>
