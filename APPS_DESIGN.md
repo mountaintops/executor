@@ -32,13 +32,13 @@ Each seam is a substrate-neutral interface. Self-hosted backings are built now;
 cloud backings are future. Everything crossing `ToolSandbox` is serializable
 (the cloud version is RPC).
 
-| Seam | Self-hosted backing (built) | Cloud backing (future) |
-|---|---|---|
-| `ArtifactStore` | bare git repo per scope on disk (git CLI subprocess); `SnapshotId` = commit hash | Cloudflare Artifacts |
-| `ScopeDb` | one libSQL/SQLite file per scope + per-table version counters | DO facets |
-| `ToolSandbox` | QuickJS kernel (collect + invoke via the `SandboxToolInvoker` bridge) | Worker Loaders |
-| `WorkflowRunner` | SQLite event-sourced journal replay runner + in-process scheduler | CF Workflows + dynamic-workflows |
-| `LiveChannel` | in-process emitter + SSE | DO/facet socket owner |
+| Seam             | Self-hosted backing (built)                                                      | Cloud backing (future)           |
+| ---------------- | -------------------------------------------------------------------------------- | -------------------------------- |
+| `ArtifactStore`  | bare git repo per scope on disk (git CLI subprocess); `SnapshotId` = commit hash | Cloudflare Artifacts             |
+| `ScopeDb`        | one libSQL/SQLite file per scope + per-table version counters                    | DO facets                        |
+| `ToolSandbox`    | QuickJS kernel (collect + invoke via the `SandboxToolInvoker` bridge)            | Worker Loaders                   |
+| `WorkflowRunner` | SQLite event-sourced journal replay runner + in-process scheduler                | CF Workflows + dynamic-workflows |
+| `LiveChannel`    | in-process emitter + SSE                                                         | DO/facet socket owner            |
 
 See `src/seams/*.ts` for the exact interfaces and `src/seams/*.conformance.ts`
 for the suite each backing must pass.
@@ -52,7 +52,7 @@ for the suite each backing must pass.
   deadline interrupt and a memory cap. secure-exec evaluated and rejected
   (pre-1.0, per-arch native sidecar, flat string bridge fighting the Proxy
   pattern); the Deno subprocess kernel is the documented harder-isolation
-  escalation behind the same seam. Because QuickJS evaluates a *string*, the
+  escalation behind the same seam. Because QuickJS evaluates a _string_, the
   collect/invoke wrappers own the module shape: the published bundle is a
   self-executing script that either records `define*()` descriptors (collect)
   or calls one handler with injected clients (invoke).
@@ -62,12 +62,12 @@ for the suite each backing must pass.
   workflow journal, ui metadata) lives in `pluginStorage` collections; large
   opaque blobs (compiled bundles, snapshot manifests) live in the `blobs`
   facade, content-addressed by SHA-256.
-- **ScopeDb is separate from the executor DB.** App *data* (the `issues` table
+- **ScopeDb is separate from the executor DB.** App _data_ (the `issues` table
   authors read/write) is one libSQL file per scope, independent of the
   executor's own DB. Per-table version counters live alongside it and drive
   `LiveChannel`.
 - **Apps are a plugin source.** A published app maps to one executor
-  *integration* per scope (`apps`); a *connection* to it makes the published
+  _integration_ per scope (`apps`); a _connection_ to it makes the published
   tools catalog citizens through `resolveTools`/`invokeTool`, so
   policy/approval/audit/toolkits/tools.list all apply unchanged.
 - **No @effect/workflow.** The local runner is a purpose-built SQLite
@@ -102,15 +102,15 @@ the real self-host server and drives publish -> ui-bundle -> tool-invoke.
 ## Seam signatures (the substrate-neutral contracts)
 
 - `ArtifactStore.forScope(scope) -> ScopeArtifactStore { commit(files,msg) ->
-  SnapshotMeta; read(id) -> FileSet; readFile; list; latest; log }`. SnapshotId =
+SnapshotMeta; read(id) -> FileSet; readFile; list; latest; log }`. SnapshotId =
   git commit hash.
 - `ScopeDb.forScope(scope) -> ScopeDbHandle { sql`...`; exec; tableVersion;
-  versions }` + `onWrite(listener)` (write events carry per-table versions).
+versions }` + `onWrite(listener)` (write events carry per-table versions).
 - `ToolSandbox { collect(bundle) -> CollectResult; invoke(bundle, request,
-  HandleBridge) -> InvokeResult }`. `HandleBridge.call({root, path, args}) ->
-  Effect<unknown>` is the ONLY thing crossing the boundary — all JSON.
+HandleBridge) -> InvokeResult }`. `HandleBridge.call({root, path, args}) ->
+Effect<unknown>` is the ONLY thing crossing the boundary — all JSON.
 - `WorkflowRunner { start(input, execute, bindings); resume; signal; cancel; get;
-  list; listSteps }`. `execute(DurableSteps) -> Promise` is the body; `bindings`
+list; listSteps }`. `execute(DurableSteps) -> Promise` is the body; `bindings`
   = `{ runTool, notify }` reach the outside for `step.tool`/`step.notify`.
 - `LiveChannel { publish(Invalidation); subscribe(scope, listener) }`.
 
@@ -119,7 +119,7 @@ the real self-host server and drives publish -> ui-bundle -> tool-invoke.
 1. **Workflow orchestration runs in-process; tool handlers run in the sandbox.**
    The durable body (`step.do`/`step.tool`/`step.sleep`/`step.waitForEvent`) is
    evaluated in-process via a trusted `new Function` shim because `step.do(name,
-   () => ...)` closures cannot cross the sandbox boundary (the same reason CF
+() => ...)` closures cannot cross the sandbox boundary (the same reason CF
    runs the orchestrator in a constrained isolate with the journal as an external
    service). The real side-effectful work — every custom tool a `step.tool` calls
    — runs in the QuickJS sandbox with bound clients. The durability guarantee
@@ -130,7 +130,7 @@ the real self-host server and drives publish -> ui-bundle -> tool-invoke.
 
 2. **The `ClientResolver` seam is where "policy/audit applies".** A tool's
    injected clients route method calls through `ClientResolver.call({integration,
-   connection, path, args})`. In the e2e this is a real authenticated HTTP call
+connection, path, args})`. In the e2e this is a real authenticated HTTP call
    to the emulate GitHub (proven via the emulator's request ledger). In the
    running self-host server the resolver returns a typed NotImplemented for
    external integrations because wiring it to the executor catalog needs
@@ -204,6 +204,7 @@ and RENDERS the scope-db rows (`2 open issues`, `…/app#<n>`) in BOTH host sims
 Single command (isolated from the bun workspace; uses the latest sunpeak with NO
 patch script — sunpeak now advertises the MCP-Apps UI client capability
 upstream):
+
 ```
 cd e2e/mcp-apps && npm install && npm test
 ```
@@ -241,6 +242,64 @@ published tool's `github.*` calls dispatch through the caller's connection +
 credentials to the real upstream (proven end-to-end against the emulator in the
 wire e2e). The per-request resolver is threaded into both the catalog tool-invoke
 path AND the workflow `step.tool` path (via `startWorkflow`'s new `resolver`).
+
+## Security model + limits (pre-PR hardening)
+
+The apps subsystem is authored content executed and served by the platform, so
+its surfaces are hardened as follows.
+
+- **Authenticated HTTP surface.** The apps HTTP routes (`/api/apps/*` —
+  publish / tool-invoke / workflow lifecycle / ui bundle + document / SSE) sit
+  behind the SAME Better Auth identity the rest of `/api` requires. `app.ts`
+  builds an `authenticate(request)` from the resolved Better Auth instance
+  (session cookie, Bearer session token, or Bearer-as-`x-api-key`, matching
+  `betterAuthIdentityLayer`) and threads it into the apps handler; the handler
+  answers any unauthenticated request with `401` before any route logic runs,
+  SSE included. The subsystem is a boot singleton first built (auth-less) by
+  `executor.config.ts` then reconfigured by `app.ts`, so the handler reads a live
+  auth ref per request and is **fail-closed** (denies) until the ref is set. The
+  `mcp-apps-serve.ts` demo keeps its own bearer injection.
+- **UI data-island XSS.** The mounted document inlines rows/title into an inline
+  `<script>` via `safeJsonForScript` (the safe-JSON-in-`<script>` pattern:
+  `<`, `>`, `&`, U+2028, U+2029 escaped as `\uXXXX`), so a row containing
+  `</script>` can never break out of the element.
+- **Workflow single-driver lease.** A run driven concurrently
+  (start/resume/signal racing) takes a per-run SQLite lease (atomic
+  `INSERT .. ON CONFLICT DO UPDATE .. WHERE expired`) so exactly one driver
+  executes a run; a second waits then re-drives (replaying the journal). An
+  unjournaled side-effecting `step.tool` runs exactly once.
+- **Strict credential binding.** The resolver matches the bound connection by
+  name EXACTLY — never a `conns[0]` fallback — and fails a missing/misnamed
+  binding with a typed `BindingError` (role + surface) and makes no upstream
+  call. The binding contract is: a role defaults to a connection of the same name
+  as its integration.
+- **Pinned resume.** A run persists its `snapshotId` AND its start-time bindings;
+  `resume`/`signal` rebuild the descriptor from that pinned snapshot and reuse the
+  stored bindings, so a republish between start and signal never runs different
+  code or drops credentials.
+- **Publish atomicity + CAS.** The git ref advance is a compare-and-swap
+  (`git update-ref <ref> <new> <old>`); a raced writer gets a typed conflict
+  rather than a silent clobber. Publishes to one scope are additionally
+  serialized in-process so the committed head and the descriptor pointer always
+  agree.
+- **Publish payload limits.** Enforced before any work (`enforcePublishLimits`):
+  256 files, 1 MiB/file, 4 MiB total. An oversized set fails with a typed
+  diagnostic and nothing is persisted.
+- **Cron validation.** Cron fields are validated at PUBLISH time (`validateCron`:
+  step >= 1, bounded/non-reversed ranges) and defensively in the scheduler
+  (`cronMatches` never throws or loops on adversarial input like `*/0`, negative
+  steps, or huge ranges).
+- **Scope ↔ connection mapping.** An explicit `connection-name -> scope` mapping
+  is stored at connect time (keyed by the executor-normalized name), so scopes
+  that differ only by a normalized-away character ("my-scope" vs "my_scope") route
+  correctly instead of colliding on a reverse-parsed name. Scope-db filenames
+  encode collision-free (safe scopes verbatim, others hex under an `x-` prefix),
+  so distinct scopes never share a database.
+- **`apps_open_ui` capability honesty.** The tool checks the client's MCP-Apps UI
+  capability (`extensions["io.modelcontextprotocol/ui"]`). A capable client gets
+  the `_meta.ui` resource link; a non-capable client gets a `fallback_url` to the
+  authenticated `?document=html` variant of the ui route (or `fallback_unavailable`
+  when no base URL is configured), never overpromising a widget it cannot render.
 
 ## Known gaps (honest list)
 

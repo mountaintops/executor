@@ -50,7 +50,7 @@ builder) and `.../mcp/register.ts` (tool + resource template).
 ## Notes (vs the earlier render-ui harness)
 
 1. **Use the LATEST sunpeak and DO NOT patch it.** sunpeak now advertises the
-   MCP-Apps UI *client* capability upstream, so widgets mount inline without the
+   MCP-Apps UI _client_ capability upstream, so widgets mount inline without the
    old `scripts/patch-sunpeak.mjs` (dropped here on purpose).
 2. **Extra iframe descent.** Our shell mounts the component directly in the host
    sandbox iframe, so `result.app()` reaches it. If the shell is ever changed to
@@ -59,7 +59,7 @@ builder) and `.../mcp/register.ts` (tool + resource template).
 
 ## Scope
 
-sunpeak is a host *simulation*: it covers the protocol contract, the rendered UI,
+sunpeak is a host _simulation_: it covers the protocol contract, the rendered UI,
 and tool/theme/display-mode behavior. It does not catch real-host quirks (OAuth,
 production CSP). Live SSE-driven refetch INTO the mounted widget is a documented
 follow-up (see `APPS_DESIGN.md`); this harness proves mount + first-paint row
