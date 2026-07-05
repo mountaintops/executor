@@ -6,4 +6,7 @@ export {
   type AppsPluginOptions,
 } from "./plugin/apps-plugin";
 export { makeAppsHttpRoutes, type AppsHttpDeps } from "./http/routes";
-export { registerAppsMcp, type AppsMcpDeps } from "./mcp/register";
+export { registerAppsMcp, type AppsMcpDeps, type McpServerLike } from "./mcp/register";
+export { makeSelfHostApps, type SelfHostApps, type SelfHostAppsOptions } from "./plugin/self-host";
+export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
+export { BindingError, type ClientResolver, type Bindings } from "./plugin/bindings";

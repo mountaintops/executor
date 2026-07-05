@@ -19,6 +19,7 @@ import {
   SelfHostPluginsProvider,
 } from "./execution";
 import { makeSelfHostMcpSeams } from "./mcp";
+import { makeSelfHostAppsSubsystem } from "./apps";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
@@ -73,6 +74,12 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // a reverse proxy (not the internal 127.0.0.1 bind from the request URL).
   const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl);
 
+  // ---- the apps subsystem (custom tools / workflows / ui / skills) -------
+  // Built over the five self-hosted seam backings rooted at the data dir. Its
+  // HTTP surface mounts under /api/apps/*; published tools are catalog citizens
+  // through its source plugin. See packages/plugins/apps.
+  const apps = makeSelfHostAppsSubsystem();
+
   // CLI device-login discovery (`executor login`). Points the CLI at Better
   // Auth's device endpoints; `requestFormat: "json"` because those endpoints
   // only accept JSON (unlike WorkOS's form-encoded ones). The issued token is a
@@ -119,6 +126,9 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
         makeSelfHostSystemApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        // The apps subsystem HTTP surface: publish / invoke / ui bundle / SSE /
+        // workflow lifecycle under /api/apps/*.
+        HttpRouter.add("*", "/api/apps/*", HttpEffect.fromWebHandler(apps.http.handler)),
         // Swagger UI at /docs, over the /api-prefixed spec (matches the served paths).
         HttpApiSwagger.layer(composePluginApi(selfHostPlugins).prefix("/api"), { path: "/docs" }),
       ],
@@ -139,6 +149,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     toWebHandler,
     betterAuth,
     closeDb: async () => {
+      await apps.close();
       await mcp.close();
       await dbHandle.close();
     },

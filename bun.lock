@@ -224,6 +224,7 @@
         "@executor-js/execution": "workspace:*",
         "@executor-js/fumadb": "workspace:*",
         "@executor-js/host-mcp": "workspace:*",
+        "@executor-js/plugin-apps": "workspace:*",
         "@executor-js/plugin-encrypted-secrets": "workspace:*",
         "@executor-js/plugin-google": "workspace:*",
         "@executor-js/plugin-graphql": "workspace:*",
@@ -797,6 +798,7 @@
       "devDependencies": {
         "@effect/vitest": "catalog:",
         "@executor-js/api": "workspace:*",
+        "@executor-js/emulate": "^0.13.2",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
