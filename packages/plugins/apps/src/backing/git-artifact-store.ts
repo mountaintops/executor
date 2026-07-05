@@ -152,7 +152,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
           GIT_COMMITTER_EMAIL: "apps@executor.local",
         };
         const commitHash = (yield* Effect.callback<string, ArtifactStoreError>((resume) => {
-          const child = execFile(
+          execFile(
             "git",
             commitArgs,
             { cwd: repoDir, encoding: "buffer", env: commitEnvVars },
