@@ -50,28 +50,6 @@ export interface StepView {
   readonly completedAt: number;
 }
 
-/** How the runner executes step bodies for a specific run. The durable core
- *  drives this; the caller supplies it (bound to the run's snapshot + scope +
- *  the tool invoke path). Each method is only ever called for a step that has
- *  NOT completed in the journal (the runner checks the journal first). */
-export interface StepExecutor {
-  /** Run a `step.do` body identified by name; return its JSON result. */
-  readonly runStep: (name: string) => Effect.Effect<unknown, WorkflowError>;
-  /** Run a `step.tool` call (address + args); return the tool's JSON result.
-   *  Journaled AND audited as a tool run by the caller's implementation. */
-  readonly runTool: (
-    name: string,
-    address: string,
-    args: unknown,
-  ) => Effect.Effect<unknown, WorkflowError>;
-  /** Deliver a `step.notify`. */
-  readonly notify: (msg: {
-    readonly title: string;
-    readonly body?: string;
-    readonly link?: string;
-  }) => Effect.Effect<void, WorkflowError>;
-}
-
 /** The workflow body, expressed against the durable step API. The runner
  *  replays it: completed steps resolve from the journal, the first incomplete
  *  step actually executes. `sleep`/`waitForEvent` suspend the run. */
@@ -81,6 +59,20 @@ export interface DurableSteps {
   readonly sleep: (name: string, ms: number) => Promise<void>;
   readonly waitForEvent: <T = unknown>(name: string, opts?: { timeout?: number }) => Promise<T>;
   readonly notify: (msg: { title: string; body?: string; link?: string }) => Promise<void>;
+}
+
+/** How `step.tool` and `step.notify` reach the outside world for a specific
+ *  run. The caller (the plugin) supplies these bound to the run's snapshot +
+ *  scope + the real tool-invoke/audit path. The runner only calls them for a
+ *  step that has NOT completed in the journal (checked first), so they run at
+ *  most once per step across replays. Everything they take/return is JSON. */
+export interface WorkflowBindings {
+  readonly runTool: (address: string, args: unknown) => Promise<unknown>;
+  readonly notify: (msg: {
+    readonly title: string;
+    readonly body?: string;
+    readonly link?: string;
+  }) => Promise<void>;
 }
 
 export interface StartRunInput {
@@ -107,16 +99,19 @@ export interface WorkflowRunner {
   readonly start: (
     input: StartRunInput,
     execute: (steps: DurableSteps) => Promise<unknown>,
+    bindings: WorkflowBindings,
   ) => Effect.Effect<RunView, WorkflowError>;
   readonly resume: (
     runId: string,
     execute: (steps: DurableSteps) => Promise<unknown>,
+    bindings: WorkflowBindings,
   ) => Effect.Effect<RunView, WorkflowError>;
   readonly signal: (
     runId: string,
     eventName: string,
     payload: unknown,
     execute: (steps: DurableSteps) => Promise<unknown>,
+    bindings: WorkflowBindings,
   ) => Effect.Effect<RunView, WorkflowError>;
   readonly cancel: (runId: string) => Effect.Effect<RunView, WorkflowError>;
   readonly get: (runId: string) => Effect.Effect<RunView | null, WorkflowError>;

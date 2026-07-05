@@ -29,7 +29,7 @@ const run = (
   args: readonly string[],
   input?: string | Buffer,
 ): Effect.Effect<string, ArtifactStoreError> =>
-  Effect.async<string, ArtifactStoreError>((resume) => {
+  Effect.callback<string, ArtifactStoreError>((resume) => {
     const child = execFile(
       "git",
       args,
@@ -76,7 +76,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
   const headCommit = (): Effect.Effect<string | null, ArtifactStoreError> =>
     run(repoDir, ["rev-parse", "--verify", "--quiet", BRANCH]).pipe(
       Effect.map((out) => out.trim() || null),
-      Effect.catchAll(() => Effect.succeed(null)),
+      Effect.catch(() => Effect.succeed(null)),
     );
 
   const readMeta = (id: string): Effect.Effect<SnapshotMeta, ArtifactStoreError> =>
@@ -101,7 +101,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
           `commit-index-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         );
         const withIndex = (args: readonly string[], input?: string | Buffer) =>
-          Effect.async<string, ArtifactStoreError>((resume) => {
+          Effect.callback<string, ArtifactStoreError>((resume) => {
             const child = execFile(
               "git",
               args,
@@ -151,7 +151,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
           GIT_COMMITTER_NAME: "executor-apps",
           GIT_COMMITTER_EMAIL: "apps@executor.local",
         };
-        const commitHash = (yield* Effect.async<string, ArtifactStoreError>((resume) => {
+        const commitHash = (yield* Effect.callback<string, ArtifactStoreError>((resume) => {
           const child = execFile(
             "git",
             commitArgs,
@@ -198,7 +198,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
     readFile: (id: SnapshotId, path: string) =>
       run(repoDir, ["cat-file", "blob", `${id}:${path}`]).pipe(
         Effect.map((contents) => contents as string | null),
-        Effect.catchAll(() => Effect.succeed(null)),
+        Effect.catch(() => Effect.succeed(null)),
       ),
 
     list: (id: SnapshotId) =>
