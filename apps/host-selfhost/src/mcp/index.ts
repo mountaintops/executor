@@ -133,8 +133,11 @@ export const makeSelfHostMcpSeams = (
   dbHandle: SelfHostDbHandle,
   betterAuth: BetterAuthHandle,
   webBaseUrl?: string,
+  /** Host extension: register additional (non-catalog) MCP tools/resources on
+   *  each per-session server (the apps publish door, skills, ui:// resources). */
+  onServer?: (server: import("@executor-js/api/server").McpServer) => void,
 ): SelfHostMcpSeams => {
-  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl);
+  const sessionStore = makeSelfHostMcpSessionStore(dbHandle, webBaseUrl, onServer);
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
   );

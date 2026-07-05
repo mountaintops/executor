@@ -11,7 +11,7 @@ import {
 
 import type { AppsRuntime } from "./runtime";
 import { makeAppsStore } from "./store";
-import type { Bindings } from "./bindings";
+import type { Bindings, ClientResolver } from "./bindings";
 
 // ---------------------------------------------------------------------------
 // The apps source plugin. Published custom tools become catalog citizens: the
@@ -41,6 +41,17 @@ export interface AppsPluginOptions {
     readonly tool: string;
     readonly declared: Readonly<Record<string, { kind: string; integration?: string }>>;
   }) => Bindings;
+  /** Build a per-request ClientResolver from the invoking executor context.
+   *  This is how external integration calls route through the REAL per-request
+   *  path (connections resolved by the invoking owner, credentials injected at
+   *  the boundary), rather than the runtime's boot-time default resolver. The
+   *  `ctx` is the plugin's per-request `PluginCtx`; the type is kept structural
+   *  so this package does not depend on the host SDK's ctx shape. */
+  readonly makeResolver?: (input: {
+    readonly ctx: unknown;
+    readonly scope: string;
+    readonly tool: string;
+  }) => ClientResolver;
 }
 
 const defaultBindings = (
@@ -69,6 +80,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   }
   const runtime = options.runtime;
   const resolveBindings = options.resolveBindings;
+  const makeResolver = options.makeResolver;
 
   return {
     id: APPS_PLUGIN_ID as "apps",
@@ -101,10 +113,11 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
     // and persists per connection.
     resolveTools: ({ connection }: ResolveToolsInput<AppsStoreShape>) =>
       Effect.gen(function* () {
-        // The scope is the connection owner's tenant; for self-host single
-        // tenant we key the descriptor by the connection's integration-scoped
-        // name. We read the published descriptor for the scope encoded in the
-        // connection name (`apps/<scope>`), falling back to the connection name.
+        // The connection name encodes the scope via the formalized mapping
+        // (`apps/<scope>`). A scope with no published app yet legitimately
+        // resolves to ZERO tools (the connection exists before the first
+        // publish), so an empty descriptor here is an intentional empty result,
+        // not the silently-swallowed missing-tool case invokeTool guards against.
         const scope = scopeFromConnection(connection.name);
         const descriptor = yield* runtime.getDescriptor(scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
@@ -120,17 +133,39 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         return { tools } satisfies ResolveToolsResult;
       }),
 
-    invokeTool: ({ toolRow, args }: InvokeToolInput<AppsStoreShape>) =>
+    invokeTool: ({ ctx, toolRow, args }: InvokeToolInput<AppsStoreShape>) =>
       Effect.gen(function* () {
         const scope = scopeFromConnection(toolRow.connection);
         const descriptor = yield* runtime.getDescriptor(scope);
-        const toolDesc = descriptor?.tools.find((t) => t.name === toolRow.name);
-        const declared = toolDesc?.connections ?? {};
+        // A missing descriptor / unknown tool is a typed error, NOT a silent
+        // `?? {}` default: invoking a tool that is not published in the scope
+        // must fail loudly rather than run with empty connections.
+        if (!descriptor) {
+          return yield* Effect.fail(
+            new Error(
+              `apps scope "${scope}" has no published app (connection "${toolRow.connection}")`,
+            ),
+          );
+        }
+        const toolDesc = descriptor.tools.find((t) => t.name === toolRow.name);
+        if (!toolDesc) {
+          return yield* Effect.fail(
+            new Error(`apps tool "${toolRow.name}" is not published in scope "${scope}"`),
+          );
+        }
+        const declared = toolDesc.connections;
         const bindings = resolveBindings
           ? resolveBindings({ scope, tool: toolRow.name, declared })
           : defaultBindings(declared);
+        // Build the per-request resolver from the invoking executor context so
+        // external calls route through the real per-request path (connections +
+        // credentials resolved at the boundary). Falls back to the runtime's
+        // boot-time resolver when the host supplies no factory.
+        const resolver = makeResolver
+          ? makeResolver({ ctx, scope, tool: toolRow.name })
+          : undefined;
         return yield* runtime
-          .invokeTool({ scope, tool: toolRow.name, args, bindings })
+          .invokeTool({ scope, tool: toolRow.name, args, bindings, resolver })
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -145,8 +180,24 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   };
 });
 
-// Connection names encode the scope as `apps/<scope>` (or are the scope itself).
-const scopeFromConnection = (connectionName: string): string => {
+// ---------------------------------------------------------------------------
+// Formalized scope <-> connection mapping. An apps connection is named
+// `apps/<scope>` (integration-prefixed), so the scope is the segment after the
+// first slash. A bare name (no slash) IS the scope (self-host single-tenant,
+// where the sole connection is named for its scope). This is the ONE place the
+// mapping lives; resolveTools and invokeTool both go through it.
+// ---------------------------------------------------------------------------
+export const APPS_CONNECTION_PREFIX = `${APPS_INTEGRATION_SLUG}/`;
+
+/** The connection name that addresses a scope's published app. */
+export const connectionNameForScope = (scope: string): string =>
+  `${APPS_CONNECTION_PREFIX}${scope}`;
+
+/** The scope a connection name addresses (inverse of `connectionNameForScope`). */
+export const scopeFromConnection = (connectionName: string): string => {
+  if (connectionName.startsWith(APPS_CONNECTION_PREFIX)) {
+    return connectionName.slice(APPS_CONNECTION_PREFIX.length);
+  }
   const slash = connectionName.indexOf("/");
   return slash === -1 ? connectionName : connectionName.slice(slash + 1);
 };

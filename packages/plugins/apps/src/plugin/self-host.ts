@@ -18,12 +18,16 @@ import { appsPlugin, type AppsPluginOptions } from "./apps-plugin";
 export interface SelfHostAppsOptions {
   /** Data dir root for artifacts / scope-db / workflows / metadata. */
   readonly dataDir: string;
-  /** Routes bound integration calls to real APIs (the executor invoke path). */
+  /** Routes bound integration calls to real APIs (the executor invoke path).
+   *  The boot-time default (used when no per-request `makeResolver` is given). */
   readonly resolver: ClientResolver;
   /** The single scope this self-host instance serves (single-tenant). */
   readonly scope: string;
   /** Optional binding resolution for the plugin's catalog invoke path. */
   readonly resolveBindings?: AppsPluginOptions["resolveBindings"];
+  /** Optional per-request resolver factory for the catalog invoke path (built
+   *  from the invoking executor context). */
+  readonly makeResolver?: AppsPluginOptions["makeResolver"];
 }
 
 export interface SelfHostApps {
@@ -45,7 +49,11 @@ export const makeSelfHostApps = (options: SelfHostAppsOptions): SelfHostApps => 
     resolver: options.resolver,
   });
   const http = makeAppsHttpRoutes({ runtime: host.runtime });
-  const plugin = appsPlugin({ runtime: host.runtime, resolveBindings: options.resolveBindings });
+  const plugin = appsPlugin({
+    runtime: host.runtime,
+    resolveBindings: options.resolveBindings,
+    makeResolver: options.makeResolver,
+  });
   return {
     runtime: host.runtime,
     http,

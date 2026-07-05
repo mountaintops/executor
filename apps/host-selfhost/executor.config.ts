@@ -8,6 +8,7 @@ import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 import { resolveSecretKey } from "./src/config";
+import { getSelfHostAppsSubsystem } from "./src/apps";
 
 // ---------------------------------------------------------------------------
 // Single source of truth for the self-hosted app's plugin list.
@@ -38,5 +39,10 @@ export default defineExecutorConfig({
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),
+      // The apps source plugin: published custom tools become real catalog
+      // citizens (tools.list + execute through the same policy/audit path). The
+      // runtime is a boot-time singleton shared across per-request plugin
+      // instances; the plugin itself is thin.
+      getSelfHostAppsSubsystem().plugin,
     ] as const,
 });

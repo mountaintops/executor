@@ -1,6 +1,8 @@
 import { Duration, Effect, Match, Option, Schema } from "effect";
 import * as Cause from "effect/Cause";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+
+export type { McpServer };
 import { ContentBlockSchema, type ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 import type {
   jsonSchemaValidator,
@@ -118,6 +120,15 @@ type SharedMcpServerConfig = {
     executionId: string,
     response: ResumeResponse,
   ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
+  /**
+   * Host extension hook: called with the fully-built `McpServer` just before it
+   * is returned, so a host can register ADDITIONAL tools/resources on the same
+   * server the catalog `execute` surface lives on (e.g. the apps subsystem's
+   * publish door, skills tools, and ui:// resources). The catalog tools
+   * themselves still come through the plugin/`execute` path; this is only for
+   * host-specific surfaces that are not catalog tools.
+   */
+  readonly onServer?: (server: McpServer) => void;
 };
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
@@ -1034,6 +1045,15 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         resumeEnabled: elicitationMode.mode !== "native",
       });
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
+
+    // Host extension hook: register any additional (non-catalog) tools/resources
+    // on the built server before handing it back (e.g. the apps publish door,
+    // skills, ui:// resources).
+    if (config.onServer) {
+      yield* Effect.sync(() => config.onServer!(server)).pipe(
+        Effect.withSpan("mcp.host.on_server_extension"),
+      );
+    }
 
     return server;
   }).pipe(Effect.withSpan("mcp.host.create_executor_server"));

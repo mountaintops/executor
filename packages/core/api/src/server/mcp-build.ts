@@ -6,7 +6,9 @@ import {
   type McpBuildServer,
   type McpBuildServerOptions,
 } from "@executor-js/host-mcp/in-memory-session-store";
-import { createExecutorMcpServer } from "@executor-js/host-mcp/tool-server";
+import { createExecutorMcpServer, type McpServer } from "@executor-js/host-mcp/tool-server";
+
+export type { McpServer };
 
 import { ErrorCapture } from "../observability";
 import { CodeExecutorProvider, EngineDecorator, makeExecutionStack } from "./execution-stack";
@@ -37,7 +39,12 @@ export type McpExecutionStackLayer = Layer.Layer<
  * in the injected stack layer (libSQL vs D1, etc.).
  */
 export const makeMcpBuildServer =
-  (executionStack: McpExecutionStackLayer): McpBuildServer =>
+  (
+    executionStack: McpExecutionStackLayer,
+    /** Host extension: register additional (non-catalog) tools/resources on each
+     *  per-session MCP server (e.g. the apps publish door + skills + ui:// ). */
+    onServer?: (server: McpServer) => void,
+  ): McpBuildServer =>
   (principal: Principal, options?: McpBuildServerOptions) =>
     makeExecutionStack(principal.accountId, principal.organizationId, principal.organizationName, {
       mcpResource: options?.resource,
@@ -51,7 +58,7 @@ export const makeMcpBuildServer =
       Effect.provide(executionStack),
       Effect.mapError((cause) => new McpEngineBuildError({ cause })),
       Effect.flatMap((engine) =>
-        createExecutorMcpServer({ engine, ...(options ?? {}) }).pipe(
+        createExecutorMcpServer({ engine, ...(options ?? {}), onServer }).pipe(
           Effect.map((mcpServer) => ({ mcpServer, engine })),
         ),
       ),

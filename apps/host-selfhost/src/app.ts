@@ -19,7 +19,7 @@ import {
   SelfHostPluginsProvider,
 } from "./execution";
 import { makeSelfHostMcpSeams } from "./mcp";
-import { makeSelfHostAppsSubsystem } from "./apps";
+import { getSelfHostAppsSubsystem } from "./apps";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
@@ -69,16 +69,27 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // API + MCP OAuth seam, all over the shared libSQL handle.
   const { identityLayer, authHandler, betterAuth } = await resolveAuthProviders(dbHandle);
 
+  // ---- the apps subsystem (custom tools / workflows / ui / skills) -------
+  // Built over the five self-hosted seam backings rooted at the data dir (a
+  // boot-time singleton, same instance the source plugin in executor.config.ts
+  // closes over). Its HTTP surface mounts under /api/apps/*; published tools are
+  // catalog citizens through its source plugin; its extra MCP surface (publish
+  // door, skills, ui:// resources) is registered on the real MCP server below.
+  const apps = getSelfHostAppsSubsystem();
+
   // ---- the in-process MCP serving seams (+ shutdown hook) ----------------
   // Pass the pinned public origin so browser-approval URLs are reachable behind
-  // a reverse proxy (not the internal 127.0.0.1 bind from the request URL).
-  const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl);
-
-  // ---- the apps subsystem (custom tools / workflows / ui / skills) -------
-  // Built over the five self-hosted seam backings rooted at the data dir. Its
-  // HTTP surface mounts under /api/apps/*; published tools are catalog citizens
-  // through its source plugin. See packages/plugins/apps.
-  const apps = makeSelfHostAppsSubsystem();
+  // a reverse proxy (not the internal 127.0.0.1 bind from the request URL). The
+  // `onServer` hook registers the apps subsystem's non-catalog MCP surface
+  // (publish/skills/ui) on each per-session MCP server, so publish-over-MCP,
+  // skills list/read, and ui:// resources are LIVE on the real endpoint.
+  const mcp = makeSelfHostMcpSeams(dbHandle, betterAuth, config.webBaseUrl, (server) =>
+    // The real MCP SDK server registers with zod schema shapes; the apps
+    // registrar's structural `McpServerLike` uses a plain-object schema view. The
+    // shapes are runtime-compatible (the registrar passes zod raw shapes); the
+    // cast bridges the SDK's narrower generic signature.
+    apps.registerMcp(server as unknown as Parameters<typeof apps.registerMcp>[0]),
+  );
 
   // CLI device-login discovery (`executor login`). Points the CLI at Better
   // Auth's device endpoints; `requestFormat: "json"` because those endpoints

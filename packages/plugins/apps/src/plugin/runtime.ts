@@ -61,6 +61,11 @@ export interface AppsRuntime {
     readonly tool: string;
     readonly args: unknown;
     readonly bindings: Bindings;
+    /** Optional per-request resolver override. The catalog invoke path supplies
+     *  one built from the request's executor context (connections + credentials
+     *  resolved at the boundary), so external calls route through the real
+     *  per-request path rather than the boot-time default resolver. */
+    readonly resolver?: ClientResolver;
   }) => Effect.Effect<unknown, PublishError | BindingError>;
   readonly startWorkflow: (input: {
     readonly scope: string;
@@ -210,6 +215,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     toolDesc: ToolDescriptor,
     args: unknown,
     bindings: Bindings,
+    resolver?: ClientResolver,
   ): Effect.Effect<unknown, PublishError | BindingError> =>
     Effect.gen(function* () {
       const roots = yield* rootsFor(toolDesc.connections, bindings);
@@ -225,7 +231,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         declared: toolDesc.connections,
         bindings,
         db,
-        resolver: deps.resolver,
+        // Prefer the per-request resolver (real per-request executor context)
+        // over the boot-time default.
+        resolver: resolver ?? deps.resolver,
       });
       const result = yield* deps.sandbox
         .invoke(code, { artifact: toolDesc.name, kind: "tool", input: args, roots }, bridge)
@@ -340,6 +348,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           toolDesc,
           input.args,
           input.bindings,
+          input.resolver,
         );
       }),
 

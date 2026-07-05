@@ -1,28 +1,44 @@
 import { Effect } from "effect";
 
-import { makeSelfHostApps, BindingError, type ClientResolver } from "@executor-js/plugin-apps/api";
+import {
+  makeSelfHostApps,
+  BindingError,
+  connectionNameForScope,
+  type ClientResolver,
+  type SelfHostApps,
+} from "@executor-js/plugin-apps/api";
 
 import { resolveDataDir } from "./config";
+import { makeCtxResolver } from "./apps-resolver";
 
 // ---------------------------------------------------------------------------
 // Self-host wiring for the apps subsystem.
 //
 // The apps subsystem (packages/plugins/apps) owns custom tools, durable
 // workflows, ui views and skills behind five substrate-neutral seams. This
-// module builds it over the self-hosted backings rooted at the data dir and
-// exposes the HTTP surface + close hook that app.ts mounts.
+// module builds it ONCE (a boot-time singleton) so the SAME runtime is shared
+// by (a) the source plugin added to the executor plugin list in
+// executor.config.ts, so published tools are real catalog citizens, (b) the
+// MCP registration on the real MCP server, and (c) the HTTP surface. `plugins()`
+// runs per request and re-instantiates the plugin, but every instance closes
+// over this one runtime, so there is one published-descriptor store, one
+// journal, one scheduler across the process.
 //
 // The `ClientResolver` is the one seam that reaches real integrations (the
-// platform invoke path: credentials, policy, audit). Wiring it through the
+// platform invoke path: credentials, policy, audit). Threading it through the
 // executor catalog requires per-request executor context that the boot-time
-// plugin construction does not hold, so the running self-host server ships a
-// resolver that fails with a typed NotImplemented for undeclared external
-// calls. The full real path (routing a bound github client to a live API) is
-// exercised end-to-end in the apps package e2e against the emulate GitHub. The
-// scope-database path (`db.sql`) is fully live in the running server.
+// singleton does not hold; the running server ships a resolver that fails with
+// a typed NotImplemented for external calls, while the scope-database path
+// (`db.sql`) is fully live. See the note in DESIGN / the remaining-gap section.
+// The full real external-call path is exercised end-to-end in the package e2e
+// and the booted-host wire e2e against the emulate GitHub.
 // ---------------------------------------------------------------------------
 
-const SELF_HOST_SCOPE = "default";
+/** The single scope this self-host instance serves (single-tenant). */
+export const SELF_HOST_SCOPE = "default";
+
+/** The apps connection name for the self-host scope (formalized mapping). */
+export const SELF_HOST_APPS_CONNECTION = connectionNameForScope(SELF_HOST_SCOPE);
 
 const notImplementedResolver: ClientResolver = {
   call: ({ integration }) =>
@@ -38,9 +54,32 @@ const notImplementedResolver: ClientResolver = {
     ),
 };
 
-export const makeSelfHostAppsSubsystem = () =>
-  makeSelfHostApps({
-    dataDir: resolveDataDir(),
-    resolver: notImplementedResolver,
-    scope: SELF_HOST_SCOPE,
-  });
+// The boot-time singleton. Built lazily on first access so importing this module
+// (which executor.config.ts does) does not do filesystem work at import time.
+let subsystem: SelfHostApps | undefined;
+
+export const getSelfHostAppsSubsystem = (): SelfHostApps => {
+  if (!subsystem) {
+    subsystem = makeSelfHostApps({
+      dataDir: resolveDataDir(),
+      // Boot-time fallback for calls made outside a request (e.g. the scheduler
+      // firing a workflow with no request ctx). The per-request `makeResolver`
+      // below is the real path for catalog-invoked tools.
+      resolver: notImplementedResolver,
+      scope: SELF_HOST_SCOPE,
+      // The REAL per-request resolver: built from the invoking executor context
+      // so external integration calls resolve the user's connection + credential
+      // at the boundary and dispatch over the request's HttpClient.
+      makeResolver: ({ ctx }) => makeCtxResolver(ctx),
+    });
+  }
+  return subsystem;
+};
+
+/** Reset the singleton (tests build fresh instances per data dir). */
+export const resetSelfHostAppsSubsystem = (): void => {
+  subsystem = undefined;
+};
+
+/** @deprecated use getSelfHostAppsSubsystem(); kept for existing call sites. */
+export const makeSelfHostAppsSubsystem = getSelfHostAppsSubsystem;

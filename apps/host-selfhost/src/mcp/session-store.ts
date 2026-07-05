@@ -1,6 +1,10 @@
 import { Layer } from "effect";
 
-import { makeConsoleMcpErrorReporter, makeMcpBuildServer } from "@executor-js/api/server";
+import {
+  makeConsoleMcpErrorReporter,
+  makeMcpBuildServer,
+  type McpServer,
+} from "@executor-js/api/server";
 import type { McpErrorReporter } from "@executor-js/host-mcp";
 import {
   inMemoryMcpSessionsLayer,
@@ -32,10 +36,14 @@ export { McpEngineBuildError } from "@executor-js/host-mcp/in-memory-session-sto
 export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
+  /** Host extension: register additional (non-catalog) tools/resources on each
+   *  per-session MCP server (the apps publish door, skills tools, ui:// ). */
+  onServer?: (server: McpServer) => void,
 ): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
       SelfHostExecutionStackLayer.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
+      onServer,
     ),
     { webBaseUrl },
   );

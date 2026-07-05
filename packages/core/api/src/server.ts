@@ -34,6 +34,7 @@ export {
   makeMcpBuildServer,
   makeConsoleMcpErrorReporter,
   type McpExecutionStackLayer,
+  type McpServer,
 } from "./server/mcp-build";
 // Host-composition seams re-homed out of `@executor-js/sdk` (the plugin-author
 // contract) into this host surface. The pure FumaDB assembly (`createExecutorFumaDb`
