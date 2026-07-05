@@ -175,6 +175,26 @@ export interface StartRunInput {
   readonly input: unknown;
   /** Optional caller-supplied run id (idempotent starts / scheduler dedupe). */
   readonly runId?: string;
+  /**
+   * The caller's connection bindings, persisted with the run so a later
+   * `resume`/`signal` re-drives with the SAME bindings the run started with (not
+   * empty defaults). Opaque JSON to the runner; the caller (AppsRuntime) reads it
+   * back via `getPersisted` to rebuild the real `WorkflowBindings`. Pinning it
+   * here, alongside the pinned `snapshotId`, is what makes a suspended run resume
+   * against the exact code + credentials it began with.
+   */
+  readonly persistedBindings?: unknown;
+}
+
+/** The persisted, snapshot-pinned facts about a run needed to faithfully resume
+ *  it: its pinned snapshot, entry path, and the bindings captured at start. */
+export interface PersistedRun {
+  readonly runId: string;
+  readonly scope: string;
+  readonly workflow: string;
+  readonly snapshotId: string;
+  readonly entryPath: string;
+  readonly persistedBindings?: unknown;
 }
 
 /**
@@ -205,6 +225,10 @@ export interface WorkflowRunner {
   ) => Effect.Effect<RunView, WorkflowError>;
   readonly cancel: (runId: string) => Effect.Effect<RunView, WorkflowError>;
   readonly get: (runId: string) => Effect.Effect<RunView | null, WorkflowError>;
+  /** The snapshot-pinned facts (snapshot, entry path, start-time bindings) for a
+   *  run, so a resume rebuilds bindings + descriptor from EXACTLY what the run
+   *  started with rather than the latest publish. */
+  readonly getPersisted: (runId: string) => Effect.Effect<PersistedRun | null, WorkflowError>;
   readonly list: (filter?: {
     readonly scope?: string;
     readonly workflow?: string;

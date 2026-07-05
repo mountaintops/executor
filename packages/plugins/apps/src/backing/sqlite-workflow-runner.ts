@@ -51,7 +51,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS wf_run (
   run_id TEXT PRIMARY KEY, scope TEXT NOT NULL, workflow TEXT NOT NULL,
   snapshot_id TEXT NOT NULL, entry_path TEXT NOT NULL, status TEXT NOT NULL, input TEXT NOT NULL,
-  output TEXT, error TEXT, wake_at INTEGER, wait_event TEXT,
+  output TEXT, error TEXT, wake_at INTEGER, wait_event TEXT, bindings TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS wf_event (
@@ -68,7 +68,18 @@ CREATE TABLE IF NOT EXISTS wf_signal (
   run_id TEXT NOT NULL, event_name TEXT NOT NULL, payload TEXT,
   PRIMARY KEY (run_id, event_name)
 );
+CREATE TABLE IF NOT EXISTS wf_lease (
+  run_id TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at INTEGER NOT NULL
+);
 `;
+
+/** How long a drive lease is held before it is considered abandoned (a driver
+ *  that crashed mid-step). A live driver renews implicitly by finishing and
+ *  releasing; a genuinely long step just extends past this and a concurrent
+ *  driver treats the lease as stale, which is acceptable because the journal
+ *  still guarantees a COMPLETED step never re-runs — the lease only prevents the
+ *  narrow unjournaled-step double-execution window. */
+const LEASE_MS = 30_000;
 
 interface StepRecord {
   status: "completed" | "failed";
@@ -79,6 +90,7 @@ interface StepRecord {
 
 interface RunRow extends RunView {
   readonly entryPath: string;
+  readonly persistedBindings?: unknown;
 }
 
 export interface SqliteWorkflowRunnerOptions {
@@ -105,6 +117,10 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
           const s = stmt.trim();
           if (s) await client.execute(s);
         }
+        // Idempotent add for DBs created before the `bindings` column existed
+        // (a persisted journal file from an earlier version). SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so tolerate the duplicate-column error.
+        await client.execute("ALTER TABLE wf_run ADD COLUMN bindings TEXT").catch(() => undefined);
       })();
     }
     return ready;
@@ -128,6 +144,7 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
       input: JSON.parse(String(row.input)),
       output: row.output != null ? JSON.parse(String(row.output)) : undefined,
       error: row.error != null ? String(row.error) : undefined,
+      persistedBindings: row.bindings != null ? JSON.parse(String(row.bindings)) : undefined,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -326,7 +343,77 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
     };
   };
 
-  const drive = (run: RunRow, bindings: WorkflowBindings): Effect.Effect<RunView, WorkflowError> =>
+  // ---------------------------------------------------------------------------
+  // Single-driver lease. A run may be driven concurrently (start + signal +
+  // resume racing); without coordination each driver loads the same "step not
+  // journaled yet" view and both execute the unjournaled `step.tool`, running
+  // its side effect twice. The lease makes drive single-driver per run: a driver
+  // atomically claims the run row before executing and releases after. A second
+  // driver that fails to claim WAITS for the holder to finish, then re-drives —
+  // by which point the step is journaled, so it replays instead of re-executing.
+  //
+  // The claim is a single atomic statement (INSERT .. ON CONFLICT DO UPDATE with
+  // a WHERE that only overwrites an EXPIRED lease), so exactly one racer wins
+  // even under SQLite's serialized writer.
+  // ---------------------------------------------------------------------------
+  const tryClaim = async (runId: string, holder: string): Promise<boolean> => {
+    const now = clock();
+    const res = await client.execute({
+      sql: `INSERT INTO wf_lease (run_id, holder, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+              WHERE wf_lease.expires_at <= ?`,
+      args: [runId, holder, now + LEASE_MS, now],
+    });
+    // `changes` is 1 when we inserted or overwrote an expired lease, 0 when the
+    // ON CONFLICT WHERE filtered out (a live lease is held by someone else).
+    return Number(res.rowsAffected ?? 0) > 0;
+  };
+
+  const releaseClaim = async (runId: string, holder: string): Promise<void> => {
+    await client.execute({
+      sql: "DELETE FROM wf_lease WHERE run_id = ? AND holder = ?",
+      args: [runId, holder],
+    });
+  };
+
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  // Claim, or wait for the current holder to release (or its lease to expire),
+  // then claim. Returns the holder token once held.
+  const acquire = async (runId: string): Promise<string> => {
+    const holder = `d-${clock()}-${Math.random().toString(36).slice(2)}`;
+    // Bounded spin: LEASE_MS is the worst case before a stale lease is reclaimed.
+    // Poll frequently so the follow-up re-drive is prompt once the holder frees.
+    for (;;) {
+      if (await tryClaim(runId, holder)) return holder;
+      await sleep(5);
+    }
+  };
+
+  const driveExclusive = (
+    run: RunRow,
+    bindings: WorkflowBindings,
+  ): Effect.Effect<RunView, WorkflowError> =>
+    Effect.gen(function* () {
+      const holder = yield* Effect.tryPromise({
+        try: () => acquire(run.runId),
+        catch: (cause) => new WorkflowError({ message: "lease acquire failed", cause }),
+      });
+      // Re-load the run + drive under the lease; a second driver that waited for
+      // the lease re-reads the (now-updated) journal and replays completed steps.
+      const fresh = yield* Effect.tryPromise({
+        try: () => loadRun(run.runId),
+        catch: (cause) => new WorkflowError({ message: "lease reload failed", cause }),
+      });
+      return yield* driveUnleased(fresh ?? run, bindings).pipe(
+        Effect.ensuring(Effect.promise(() => releaseClaim(run.runId, holder))),
+      );
+    });
+
+  const driveUnleased = (
+    run: RunRow,
+    bindings: WorkflowBindings,
+  ): Effect.Effect<RunView, WorkflowError> =>
     Effect.gen(function* () {
       const journaled = yield* Effect.tryPromise({
         try: () => loadSteps(run.runId),
@@ -388,7 +475,7 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
             return (await loadRun(runId))!;
           },
           catch: (cause) => new WorkflowError({ message: "resume set-running failed", cause }),
-        }).pipe(Effect.flatMap((fresh) => drive(fresh, bindings)));
+        }).pipe(Effect.flatMap((fresh) => driveExclusive(fresh, bindings)));
       }),
     );
 
@@ -402,8 +489,8 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
           if (existing) return existing;
           const ts = clock();
           await client.execute({
-            sql: `INSERT INTO wf_run (run_id, scope, workflow, snapshot_id, entry_path, status, input, created_at, updated_at)
-                  VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+            sql: `INSERT INTO wf_run (run_id, scope, workflow, snapshot_id, entry_path, status, input, bindings, created_at, updated_at)
+                  VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
             args: [
               runId,
               input.scope,
@@ -411,6 +498,9 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
               input.snapshotId,
               input.entryPath,
               JSON.stringify(input.input ?? {}),
+              input.persistedBindings === undefined
+                ? null
+                : JSON.stringify(input.persistedBindings),
               ts,
               ts,
             ],
@@ -419,7 +509,7 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
           return (await loadRun(runId))!;
         },
         catch: (cause) => new WorkflowError({ message: "start failed", cause }),
-      }).pipe(Effect.flatMap((run) => drive(run, bindings))),
+      }).pipe(Effect.flatMap((run) => driveExclusive(run, bindings))),
 
     resume: (runId, bindings) => resumeImpl(runId, bindings),
 
@@ -450,6 +540,23 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
       Effect.tryPromise({
         try: () => loadRun(runId) as Promise<RunView | null>,
         catch: (cause) => new WorkflowError({ message: "get failed", cause }),
+      }),
+
+    getPersisted: (runId) =>
+      Effect.tryPromise({
+        try: async () => {
+          const run = await loadRun(runId);
+          if (!run) return null;
+          return {
+            runId: run.runId,
+            scope: run.scope,
+            workflow: run.workflow,
+            snapshotId: run.snapshotId,
+            entryPath: run.entryPath,
+            persistedBindings: run.persistedBindings,
+          };
+        },
+        catch: (cause) => new WorkflowError({ message: "getPersisted failed", cause }),
       }),
 
     list: (filter) =>

@@ -83,6 +83,9 @@ export interface AppsRuntime {
     readonly runId: string;
     readonly event: string;
     readonly payload: unknown;
+    /** Per-request resolver for the resumed run's `step.tool` external calls
+     *  (the real per-request executor path). Falls back to the boot-time default. */
+    readonly resolver?: ClientResolver;
   }) => Effect.Effect<RunView, PublishError | BindingError>;
   readonly getRun: (runId: string) => Effect.Effect<RunView | null>;
   readonly listRuns: (scope: string) => Effect.Effect<readonly RunView[]>;
@@ -126,6 +129,26 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   // Bundle cache keyed by (snapshot, sourcePath): a published snapshot is
   // immutable, so its bundles never change.
   const bundleCache = new Map<string, string>();
+
+  // Per-scope publish serialization (Fix 6). Two publishes to one scope race at
+  // two points: the git ref compare-and-swap (now guarded in the store) AND the
+  // descriptor-pointer write (last-writer-wins would leave the pointer disagreeing
+  // with HEAD). Chaining each scope's publishes through a promise queue makes them
+  // sequential in-process, so the committed head and the descriptor pointer always
+  // advance together and stay in agreement. The git CAS remains the cross-process
+  // backstop.
+  const publishChains = new Map<string, Promise<unknown>>();
+  const withScopePublishLock = <A>(scope: string, run: () => Promise<A>): Promise<A> => {
+    const prior = publishChains.get(scope) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(run);
+    // Keep the chain alive regardless of this publish's outcome; swallow so a
+    // failed publish does not reject the NEXT waiter's `.then`.
+    publishChains.set(
+      scope,
+      next.catch(() => undefined),
+    );
+    return next;
+  };
 
   const bundleFor = (
     descriptor: AppDescriptor,
@@ -371,28 +394,50 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   return {
     deps,
     publish: (input) =>
-      Effect.gen(function* () {
-        // publish commits the snapshot LAST and writes the ui/skill blobs as
-        // post-commit projections. Then we write the published-descriptor
-        // pointer, the final projection. If this pointer write fails, the app is
-        // still recoverable from the committed snapshot via `repair` /
-        // recompute-on-read (the descriptor lives in `.executor/descriptor.json`
-        // inside the commit).
-        const out = yield* runPublish(
-          {
-            artifactStore: deps.artifactStore,
-            sandbox: deps.sandbox,
-            putBlob: putBlobAsProjection,
-          },
-          {
-            scope: input.scope,
-            files: input.files,
-            commitMessage: input.message,
-          },
-        );
-        yield* putDescriptorPointer(out.descriptor);
-        return out;
-      }),
+      // Serialize publishes to a scope (Fix 6): the commit CAS + the pointer
+      // write advance together, so head and descriptor pointer never disagree and
+      // no publish is silently clobbered. The whole publish (commit + pointer)
+      // runs inside the per-scope lock. The inner effect is run to an `Exit` so
+      // the typed `PublishError` survives crossing the promise-lock boundary.
+      Effect.flatMap(
+        Effect.tryPromise({
+          try: () =>
+            withScopePublishLock(input.scope, () =>
+              Effect.runPromiseExit(
+                Effect.gen(function* () {
+                  // publish commits the snapshot LAST and writes the ui/skill
+                  // blobs as post-commit projections. Then we write the
+                  // published-descriptor pointer, the final projection. If this
+                  // pointer write fails, the app is still recoverable from the
+                  // committed snapshot via `repair` / recompute-on-read.
+                  const out = yield* runPublish(
+                    {
+                      artifactStore: deps.artifactStore,
+                      sandbox: deps.sandbox,
+                      putBlob: putBlobAsProjection,
+                    },
+                    {
+                      scope: input.scope,
+                      files: input.files,
+                      commitMessage: input.message,
+                    },
+                  );
+                  yield* putDescriptorPointer(out.descriptor);
+                  return out;
+                }),
+              ),
+            ),
+          catch: (cause) =>
+            new PublishError({
+              message: cause instanceof Error ? cause.message : String(cause),
+              stage: "project",
+              diagnostics: [],
+            }),
+        }),
+        // An `Exit` is itself an `Effect`, so returning it re-raises the typed
+        // `PublishError` (or yields the success) in the outer effect's channels.
+        (exit) => exit,
+      ),
 
     // Recompute-on-read: prefer the pointer, but if it is missing yet the scope
     // has a committed snapshot carrying a descriptor, recover from the snapshot
@@ -455,6 +500,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
               entryPath: wfDesc.sourcePath,
               input: input.input ?? {},
               runId: input.runId,
+              // Persist the start-time bindings on the run so a later signal/
+              // resume re-drives with the SAME bindings (not empty defaults).
+              persistedBindings: bindings,
             },
             bindingsForRun(input.scope, descriptor, bindings, input.resolver),
           )
@@ -472,7 +520,13 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
 
     signalWorkflow: (input) =>
       Effect.gen(function* () {
-        const run = yield* deps.workflows.get(input.runId).pipe(
+        // Resume MUST use the run's pinned snapshot + the bindings it started
+        // with, NOT the latest publish + empty defaults. A workflow republished
+        // (or its bindings dropped) between start and signal would otherwise run
+        // DIFFERENT code with NO credentials on resume. `getPersisted` returns
+        // exactly what the run started with; we load the descriptor from that
+        // pinned snapshot and rebuild the original bindings.
+        const persisted = yield* deps.workflows.getPersisted(input.runId).pipe(
           Effect.mapError(
             (c) =>
               new PublishError({
@@ -482,7 +536,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
               }),
           ),
         );
-        if (!run) {
+        if (!persisted) {
           return yield* Effect.fail(
             new PublishError({
               message: `no run ${input.runId}`,
@@ -491,23 +545,38 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             }),
           );
         }
-        const descriptor = yield* requireDescriptor(run.scope);
-        const wfDesc = descriptor.workflows.find((w) => w.name === run.workflow);
-        if (!wfDesc) {
+        const descriptor = yield* loadDescriptorFromSnapshot(
+          deps.artifactStore,
+          persisted.scope,
+          persisted.snapshotId as never,
+        );
+        if (!descriptor) {
           return yield* Effect.fail(
             new PublishError({
-              message: `workflow ${run.workflow} gone`,
+              message: `run ${input.runId} pinned snapshot ${persisted.snapshotId} has no descriptor`,
               stage: "project",
               diagnostics: [],
             }),
           );
         }
+        const wfDesc = descriptor.workflows.find((w) => w.name === persisted.workflow);
+        if (!wfDesc) {
+          return yield* Effect.fail(
+            new PublishError({
+              message: `workflow ${persisted.workflow} gone`,
+              stage: "project",
+              diagnostics: [],
+            }),
+          );
+        }
+        // The bindings the run was started with (persisted as opaque JSON).
+        const startBindings = (persisted.persistedBindings as Bindings | undefined) ?? {};
         return yield* deps.workflows
           .signal(
             input.runId,
             input.event,
             input.payload,
-            bindingsForRun(run.scope, descriptor, {}),
+            bindingsForRun(persisted.scope, descriptor, startBindings, input.resolver),
           )
           .pipe(
             Effect.mapError(
