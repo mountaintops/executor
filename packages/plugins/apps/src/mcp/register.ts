@@ -46,12 +46,50 @@ export interface McpServerLike {
     metadata: Record<string, unknown>,
     reader: (uri: URL) => Promise<{ contents: unknown[] }> | { contents: unknown[] },
   ) => unknown;
+  /** The underlying protocol server, exposing the negotiated client capabilities.
+   *  Present on the real SDK `McpServer` (`.server`); optional in the structural
+   *  view so tests can omit it (treated as "no UI capability"). */
+  readonly server?: {
+    getClientCapabilities?: () => ClientCapabilitiesLike | undefined;
+  };
 }
+
+/** The subset of the client's negotiated capabilities we read: the MCP-Apps UI
+ *  extension under `extensions["io.modelcontextprotocol/ui"]`. */
+export interface ClientCapabilitiesLike {
+  readonly experimental?: Record<string, unknown>;
+  readonly extensions?: Record<string, unknown>;
+}
+
+/** The MCP-Apps UI client-capability extension key (per the MCP Apps spec). */
+export const MCP_APPS_UI_CAPABILITY_KEY = "io.modelcontextprotocol/ui";
+
+/** True when the connected client advertises it can render MCP-Apps UI of our
+ *  document mime type. A client that does NOT advertise this cannot mount the
+ *  `ui://` resource, so `apps_open_ui` returns an HTTP fallback URL instead. */
+export const clientSupportsMcpAppsUi = (server: McpServerLike): boolean => {
+  const caps = server.server?.getClientCapabilities?.();
+  const ui = caps?.extensions?.[MCP_APPS_UI_CAPABILITY_KEY] as
+    | { readonly mimeTypes?: readonly string[] }
+    | undefined;
+  if (!ui) return false;
+  // A UI extension with no explicit mime list is treated as generally capable;
+  // an explicit list must include our document mime.
+  return ui.mimeTypes === undefined || ui.mimeTypes.includes(UI_APP_MIME);
+};
 
 export interface AppsMcpDeps {
   readonly runtime: AppsRuntime;
   /** The scope this MCP session serves (self-host single-tenant). */
   readonly scope: string;
+  /**
+   * Build an absolute HTTP URL to the served HTML document for a ui view (Fix
+   * 10). Returned as the fallback when the client cannot render MCP-Apps UI
+   * inline, so a terminal/non-UI client still gets a working link instead of an
+   * unrenderable resource. Omit when no HTTP base is known (fallback becomes
+   * `fallback_unavailable`).
+   */
+  readonly uiDocumentUrl?: (scope: string, name: string) => string | undefined;
 }
 
 const text = (value: unknown): McpToolResult => ({
@@ -156,16 +194,56 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
   server.registerTool(
     "apps_open_ui",
     {
-      description: `Open the published \`${defaultUiView}\` UI view (renders its widget).`,
+      description:
+        `Open the published \`${defaultUiView}\` UI view. In a client that supports ` +
+        `MCP-Apps UI, this renders the widget inline. In a client that does NOT (e.g. a ` +
+        `terminal), it returns a URL to an HTTP-served HTML version of the view instead ` +
+        `of rendering, so it never overpromises a widget the client cannot show.`,
       inputSchema: {},
       _meta: { ui: { resourceUri: `ui://${scope}/${defaultUiView}` } },
     },
     async () => {
       const uri = `ui://${scope}/${defaultUiView}`;
+      // Fix 10: only claim to render inline when the client actually advertises
+      // the MCP-Apps UI capability. Otherwise fall back to an HTTP document URL
+      // (honest text + a structured status), never a `_meta.ui` resource link the
+      // client can't mount.
+      if (clientSupportsMcpAppsUi(server)) {
+        return {
+          content: [{ type: "text", text: `Opening ${defaultUiView}` }],
+          structuredContent: { status: "ui", uri, view: defaultUiView },
+          _meta: { ui: { resourceUri: uri } },
+        } as McpToolResult;
+      }
+      const url = deps.uiDocumentUrl?.(scope, defaultUiView);
+      if (url) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `This client can't render MCP-Apps UI inline. Open the \`${defaultUiView}\` ` +
+                `view in a browser instead:\n${url}`,
+            },
+          ],
+          structuredContent: { status: "fallback_url", url, view: defaultUiView },
+        } as McpToolResult;
+      }
       return {
-        content: [{ type: "text", text: `Opening ${defaultUiView}` }],
-        structuredContent: { uri, view: defaultUiView },
-        _meta: { ui: { resourceUri: uri } },
+        content: [
+          {
+            type: "text",
+            text:
+              `This client can't render MCP-Apps UI inline and no HTTP document URL is ` +
+              `configured for the \`${defaultUiView}\` view.`,
+          },
+        ],
+        structuredContent: {
+          status: "fallback_unavailable",
+          reason: "mcp_apps_unsupported",
+          view: defaultUiView,
+        },
+        isError: true,
       } as McpToolResult;
     },
   );
