@@ -5,7 +5,13 @@ import type { ScopeDb } from "../seams/scope-db";
 import type { ToolSandbox } from "../seams/tool-sandbox";
 import type { LiveChannel } from "../seams/live-channel";
 import type { DurableSteps, WorkflowRunner, RunView, StepView } from "../seams/workflow-runner";
-import { publish as runPublish, type PublishOutput } from "../pipeline/publish";
+import {
+  publish as runPublish,
+  loadDescriptorFromSnapshot,
+  publishProjections,
+  restageBlobs,
+  type PublishOutput,
+} from "../pipeline/publish";
 import { PublishError } from "../pipeline/discover";
 import type { AppDescriptor, ToolDescriptor, WorkflowDescriptor } from "../pipeline/descriptor";
 import { bundleEntry } from "../pipeline/bundle";
@@ -46,6 +52,10 @@ export interface AppsRuntime {
     readonly message?: string;
   }) => Effect.Effect<PublishOutput, PublishError>;
   readonly getDescriptor: (scope: string) => Effect.Effect<AppDescriptor | null>;
+  /** Re-derive the projections (published-descriptor pointer + ui/skill blobs)
+   *  for a scope from its latest committed snapshot. Idempotent; the recovery
+   *  path when a projection write failed after the commit. */
+  readonly repair: (scope: string) => Effect.Effect<AppDescriptor | null, PublishError>;
   readonly invokeTool: (input: {
     readonly scope: string;
     readonly tool: string;
@@ -134,8 +144,65 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       Effect.mapError(
         (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
       ),
+      Effect.flatMap((d) =>
+        d ? Effect.succeed(d) : recoverFromSnapshot(scope).pipe(Effect.orElseSucceed(() => null)),
+      ),
       Effect.flatMap((d) => (d ? Effect.succeed(d) : Effect.fail(failNoDescriptor(scope)))),
     );
+
+  // A content-addressed blob write, mapped into the pipeline's PublishError.
+  const putBlobAsProjection = (hash: string, value: string): Effect.Effect<void, PublishError> =>
+    deps.store
+      .putBlob(hash, value)
+      .pipe(
+        Effect.mapError(
+          (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
+        ),
+      );
+
+  // The published-descriptor pointer projection.
+  const putDescriptorPointer = (descriptor: AppDescriptor): Effect.Effect<void, PublishError> =>
+    deps.store
+      .putDescriptor("org", descriptor)
+      .pipe(
+        Effect.mapError(
+          (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
+        ),
+      );
+
+  // Load the latest committed snapshot's descriptor for a scope (recompute-on-
+  // read source of truth), or null if the scope has never published.
+  const recoverFromSnapshot = (scope: string): Effect.Effect<AppDescriptor | null, PublishError> =>
+    Effect.gen(function* () {
+      const scopeStore = yield* deps.artifactStore
+        .forScope(scope)
+        .pipe(
+          Effect.mapError(
+            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          ),
+        );
+      const latest = yield* scopeStore
+        .latest()
+        .pipe(
+          Effect.mapError(
+            (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          ),
+        );
+      if (!latest) return null;
+      return yield* loadDescriptorFromSnapshot(deps.artifactStore, scope, latest.id);
+    });
+
+  // Idempotently re-derive every projection (blobs + pointer) for a scope from
+  // its latest committed snapshot. The self-healing recovery path.
+  const repairScope = (scope: string): Effect.Effect<AppDescriptor | null, PublishError> =>
+    Effect.gen(function* () {
+      const descriptor = yield* recoverFromSnapshot(scope);
+      if (!descriptor) return null;
+      const blobs = yield* restageBlobs({ artifactStore: deps.artifactStore }, descriptor);
+      yield* publishProjections({ putBlob: putBlobAsProjection }, descriptor, blobs);
+      yield* putDescriptorPointer(descriptor);
+      return descriptor;
+    });
 
   const invokeToolInternal = (
     scope: string,
@@ -239,34 +306,38 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     deps,
     publish: (input) =>
       Effect.gen(function* () {
+        // publish commits the snapshot LAST and writes the ui/skill blobs as
+        // post-commit projections. Then we write the published-descriptor
+        // pointer, the final projection. If this pointer write fails, the app is
+        // still recoverable from the committed snapshot via `repair` /
+        // recompute-on-read (the descriptor lives in `.executor/descriptor.json`
+        // inside the commit).
         const out = yield* runPublish(
           {
             artifactStore: deps.artifactStore,
             sandbox: deps.sandbox,
-            putBlob: (hash, value) =>
-              deps.store
-                .putBlob(hash, value)
-                .pipe(
-                  Effect.mapError(
-                    (c) =>
-                      new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
-                  ),
-                ),
+            putBlob: putBlobAsProjection,
           },
           { scope: input.scope, files: input.files, commitMessage: input.message },
         );
-        yield* deps.store
-          .putDescriptor("org", out.descriptor)
-          .pipe(
-            Effect.mapError(
-              (c) => new PublishError({ message: String(c), stage: "project", diagnostics: [] }),
-            ),
-          );
+        yield* putDescriptorPointer(out.descriptor);
         return out;
       }),
 
+    // Recompute-on-read: prefer the pointer, but if it is missing yet the scope
+    // has a committed snapshot carrying a descriptor, recover from the snapshot
+    // (and lazily repair the pointer) so a projection failure is self-healing.
     getDescriptor: (scope) =>
-      deps.store.getDescriptor(scope).pipe(Effect.orElseSucceed(() => null)),
+      deps.store.getDescriptor(scope).pipe(
+        Effect.orElseSucceed(() => null),
+        Effect.flatMap((pointer) =>
+          pointer
+            ? Effect.succeed(pointer)
+            : recoverFromSnapshot(scope).pipe(Effect.orElseSucceed(() => null)),
+        ),
+      ),
+
+    repair: (scope) => repairScope(scope),
 
     invokeTool: (input) =>
       Effect.gen(function* () {

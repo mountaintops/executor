@@ -1,8 +1,19 @@
-import { build } from "esbuild";
+import { build, version as esbuildVersion } from "esbuild";
 
 import { Effect } from "effect";
 
 import { ToolSandboxError } from "../seams/tool-sandbox";
+import type { ToolchainRef } from "./descriptor";
+
+const BUNDLE_TARGET = "es2022";
+
+/** The toolchain (esbuild version + target) recorded into the descriptor so a
+ *  re-collect on a different esbuild is not falsely claimed byte-identical. */
+export const toolchainRef = (): ToolchainRef => ({
+  bundler: "esbuild",
+  bundlerVersion: esbuildVersion,
+  target: BUNDLE_TARGET,
+});
 
 // ---------------------------------------------------------------------------
 // bundle — the FDI pipeline's bundle stage.
@@ -191,7 +202,7 @@ export const bundleEntry = (input: BundleInput): Effect.Effect<BundleOutput, Too
         write: false,
         format: "cjs",
         platform: "neutral",
-        target: "es2022",
+        target: BUNDLE_TARGET,
         minify: false,
         treeShaking: true,
         jsx: "automatic",

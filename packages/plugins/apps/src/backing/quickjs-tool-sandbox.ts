@@ -10,6 +10,7 @@ import {
   type InvokeResult,
   type ToolSandbox,
 } from "../seams/tool-sandbox";
+import { stableStringify } from "../pipeline/descriptor";
 
 // ---------------------------------------------------------------------------
 // QuickJS-backed ToolSandbox (self-hosted).
@@ -189,11 +190,13 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
   return {
     collect: (bundle: string) =>
       Effect.gen(function* () {
-        // Run twice, byte-compare (determinism gate).
+        // Run twice, byte-compare (determinism gate). Key-sorted stringify so a
+        // false mismatch never comes from property-order luck — a real
+        // divergence (Math.random / Date.now) still fails.
         const first = yield* runCollect(bundle);
         const second = yield* runCollect(bundle);
-        const a = JSON.stringify(first);
-        const b = JSON.stringify(second);
+        const a = stableStringify(first);
+        const b = stableStringify(second);
         if (a !== b) {
           return yield* Effect.fail(
             new ToolSandboxError({
