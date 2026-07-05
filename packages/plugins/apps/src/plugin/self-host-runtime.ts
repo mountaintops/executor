@@ -6,6 +6,7 @@ import { makeGitArtifactStore } from "../backing/git-artifact-store";
 import { makeLibsqlScopeDb } from "../backing/libsql-scope-db";
 import { makeQuickjsToolSandbox } from "../backing/quickjs-tool-sandbox";
 import { makeSqliteWorkflowRunner } from "../backing/sqlite-workflow-runner";
+import { makeQuickjsWorkflowDriver } from "../backing/quickjs-workflow-driver";
 import { makeInProcessLiveChannel } from "../backing/in-process-live-channel";
 import type { ScopeDb } from "../seams/scope-db";
 import type { LiveChannel } from "../seams/live-channel";
@@ -49,8 +50,14 @@ export const makeSelfHostAppsRuntime = (
     root: inMem ? ":memory:" : join(options.dataDir, "scope-db"),
   });
   const sandbox = makeQuickjsToolSandbox();
+  // The workflow body runs inside the sandbox (Fix 3): the driver loads the
+  // pinned bundle from the artifact store and drives one replay in QuickJS
+  // behind the serializable step bridge. The runner services the bridge against
+  // its journal.
+  const workflowDriver = makeQuickjsWorkflowDriver({ artifactStore });
   const workflows = makeSqliteWorkflowRunner({
     path: inMem ? ":memory:" : join(options.dataDir, "workflows", "journal.db"),
+    driver: workflowDriver,
   });
   const liveChannel = makeInProcessLiveChannel();
 

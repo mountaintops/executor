@@ -3,6 +3,14 @@ import { Effect } from "effect";
 import type { AppDescriptor } from "../pipeline/descriptor";
 import type { AppsStore } from "../plugin/store";
 import type { ClientResolver, BindingError } from "../plugin/bindings";
+import {
+  ArtifactStoreError,
+  asSnapshotId,
+  type ArtifactStore,
+  type FileSet,
+  type ScopeArtifactStore,
+  type SnapshotId,
+} from "../seams/artifact-store";
 
 // ---------------------------------------------------------------------------
 // Test helpers: an in-memory AppsStore and a canned ClientResolver, plus the
@@ -28,6 +36,52 @@ export const makeInMemoryAppsStore = (): AppsStore & {
     getBlob: (key) => Effect.sync(() => blobs.get(key) ?? null),
   };
 };
+
+/** An in-memory ArtifactStore for conformance/unit tests: content-addressed by
+ *  a monotonic counter (a stand-in commit hash). Immutable once committed, which
+ *  is all the WorkflowDriver / bundle-loader path needs. */
+export const makeInMemoryArtifactStore = (): ArtifactStore => {
+  const scopes = new Map<string, Map<string, FileSet>>();
+  const order = new Map<string, string[]>();
+  let counter = 0;
+  const forScope = (scope: string): ScopeArtifactStore => {
+    const snaps = scopes.get(scope) ?? new Map<string, FileSet>();
+    scopes.set(scope, snaps);
+    const seq = order.get(scope) ?? [];
+    order.set(scope, seq);
+    return {
+      commit: (files, message) =>
+        Effect.sync(() => {
+          const id = `mem${(++counter).toString(16).padStart(40, "0")}`;
+          snaps.set(id, new Map(files));
+          seq.push(id);
+          return { id: asSnapshotId(id), message, committedAt: Date.now() };
+        }),
+      read: (id) =>
+        snaps.has(id)
+          ? Effect.succeed(snaps.get(id)!)
+          : Effect.fail(new ArtifactStoreError({ message: `no snapshot ${id}` })),
+      readFile: (id, path) => Effect.succeed(snaps.get(id)?.get(path) ?? null),
+      list: (id) => Effect.succeed([...(snaps.get(id)?.keys() ?? [])]),
+      latest: () =>
+        Effect.sync(() => {
+          const last = seq.at(-1);
+          if (!last) return null;
+          return { id: asSnapshotId(last), message: "latest", committedAt: Date.now() };
+        }),
+      log: (limit) =>
+        Effect.sync(() =>
+          [...seq]
+            .reverse()
+            .slice(0, limit ?? seq.length)
+            .map((id) => ({ id: asSnapshotId(id), message: "", committedAt: Date.now() })),
+        ),
+    };
+  };
+  return { forScope: (scope) => Effect.succeed(forScope(scope)) };
+};
+
+export type { SnapshotId };
 
 /** A resolver that dispatches integration method calls to supplied handlers.
  *  `handlers[integration][path.join(".")]` returns the JSON result. */

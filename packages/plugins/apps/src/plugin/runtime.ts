@@ -4,7 +4,7 @@ import type { ArtifactStore } from "../seams/artifact-store";
 import type { ScopeDb } from "../seams/scope-db";
 import type { ToolSandbox } from "../seams/tool-sandbox";
 import type { LiveChannel } from "../seams/live-channel";
-import type { DurableSteps, WorkflowRunner, RunView, StepView } from "../seams/workflow-runner";
+import type { WorkflowRunner, WorkflowBindings, RunView, StepView } from "../seams/workflow-runner";
 import {
   publish as runPublish,
   loadDescriptorFromSnapshot,
@@ -13,7 +13,7 @@ import {
   type PublishOutput,
 } from "../pipeline/publish";
 import { PublishError } from "../pipeline/discover";
-import type { AppDescriptor, ToolDescriptor, WorkflowDescriptor } from "../pipeline/descriptor";
+import type { AppDescriptor, ToolDescriptor } from "../pipeline/descriptor";
 import { bundleEntry } from "../pipeline/bundle";
 import {
   buildBridge,
@@ -242,41 +242,17 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       return result.output;
     });
 
-  // Build the workflow body closure for one run: replay the workflow's compiled
-  // bundle over the DurableSteps. Our sandbox runs a tool handler, not a
-  // long-lived stepful body, so we drive the workflow with a thin interpreter:
-  // the workflow's `run(step, {db})` is executed in-process against the
-  // DurableSteps facade, with `step.tool` -> the runner bindings and
-  // `db.sql` -> the scope db. This keeps CF semantics while the durable journal
-  // lives in the WorkflowRunner seam.
-  const workflowBody = (
-    scope: string,
-    descriptor: AppDescriptor,
-    wfDesc: WorkflowDescriptor,
-  ): ((steps: DurableSteps) => Promise<unknown>) => {
-    return async (steps: DurableSteps) => {
-      const code = await Effect.runPromise(
-        bundleFor(descriptor, wfDesc.sourcePath).pipe(Effect.orDie),
-      );
-      const db = await Effect.runPromise(deps.scopeDb.forScope(scope).pipe(Effect.orDie));
-      // Interpret the workflow: run its bundle in the sandbox is not how durable
-      // steps work (the body must call back into our journaled `steps`). Instead
-      // we evaluate the workflow module here and invoke its `run(step, {db})`.
-      // The compiled bundle sets globalThis.__artifact = the workflow def.
-      const def = extractWorkflowDef(code);
-      const scopeDbClient = {
-        sql: (strings: TemplateStringsArray, ...values: unknown[]) =>
-          Effect.runPromise(db.sql(strings, ...values).pipe(Effect.orDie)),
-      };
-      return def.run(steps, { db: scopeDbClient });
-    };
-  };
-
-  const bindingsForRunTool = (
+  // Build the per-run WorkflowBindings the sandboxed body reaches out through:
+  // `step.tool` -> the real tool-invoke path, `db.sql` -> the scope db,
+  // `notify` -> the self-host sink. Everything is JSON in/out (the body runs in
+  // the sandbox; the runner services the bridge here). The workflow body itself
+  // is loaded from the pinned snapshot and driven inside the sandbox by the
+  // WorkflowDriver — no in-process `new Function` interpreter anymore.
+  const bindingsForRun = (
     scope: string,
     descriptor: AppDescriptor,
     recordedBindings: Bindings,
-  ) => ({
+  ): WorkflowBindings => ({
     runTool: async (address: string, toolArgs: unknown) => {
       const toolDesc = descriptor.tools.find((t) => t.name === address);
       if (!toolDesc) throw new Error(`workflow step.tool: unknown tool "${address}"`);
@@ -299,6 +275,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     notify: async (_msg: { title: string; body?: string; link?: string }) => {
       // Self-host delivery sink: recorded as a journaled step; a real host wires
       // this to notifications. No-op body here keeps the workflow durable.
+    },
+    runDb: async (dbScope: string, sql: string, params: readonly unknown[]) => {
+      const db = await Effect.runPromise(deps.scopeDb.forScope(dbScope).pipe(Effect.orDie));
+      // The workflow shim sends a `?`-parameterized statement; run it via the
+      // scope db's exec path (a plain string statement with positional params).
+      return Effect.runPromise(db.exec(sql, params as unknown[]).pipe(Effect.orDie));
     },
   });
 
@@ -375,18 +357,17 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           );
         }
         const bindings = input.bindings ?? {};
-        const body = workflowBody(input.scope, descriptor, wfDesc);
         return yield* deps.workflows
           .start(
             {
               scope: input.scope,
               workflow: input.workflow,
               snapshotId: descriptor.snapshotId,
+              entryPath: wfDesc.sourcePath,
               input: input.input ?? {},
               runId: input.runId,
             },
-            body,
-            bindingsForRunTool(input.scope, descriptor, bindings),
+            bindingsForRun(input.scope, descriptor, bindings),
           )
           .pipe(
             Effect.mapError(
@@ -424,14 +405,12 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             }),
           );
         }
-        const body = workflowBody(run.scope, descriptor, wfDesc);
         return yield* deps.workflows
           .signal(
             input.runId,
             input.event,
             input.payload,
-            body,
-            bindingsForRunTool(run.scope, descriptor, {}),
+            bindingsForRun(run.scope, descriptor, {}),
           )
           .pipe(
             Effect.mapError(
@@ -466,49 +445,4 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         listener({ table: event.table, version: event.version }),
       ),
   };
-};
-
-// Extract the workflow def from a compiled bundle by running it in a tiny
-// module shim (Node-side, trusted: this is our own runtime, not user isolation
-// for the durable interpreter — the tool HANDLERS still run in the sandbox).
-// The bundle set globalThis.__artifact to the workflow def object.
-const extractWorkflowDef = (
-  code: string,
-): { run: (steps: DurableSteps, deps: { db: unknown }) => Promise<unknown> } => {
-  const g: Record<string, unknown> = {};
-  const shim = {
-    connection: (integration: string, opts?: { description?: string }) => ({
-      __decl: "single",
-      integration,
-      description: opts?.description,
-    }),
-    connections: (integration: string) => ({ __decl: "array", integration }),
-    catalog: () => ({ __decl: "catalog" }),
-    defineTool: (def: unknown) => {
-      g.__artifact = def;
-      return def;
-    },
-    defineWorkflow: (def: unknown) => {
-      g.__artifact = def;
-      return def;
-    },
-  };
-  const req = (id: string) => {
-    if (id === "executor:app") return shim;
-    if (id === "executor:ui") return {};
-    if (id === "executor:ui/components") return {};
-    throw new Error(`module not available: ${id}`);
-  };
-  const moduleObj = { exports: {} as Record<string, unknown> };
-  const globalThisShim = g as unknown as typeof globalThis;
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-  const factory = new Function("module", "exports", "require", "globalThis", code);
-  factory(moduleObj, moduleObj.exports, req, globalThisShim);
-  const def = (g.__artifact ?? moduleObj.exports.default ?? moduleObj.exports) as {
-    run: (steps: DurableSteps, deps: { db: unknown }) => Promise<unknown>;
-  };
-  if (!def || typeof def.run !== "function") {
-    throw new Error("workflow bundle did not produce a run() function");
-  }
-  return def;
 };
