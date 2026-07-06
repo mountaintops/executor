@@ -206,7 +206,7 @@ function SidebarContent(props: {
 
         {/* Sources list */}
         <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          <span>Integrations</span>
+          <a href="/">Integrations</a>
         </div>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
