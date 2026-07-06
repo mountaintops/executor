@@ -1,6 +1,6 @@
 import { build, version as esbuildVersion } from "esbuild";
 
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import { ToolSandboxError } from "../seams/tool-sandbox";
 import type { ToolchainRef } from "./descriptor";
@@ -51,6 +51,25 @@ export interface BundleInput {
 export interface BundleOutput {
   readonly code: string;
 }
+
+const EsbuildDiagnostic = Schema.Struct({
+  text: Schema.String,
+});
+
+const EsbuildFailure = Schema.Struct({
+  errors: Schema.Array(EsbuildDiagnostic),
+});
+
+const decodeEsbuildFailure = Schema.decodeUnknownOption(EsbuildFailure);
+
+const bundleFailureMessage = (entry: string, cause: unknown): string => {
+  const decoded = Option.getOrNull(decodeEsbuildFailure(cause));
+  const detail = decoded?.errors
+    .map((error) => error.text)
+    .filter((text) => text.length > 0)
+    .join("; ");
+  return detail ? `bundle failed for ${entry}: ${detail}` : `bundle failed for ${entry}`;
+};
 
 const resolveRelative = (base: string, rel: string): string => {
   const parts = (base ? base.split("/") : []).concat(rel.split("/"));
@@ -166,8 +185,8 @@ const fileSetPlugin = (files: ReadonlyMap<string, string>, authorEntry: string) 
 /** Bundle one entry from the file set to a single CJS string. */
 export const bundleEntry = (input: BundleInput): Effect.Effect<BundleOutput, ToolSandboxError> =>
   Effect.tryPromise({
-    try: async () => {
-      const result = await build({
+    try: () =>
+      build({
         entryPoints: [VIRTUAL_ENTRY],
         bundle: true,
         write: false,
@@ -180,15 +199,23 @@ export const bundleEntry = (input: BundleInput): Effect.Effect<BundleOutput, Too
         logLevel: "silent",
         external: [...PLATFORM_MODULES],
         plugins: [fileSetPlugin(input.files, input.entry) as never],
-      });
-      const out = result.outputFiles?.[0]?.text;
-      if (out === undefined) throw new Error("esbuild produced no output");
-      return { code: out };
-    },
+      }),
     catch: (cause) =>
       new ToolSandboxError({
         kind: "bundle",
-        message: `bundle failed for ${input.entry}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: bundleFailureMessage(input.entry, cause),
         cause,
       }),
-  });
+  }).pipe(
+    Effect.flatMap((result) => {
+      const out = result.outputFiles?.[0]?.text;
+      return out === undefined
+        ? Effect.fail(
+            new ToolSandboxError({
+              kind: "bundle",
+              message: `bundle failed for ${input.entry}: esbuild produced no output`,
+            }),
+          )
+        : Effect.succeed({ code: out });
+    }),
+  );

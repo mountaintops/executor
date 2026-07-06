@@ -1,4 +1,4 @@
-import { Data, Effect, Result } from "effect";
+import { Data, Effect, Predicate, Result, Schema } from "effect";
 
 import { PublishError, type FileDiagnostic } from "../pipeline/discover";
 import { PUBLISH_LIMITS, enforcePublishLimits } from "../pipeline/publish";
@@ -106,37 +106,42 @@ const requestJson = <A>(
   input: GitHubSourceInput,
   path: string,
 ): Effect.Effect<A, GitHubSourceError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const fetchImpl = input.fetch ?? globalThis.fetch;
-      const headers: Record<string, string> = {
-        accept: "application/vnd.github+json",
-        "user-agent": "executor-apps-github-source",
-      };
-      if (input.token) headers.authorization = `Bearer ${input.token}`;
-      const response = await fetchImpl(
-        `${trimBaseUrl(input.baseUrl ?? "https://api.github.com")}${path}`,
-        {
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: async () => {
+        const fetchImpl = input.fetch ?? globalThis.fetch;
+        const headers: Record<string, string> = {
+          accept: "application/vnd.github+json",
+          "user-agent": "executor-apps-github-source",
+        };
+        if (input.token) headers.authorization = `Bearer ${input.token}`;
+        return fetchImpl(`${trimBaseUrl(input.baseUrl ?? "https://api.github.com")}${path}`, {
           headers,
-        },
-      );
-      if (!response.ok) {
-        throw new GitHubSourceError({
-          message: `GitHub request failed: GET ${path} -> ${response.status}`,
-          status: response.status,
-          path,
         });
-      }
-      return (await response.json()) as A;
-    },
-    catch: (cause) =>
-      cause instanceof GitHubSourceError
-        ? cause
-        : new GitHubSourceError({
-            message: `GitHub request failed: GET ${path}`,
-            path,
-            cause,
-          }),
+      },
+      catch: (cause) =>
+        new GitHubSourceError({
+          message: `GitHub request failed: GET ${path}`,
+          path,
+          cause,
+        }),
+    });
+    if (!response.ok) {
+      return yield* new GitHubSourceError({
+        message: `GitHub request failed: GET ${path} -> ${response.status}`,
+        status: response.status,
+        path,
+      });
+    }
+    return yield* Effect.tryPromise({
+      try: () => response.json() as Promise<A>,
+      catch: (cause) =>
+        new GitHubSourceError({
+          message: `GitHub response was not valid JSON: GET ${path}`,
+          path,
+          cause,
+        }),
+    });
   });
 
 interface RepoResponse {
@@ -254,42 +259,39 @@ const classifyTreeEntry = (
 };
 
 const decodeBlob = (path: string, blob: BlobResponse): Effect.Effect<string, GitHubSourceError> =>
-  Effect.try({
-    try: () => {
-      const encoding = asString(blob.encoding);
-      const content = asString(blob.content);
-      if (!content || encoding !== "base64") {
-        throw new GitHubSourceError({
-          message: `GitHub blob ${path} did not return base64 content`,
-          path,
-        });
-      }
-      return Buffer.from(content.replace(/\s/g, ""), "base64").toString("utf8");
-    },
-    catch: (cause) =>
-      cause instanceof GitHubSourceError
-        ? cause
-        : new GitHubSourceError({ message: `Failed to decode GitHub blob ${path}`, path, cause }),
+  Effect.gen(function* () {
+    const encoding = asString(blob.encoding);
+    const content = asString(blob.content);
+    if (!content || encoding !== "base64") {
+      return yield* new GitHubSourceError({
+        message: `GitHub blob ${path} did not return base64 content`,
+        path,
+      });
+    }
+    return Buffer.from(content.replace(/\s/g, ""), "base64").toString("utf8");
   });
+
+const decodeExecutorJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
 const executorDescription = (
   files: FileSet,
 ): Effect.Effect<string | undefined, GitHubSourceError> =>
-  Effect.try({
-    try: () => {
-      const raw = files.get("executor.json");
-      if (!raw) return undefined;
-      const parsed = JSON.parse(raw) as unknown;
-      if (!isRecord(parsed)) return undefined;
-      const description = parsed.description;
-      return typeof description === "string" ? description : undefined;
-    },
-    catch: (cause) =>
-      new GitHubSourceError({
-        message: "executor.json is not valid JSON",
-        path: "executor.json",
-        cause,
-      }),
+  Effect.gen(function* () {
+    const raw = files.get("executor.json");
+    if (!raw) return undefined;
+    const parsed = yield* decodeExecutorJson(raw).pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitHubSourceError({
+            message: "executor.json is not valid JSON",
+            path: "executor.json",
+            cause,
+          }),
+      ),
+    );
+    if (!isRecord(parsed)) return undefined;
+    const description = parsed.description;
+    return typeof description === "string" ? description : undefined;
   });
 
 export const fetchGitHubSource = (
@@ -336,7 +338,7 @@ export const fetchGitHubSource = (
       else skipped.push(classified.skipped);
     }
     const treeLimitError = checkTreeLimits(entries);
-    if (treeLimitError) return yield* Effect.fail(treeLimitError);
+    if (treeLimitError) return yield* treeLimitError;
 
     const files = new Map<string, string>();
     for (const entry of entries) {
@@ -348,7 +350,7 @@ export const fetchGitHubSource = (
       files.set(path, yield* decodeBlob(path, blob));
     }
     const payloadLimitError = enforcePublishLimits(files);
-    if (payloadLimitError) return yield* Effect.fail(payloadLimitError);
+    if (payloadLimitError) return yield* payloadLimitError;
 
     return {
       files,
@@ -360,17 +362,22 @@ export const fetchGitHubSource = (
     };
   });
 
-const publishErrorToSyncError = (error: PublishError): SyncErrorData => ({
-  stage: error.stage,
-  message: error.message,
-  diagnostics: error.diagnostics,
-});
+const publishErrorToSyncError = (publishFailure: PublishError): SyncErrorData => {
+  const stage = publishFailure.stage;
+  const message = publishFailure.message;
+  const diagnostics = publishFailure.diagnostics;
+  return { stage, message, diagnostics };
+};
 
-const sourceErrorToSyncError = (error: GitHubSourceError): SyncErrorData => ({
-  stage: "source",
-  message: error.message,
-  diagnostics: error.path ? [{ path: error.path, message: error.message }] : [],
-});
+const sourceErrorToSyncError = (sourceFailure: GitHubSourceError): SyncErrorData => {
+  const message = sourceFailure.message;
+  const path = sourceFailure.path;
+  return {
+    stage: "source",
+    message,
+    diagnostics: path ? [{ path, message }] : [],
+  };
+};
 
 const sourceRef = (snapshot: GitHubSourceSnapshot, connection?: string): AppSourceRef => ({
   kind: "github",
@@ -391,7 +398,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
         tools: [],
         skipped: [],
         errors: [
-          error instanceof PublishError
+          Predicate.isTagged("PublishError")(error)
             ? publishErrorToSyncError(error)
             : sourceErrorToSyncError(error),
         ],

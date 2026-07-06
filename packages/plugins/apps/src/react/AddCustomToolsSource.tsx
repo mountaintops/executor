@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import { Effect, Exit } from "effect";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
 import { connectionsAllAtom } from "@executor-js/react/api/atoms";
@@ -20,7 +21,7 @@ import {
   consoleIntegrationHref,
   formatSyncErrors,
   githubConnections,
-  syncCustomToolSource,
+  syncCustomToolSourceEffect,
   syncStatusLabel,
   validateGitHubRepo,
 } from "./custom-tools-client";
@@ -54,23 +55,26 @@ export default function AddCustomToolsSource(props: {
     if (validation || !selectedConnection) return;
 
     setSyncing(true);
-    try {
-      const result = await syncCustomToolSource({
+    const exit = await Effect.runPromiseExit(
+      syncCustomToolSourceEffect({
         repo,
         ref,
         connection: selectedConnection,
-      });
-      if (result.status === "failed") {
-        setSyncError(formatSyncErrors(result).join("\n") || "Sync failed.");
-        setSyncing(false);
-        return;
-      }
-      toast.success(syncStatusLabel(result));
-      props.onComplete("apps");
-    } catch (error) {
-      setSyncError(error instanceof Error ? error.message : "Failed to sync custom tools.");
+      }),
+    );
+    if (Exit.isFailure(exit)) {
+      setSyncError("Failed to sync custom tools.");
       setSyncing(false);
+      return;
     }
+    const result = exit.value;
+    if (result.status === "failed") {
+      setSyncError(formatSyncErrors(result).join("\n") || "Sync failed.");
+      setSyncing(false);
+      return;
+    }
+    toast.success(syncStatusLabel(result));
+    props.onComplete("apps");
   };
 
   return (

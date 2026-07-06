@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
@@ -85,14 +85,13 @@ ${bundle}
 })(module, exports, require);
 `;
 
+const decodeJsonMarker = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
 const parseMarker = (message: string): unknown => {
-  const parse = (text: string): unknown => {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  };
+  const parse = (text: string): unknown => Option.getOrNull(decodeJsonMarker(text));
   const direct = parse(message);
   if (direct) return direct;
   const firstBrace = message.indexOf("{");
@@ -104,15 +103,20 @@ const parseMarker = (message: string): unknown => {
 };
 
 const isMarker = (value: unknown, tag: string): value is Record<string, unknown> => {
-  if (value === null || typeof value !== "object") return false;
-  return (value as { readonly _tag?: unknown })._tag === tag;
+  if (!isRecord(value)) return false;
+  return Predicate.isTagged(tag)(value);
 };
 
 const markerMessage = (marker: Record<string, unknown>, fallback: string): string =>
   typeof marker.message === "string" ? marker.message : fallback;
 
 const markerIssues = (marker: Record<string, unknown>): readonly ValidationIssue[] =>
-  Array.isArray(marker.issues) ? (marker.issues as readonly ValidationIssue[]) : [];
+  Array.isArray(marker.issues) ? marker.issues.filter(isValidationIssue) : [];
+
+const isValidationIssue = (value: unknown): value is ValidationIssue =>
+  isRecord(value) &&
+  typeof value.message === "string" &&
+  (value.path === undefined || Array.isArray(value.path));
 
 // Collect driver: describe the artifact's integrations + input/output schema.
 // Deterministic JSON only — no handler execution.
@@ -236,7 +240,10 @@ const buildInvokeCode = (bundle: string, request: InvokeRequest): string =>
 // A no-op invoker for collect: no handle calls should happen; if they do
 // (misbehaving describe path), fail loudly.
 const collectInvoker: SandboxToolInvoker = {
-  invoke: () => Effect.fail(new Error("collect must not make handle calls")) as never,
+  invoke: () =>
+    Effect.fail(
+      new ToolSandboxError({ kind: "collect", message: "collect must not make handle calls" }),
+    ),
 };
 
 export interface QuickjsToolSandboxOptions {
@@ -286,13 +293,11 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
         const a = stableStringify(first);
         const b = stableStringify(second);
         if (a !== b) {
-          return yield* Effect.fail(
-            new ToolSandboxError({
-              kind: "nondeterministic",
-              message:
-                "descriptor collection is non-deterministic (an artifact read Math.random/Date.now or otherwise diverged between runs)",
-            }),
-          );
+          return yield* new ToolSandboxError({
+            kind: "nondeterministic",
+            message:
+              "descriptor collection is non-deterministic (an artifact read Math.random/Date.now or otherwise diverged between runs)",
+          });
         }
         const descriptor = first as { artifact?: string };
         const result: CollectResult = {
@@ -318,8 +323,11 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
             // through an unexpected channel.
             if (input.path !== "__handle__") {
               return Effect.fail(
-                new Error(`unexpected sandbox bridge path: ${input.path}`),
-              ) as never;
+                new ToolSandboxError({
+                  kind: "invoke",
+                  message: `unexpected sandbox bridge path: ${input.path}`,
+                }),
+              );
             }
             const call = input.args as {
               root: string;
@@ -327,7 +335,9 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
               args: readonly unknown[];
             };
             if (!call || typeof call.root !== "string" || !Array.isArray(call.path)) {
-              return Effect.fail(new Error("malformed sandbox bridge call")) as never;
+              return Effect.fail(
+                new ToolSandboxError({ kind: "invoke", message: "malformed sandbox bridge call" }),
+              );
             }
             return bridge.call({ root: call.root, path: call.path, args: call.args }) as never;
           },
@@ -343,24 +353,18 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
         if (result.error) {
           const marker = parseMarker(result.error);
           if (isMarker(marker, "InputValidationError")) {
-            return yield* Effect.fail(
-              new InputValidationError({
-                message: markerMessage(marker, "input validation failed"),
-                issues: markerIssues(marker),
-              }),
-            );
+            return yield* new InputValidationError({
+              message: markerMessage(marker, "input validation failed"),
+              issues: markerIssues(marker),
+            });
           }
           if (isMarker(marker, "OutputValidationError")) {
-            return yield* Effect.fail(
-              new OutputValidationError({
-                message: markerMessage(marker, "output validation failed"),
-                issues: markerIssues(marker),
-              }),
-            );
+            return yield* new OutputValidationError({
+              message: markerMessage(marker, "output validation failed"),
+              issues: markerIssues(marker),
+            });
           }
-          return yield* Effect.fail(
-            new ToolSandboxError({ kind: "invoke", message: result.error }),
-          );
+          return yield* new ToolSandboxError({ kind: "invoke", message: result.error });
         }
         return { output: result.result, logs: result.logs ?? [] } satisfies InvokeResult;
       }),

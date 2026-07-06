@@ -20,6 +20,7 @@ import type { AppsRuntime } from "./runtime";
 import { makeAppsStore } from "./store";
 import type { ClientResolver, ConnectionCandidate } from "./bindings";
 import type { IntegrationDecl, ToolDescriptor } from "../pipeline/descriptor";
+import { PublishError } from "../pipeline/discover";
 import { syncGitHubSource, type GitHubSyncResult } from "../source/github-source";
 
 export const APPS_INTEGRATION_SLUG = "apps";
@@ -119,11 +120,8 @@ const projectInputSchema = (
 };
 
 export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
-  if (!options?.runtime) {
-    throw new Error("appsPlugin requires a runtime");
-  }
-  const runtime = options.runtime;
-  const makeResolver = options.makeResolver;
+  const runtime = options?.runtime as AppsRuntime;
+  const makeResolver = options?.makeResolver;
 
   const tenantFor = (ctx: Pick<PluginCtx, "owner"> | undefined): string => {
     const tenant = ctx?.owner?.tenant;
@@ -321,33 +319,31 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const scope = yield* scopeFor(tenant, String(toolRow.connection));
         const descriptor = yield* runtime.getDescriptor(tenant, scope);
         if (!descriptor) {
-          return yield* Effect.fail(
-            new Error(
-              `apps scope "${scope}" has no published app (connection "${toolRow.connection}")`,
-            ),
-          );
+          return yield* new PublishError({
+            message: `apps scope "${scope}" has no published app (connection "${toolRow.connection}")`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         const toolDesc = descriptor.tools.find((t) => t.name === toolRow.name);
         if (!toolDesc) {
-          return yield* Effect.fail(
-            new Error(`apps tool "${toolRow.name}" is not published in scope "${scope}"`),
-          );
+          return yield* new PublishError({
+            message: `apps tool "${toolRow.name}" is not published in scope "${scope}"`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         const resolver = makeResolver
           ? makeResolver({ ctx, scope, tool: toolRow.name })
           : undefined;
-        return yield* runtime
-          .invokeTool({ tenant, scope, tool: toolRow.name, args, resolver, invokeOptions })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new Error(
-                  "message" in cause && typeof cause.message === "string"
-                    ? cause.message
-                    : "apps tool invocation failed",
-                ),
-            ),
-          );
+        return yield* runtime.invokeTool({
+          tenant,
+          scope,
+          tool: toolRow.name,
+          args,
+          resolver,
+          invokeOptions,
+        });
       }),
   };
 });

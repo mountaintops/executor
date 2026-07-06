@@ -71,19 +71,6 @@ export interface BindingContext {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-const bindingError = (
-  role: string,
-  integration: string,
-  message: string,
-  requestedConnection?: string,
-): BindingError =>
-  new BindingError({
-    message,
-    role,
-    integration,
-    requestedConnection,
-  });
-
 const findDefaultConnection = (
   role: string,
   decl: IntegrationDecl,
@@ -93,15 +80,16 @@ const findDefaultConnection = (
     Effect.flatMap((connections) => {
       if (connections.length === 1) return Effect.succeed(connections[0]!.address);
       return Effect.fail(
-        bindingError(
+        new BindingError({
           role,
-          decl.integration,
-          connections.length === 0
-            ? `missing required connection for role "${role}" (${decl.integration}); no connections are available`
-            : `missing required connection for role "${role}" (${decl.integration}); choose one of ${connections
-                .map((c) => c.address)
-                .join(", ")}`,
-        ),
+          integration: decl.integration,
+          message:
+            connections.length === 0
+              ? `missing required connection for role "${role}" (${decl.integration}); no connections are available`
+              : `missing required connection for role "${role}" (${decl.integration}); choose one of ${connections
+                  .map((c) => c.address)
+                  .join(", ")}`,
+        }),
       );
     }),
   );
@@ -116,22 +104,22 @@ const resolveRequestedConnection = (
     Effect.flatMap((connection) => {
       if (!connection) {
         return Effect.fail(
-          bindingError(
+          new BindingError({
             role,
-            decl.integration,
-            `unknown connection "${requested}" for role "${role}" (${decl.integration})`,
-            requested,
-          ),
+            integration: decl.integration,
+            message: `unknown connection "${requested}" for role "${role}" (${decl.integration})`,
+            requestedConnection: requested,
+          }),
         );
       }
       if (connection.integration !== decl.integration) {
         return Effect.fail(
-          bindingError(
+          new BindingError({
             role,
-            decl.integration,
-            `connection "${requested}" belongs to integration "${connection.integration}", not "${decl.integration}" for role "${role}"`,
-            requested,
-          ),
+            integration: decl.integration,
+            message: `connection "${requested}" belongs to integration "${connection.integration}", not "${decl.integration}" for role "${role}"`,
+            requestedConnection: requested,
+          }),
         );
       }
       return Effect.succeed(connection.address);
@@ -168,14 +156,12 @@ export const resolveIntegrationBindings = (
         continue;
       }
       if (typeof raw !== "string" || raw.length === 0) {
-        return yield* Effect.fail(
-          bindingError(
-            role,
-            decl.integration,
-            `connection for role "${role}" (${decl.integration}) must be a non-empty string`,
-            typeof raw === "string" ? raw : undefined,
-          ),
-        );
+        return yield* new BindingError({
+          role,
+          integration: decl.integration,
+          message: `connection for role "${role}" (${decl.integration}) must be a non-empty string`,
+          ...(typeof raw === "string" ? { requestedConnection: raw } : {}),
+        });
       }
       bindings[role] = yield* resolveRequestedConnection(role, decl, raw, resolver);
     }
@@ -231,13 +217,16 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
     if (root === "db") {
       if (path.length === 1 && path[0] === "sql") {
         const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
-        return context.db
-          .sql(strings, ...values)
-          .pipe(
-            Effect.mapError(
-              (cause) => new ToolSandboxError({ kind: "invoke", message: cause.message, cause }),
-            ),
-          );
+        return context.db.sql(strings, ...values).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ToolSandboxError({
+                kind: "invoke",
+                message: "scope database call failed",
+                cause,
+              }),
+          ),
+        );
       }
       return Effect.fail(invokeErr(`unsupported db call: ${path.join(".")}`));
     }
@@ -274,7 +263,12 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
       })
       .pipe(
         Effect.mapError(
-          (cause) => new ToolSandboxError({ kind: "invoke", message: cause.message, cause }),
+          (cause) =>
+            new ToolSandboxError({
+              kind: "invoke",
+              message: "integration call failed",
+              cause,
+            }),
         ),
       );
   },

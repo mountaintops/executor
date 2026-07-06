@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Effect, Exit } from "effect";
 
 import { Alert, AlertDescription, AlertTitle } from "@executor-js/react/components/alert";
 import { Badge } from "@executor-js/react/components/badge";
@@ -17,8 +18,8 @@ import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
 import {
   consoleIntegrationHref,
   formatSyncErrors,
-  listCustomToolSources,
-  syncCustomToolSource,
+  listCustomToolSourcesEffect,
+  syncCustomToolSourceEffect,
   syncStatusLabel,
   toolDiff,
 } from "./custom-tools-client";
@@ -49,31 +50,33 @@ export default function CustomToolsAccountsPanel() {
 
   const loadSources = async () => {
     setLoadState({ status: "loading" });
-    try {
-      const result = await listCustomToolSources();
-      setLoadState({ status: "ready", sources: result.sources });
-      setSelectedScope((current) => current ?? result.sources[0]?.scope ?? null);
-    } catch (error) {
+    const exit = await Effect.runPromiseExit(listCustomToolSourcesEffect());
+    if (Exit.isFailure(exit)) {
       setLoadState({
         status: "error",
-        message: error instanceof Error ? error.message : "Failed to load custom tool sources.",
+        message: "Failed to load custom tool sources.",
       });
+      return;
     }
+    const result = exit.value;
+    setLoadState({ status: "ready", sources: result.sources });
+    setSelectedScope((current) => current ?? result.sources[0]?.scope ?? null);
   };
 
   useEffect(() => {
     let active = true;
     void (async () => {
-      try {
-        const result = await listCustomToolSources();
+      const exit = await Effect.runPromiseExit(listCustomToolSourcesEffect());
+      if (Exit.isSuccess(exit)) {
         if (!active) return;
+        const result = exit.value;
         setLoadState({ status: "ready", sources: result.sources });
         setSelectedScope(result.sources[0]?.scope ?? null);
-      } catch (error) {
+      } else {
         if (!active) return;
         setLoadState({
           status: "error",
-          message: error instanceof Error ? error.message : "Failed to load custom tool sources.",
+          message: "Failed to load custom tool sources.",
         });
       }
     })();
@@ -83,10 +86,7 @@ export default function CustomToolsAccountsPanel() {
   }, []);
 
   const sources = loadState.status === "ready" ? loadState.sources : [];
-  const selected = useMemo(
-    () => sources.find((source) => source.scope === selectedScope) ?? sources[0] ?? null,
-    [sources, selectedScope],
-  );
+  const selected = sources.find((source) => source.scope === selectedScope) ?? sources[0] ?? null;
 
   const syncSelected = async (source: GitHubCustomToolsSourceSummary) => {
     if (!source.connection) {
@@ -102,35 +102,37 @@ export default function CustomToolsAccountsPanel() {
     setSyncingScope(source.scope);
     setNotice(null);
     const beforeTools = source.tools;
-    try {
-      const result = await syncCustomToolSource({
+    const exit = await Effect.runPromiseExit(
+      syncCustomToolSourceEffect({
         repo: source.repo,
         ref: source.ref,
         connection: source.connection,
-      });
-      const diff =
-        result.status === "failed"
-          ? { added: [], removed: [] }
-          : toolDiff(beforeTools, result.tools);
-      setNotice({
-        status: result.status,
-        message: syncStatusLabel(result),
-        added: diff.added,
-        removed: diff.removed,
-        errors: formatSyncErrors(result),
-      });
-      if (result.status !== "failed") {
-        await loadSources();
-        setSelectedScope(source.scope);
-      }
-    } catch (error) {
+      }),
+    );
+    if (Exit.isFailure(exit)) {
       setNotice({
         status: "failed",
         message: "Sync failed.",
         added: [],
         removed: [],
-        errors: [error instanceof Error ? error.message : "Failed to sync custom tools."],
+        errors: ["Failed to sync custom tools."],
       });
+      setSyncingScope(null);
+      return;
+    }
+    const result = exit.value;
+    const diff =
+      result.status === "failed" ? { added: [], removed: [] } : toolDiff(beforeTools, result.tools);
+    setNotice({
+      status: result.status,
+      message: syncStatusLabel(result),
+      added: diff.added,
+      removed: diff.removed,
+      errors: formatSyncErrors(result),
+    });
+    if (result.status !== "failed") {
+      await loadSources();
+      setSelectedScope(source.scope);
     }
     setSyncingScope(null);
   };
@@ -181,16 +183,17 @@ export default function CustomToolsAccountsPanel() {
                   asChild
                   searchText={`${source.repo} ${source.ref}`}
                 >
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
                     onClick={() => {
                       setSelectedScope(source.scope);
                       setNotice(null);
                     }}
                     className={
                       selected?.scope === source.scope
-                        ? "bg-muted/70 text-left"
-                        : "bg-transparent text-left"
+                        ? "h-auto w-full justify-start bg-muted/70 p-0 text-left"
+                        : "h-auto w-full justify-start bg-transparent p-0 text-left"
                     }
                   >
                     <CardStackEntryContent>
@@ -200,7 +203,7 @@ export default function CustomToolsAccountsPanel() {
                     <CardStackEntryActions>
                       <Badge variant="secondary">{source.tools.length}</Badge>
                     </CardStackEntryActions>
-                  </button>
+                  </Button>
                 </CardStackEntry>
               ))}
             </CardStackContent>

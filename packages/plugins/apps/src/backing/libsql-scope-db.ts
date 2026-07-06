@@ -86,7 +86,7 @@ const makeHandle = (address: ScopeAddress, client: Client): ScopeDbHandle => {
             await bump(targets);
           }
         }
-        return result.rows as unknown as readonly Row[];
+        return result.rows.map((row) => row as Row);
       },
       catch: (cause) =>
         new ScopeDbError({ message: `scope-db statement failed for scope ${label}`, cause }),

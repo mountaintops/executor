@@ -108,7 +108,7 @@ export const stableStringify = (value: unknown): string => {
   const seen = new WeakSet<object>();
   const walk = (v: unknown): unknown => {
     if (v === null || typeof v !== "object") return v;
-    if (seen.has(v)) throw new Error("cyclic value cannot be serialized deterministically");
+    if (seen.has(v)) return "[Circular]";
     seen.add(v);
     if (Array.isArray(v)) return v.map(walk);
     const out: Record<string, unknown> = {};

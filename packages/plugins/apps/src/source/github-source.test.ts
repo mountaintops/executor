@@ -2,8 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { makeSelfHostAppsRuntime } from "../plugin/self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
@@ -208,7 +208,7 @@ describe("GitHub custom-tools source", () => {
     const exit = await Effect.runPromiseExit(
       fetchGitHubSource({ repo: "acme/tools", fetch: github.fetch }),
     );
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("exceeding the limit");
     expect(github.blobCalls()).toBe(0);
   });

@@ -2,8 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver, dailyBriefFileSet } from "../testing";
@@ -157,11 +157,10 @@ export default defineTool({
       host.runtime.invokeTool({ scope: "s", tool: "sync", args: {} }),
     );
 
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag !== "Failure") throw new Error("expected missing connection failure");
-    expect(JSON.stringify(exit.cause)).toContain("BindingError");
-    expect(JSON.stringify(exit.cause)).toContain("crm");
-    expect(JSON.stringify(exit.cause)).toContain("dealcloud");
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("BindingError");
+    expect(JSON.stringify(exit)).toContain("crm");
+    expect(JSON.stringify(exit)).toContain("dealcloud");
     await host.close();
   });
 
@@ -204,12 +203,11 @@ export default defineTool({
       }),
     );
 
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag !== "Failure") throw new Error("expected wrong integration failure");
-    expect(JSON.stringify(exit.cause)).toContain("BindingError");
-    expect(JSON.stringify(exit.cause)).toContain("github");
-    expect(JSON.stringify(exit.cause)).toContain("dealcloud");
-    expect(JSON.stringify(exit.cause)).toContain("tools.github.user.main");
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("BindingError");
+    expect(JSON.stringify(exit)).toContain("github");
+    expect(JSON.stringify(exit)).toContain("dealcloud");
+    expect(JSON.stringify(exit)).toContain("tools.github.user.main");
     await host.close();
   });
 

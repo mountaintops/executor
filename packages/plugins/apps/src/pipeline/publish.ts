@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 import type { ArtifactStore, FileSet, SnapshotId } from "../seams/artifact-store";
 import { scopeAddress } from "../seams/scope-address";
@@ -155,33 +155,39 @@ export interface PublishDeps {
   readonly sandbox: ToolSandbox;
 }
 
+const isPublishError = Predicate.isTagged("PublishError") as (
+  value: unknown,
+) => value is PublishError;
+
+const decodeDescriptorJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+
 const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp, PublishError> =>
   Effect.gen(function* () {
     const discovered = discover(files);
-    if (discovered instanceof PublishError) return yield* Effect.fail(discovered);
+    if (isPublishError(discovered)) return yield* discovered;
 
     const tools: ToolDescriptor[] = [];
 
     for (const artifact of discovered.artifacts) {
       const bundle = yield* bundleEntry({ files, entry: artifact.entry }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new PublishError({
-              message: cause.message,
-              stage: "bundle",
-              diagnostics: [{ path: artifact.entry, message: cause.message }],
-            }),
-        ),
+        Effect.mapError((bundleFailure) => {
+          const message = bundleFailure.message;
+          return new PublishError({
+            message,
+            stage: "bundle",
+            diagnostics: [{ path: artifact.entry, message }],
+          });
+        }),
       );
       const collected = yield* deps.sandbox.collect(bundle.code, { artifact: artifact.name }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new PublishError({
-              message: cause.message,
-              stage: "collect",
-              diagnostics: [{ path: artifact.entry, message: cause.message }],
-            }),
-        ),
+        Effect.mapError((collectFailure) => {
+          const message = collectFailure.message;
+          return new PublishError({
+            message,
+            stage: "collect",
+            diagnostics: [{ path: artifact.entry, message }],
+          });
+        }),
       );
       const raw = collected.artifacts.default?.descriptor as CollectedDescriptor | undefined;
       const keyed = collected.artifacts[artifact.name]?.descriptor as
@@ -189,13 +195,11 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         | undefined;
       const descriptor = keyed ?? raw;
       if (!descriptor) {
-        return yield* Effect.fail(
-          new PublishError({
-            message: `no descriptor collected from ${artifact.entry}`,
-            stage: "collect",
-            diagnostics: [{ path: artifact.entry, message: "defineTool did not run" }],
-          }),
-        );
+        return yield* new PublishError({
+          message: `no descriptor collected from ${artifact.entry}`,
+          stage: "collect",
+          diagnostics: [{ path: artifact.entry, message: "defineTool did not run" }],
+        });
       }
       const integrations = toIntegrationDecls(descriptor.integrations);
       const collision = rejectRoleInputCollisions(
@@ -204,7 +208,7 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         descriptor.inputJsonSchema,
         integrations,
       );
-      if (collision) return yield* Effect.fail(collision);
+      if (collision) return yield* collision;
       const source = yield* sourceRef(artifact.entry, files.get(artifact.entry) ?? "");
       tools.push({
         name: artifact.name,
@@ -247,19 +251,17 @@ export const publish = (
   Effect.gen(function* () {
     const tenant = input.tenant ?? "org";
     const overLimit = enforcePublishLimits(input.files);
-    if (overLimit) return yield* Effect.fail(overLimit);
+    if (overLimit) return yield* overLimit;
 
     const assembled = yield* assemble(deps, input.files);
     const body = descriptorBody(tenant, input.scope, assembled, input);
 
-    const scopeStore = yield* deps.artifactStore
-      .forScope(scopeAddress(tenant, input.scope))
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new PublishError({ message: cause.message, stage: "project", diagnostics: [] }),
-        ),
-      );
+    const scopeStore = yield* deps.artifactStore.forScope(scopeAddress(tenant, input.scope)).pipe(
+      Effect.mapError((storeFailure) => {
+        const message = storeFailure.message;
+        return new PublishError({ message, stage: "project", diagnostics: [] });
+      }),
+    );
 
     const filesWithDescriptor = new Map(input.files);
     filesWithDescriptor.set(DESCRIPTOR_SNAPSHOT_PATH, stableStringify(body));
@@ -267,10 +269,10 @@ export const publish = (
     const meta = yield* scopeStore
       .commit(filesWithDescriptor, input.commitMessage ?? `publish ${new Date().toISOString()}`)
       .pipe(
-        Effect.mapError(
-          (cause) =>
-            new PublishError({ message: cause.message, stage: "project", diagnostics: [] }),
-        ),
+        Effect.mapError((storeFailure) => {
+          const message = storeFailure.message;
+          return new PublishError({ message, stage: "project", diagnostics: [] });
+        }),
       );
 
     const descriptor: AppDescriptor = { ...body, snapshotId: meta.id };
@@ -285,21 +287,28 @@ export const loadDescriptorFromSnapshot = (
   snapshotId: SnapshotId,
 ): Effect.Effect<AppDescriptor | null, PublishError> =>
   Effect.gen(function* () {
-    const scopeStore = yield* store
-      .forScope(scopeAddress(tenant, scope))
-      .pipe(
-        Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-        ),
-      );
-    const raw = yield* scopeStore
-      .readFile(snapshotId, DESCRIPTOR_SNAPSHOT_PATH)
-      .pipe(
-        Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
-        ),
-      );
+    const scopeStore = yield* store.forScope(scopeAddress(tenant, scope)).pipe(
+      Effect.mapError((storeFailure) => {
+        const message = storeFailure.message;
+        return new PublishError({ message, stage: "project", diagnostics: [] });
+      }),
+    );
+    const raw = yield* scopeStore.readFile(snapshotId, DESCRIPTOR_SNAPSHOT_PATH).pipe(
+      Effect.mapError((storeFailure) => {
+        const message = storeFailure.message;
+        return new PublishError({ message, stage: "project", diagnostics: [] });
+      }),
+    );
     if (raw == null) return null;
-    const body = JSON.parse(raw) as Omit<AppDescriptor, "snapshotId">;
-    return { ...body, snapshotId };
+    const body = yield* decodeDescriptorJson(raw).pipe(
+      Effect.mapError(
+        (_cause) =>
+          new PublishError({
+            message: "descriptor snapshot is not valid JSON",
+            stage: "project",
+            diagnostics: [],
+          }),
+      ),
+    );
+    return { ...(body as Omit<AppDescriptor, "snapshotId">), snapshotId };
   });

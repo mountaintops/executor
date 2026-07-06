@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import appsClientPlugin, {
   CUSTOM_TOOLS_LABEL,
   CUSTOM_TOOLS_PLUGIN_KEY,
+  type CustomToolsFetch,
   appsIntegrationPlugin,
   formatSyncErrors,
   listCustomToolSources,
@@ -42,7 +43,7 @@ describe("custom tools console client", () => {
   });
 
   it("surfaces successful sync and source detail data", async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchImpl: CustomToolsFetch = async (input) => {
       const url = String(input);
       if (url.endsWith("/sync")) {
         return jsonResponse({
@@ -68,7 +69,7 @@ describe("custom tools console client", () => {
           },
         ],
       });
-    }) as unknown as typeof fetch;
+    };
 
     const syncResult = await syncCustomToolSource(
       {
@@ -85,7 +86,7 @@ describe("custom tools console client", () => {
   });
 
   it("renders failed sync errors readably", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl: CustomToolsFetch = async () =>
       jsonResponse({
         status: "failed",
         tools: [],
@@ -97,8 +98,7 @@ describe("custom tools console client", () => {
             diagnostics: [{ path: "tools/x.ts", message: "vendor: nope" }],
           },
         ],
-      }),
-    ) as unknown as typeof fetch;
+      });
 
     const result = await syncCustomToolSource(
       {
@@ -115,14 +115,13 @@ describe("custom tools console client", () => {
   });
 
   it("shows the up-to-date sync state", async () => {
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl: CustomToolsFetch = async () =>
       jsonResponse({
         status: "up-to-date",
         upstreamSha: "abc123",
         tools: ["repo-summary"],
         skipped: [],
-      }),
-    ) as unknown as typeof fetch;
+      });
 
     const result = await syncCustomToolSource(
       {

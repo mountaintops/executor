@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
@@ -60,13 +60,12 @@ describe("concurrent publishes to one scope (Fix 6)", () => {
     // Every publish either succeeded or failed with a typed conflict; none
     // clobbered another silently.
     const succeeded = results.filter((r) => r.status === "fulfilled");
+    const rejectedReasons = results.flatMap((r) =>
+      r.status === "rejected" ? [JSON.stringify(r.reason)] : [],
+    );
     expect(succeeded.length).toBeGreaterThan(0);
-    for (const r of results) {
-      if (r.status === "rejected") {
-        // A conflict is the only acceptable failure mode.
-        expect(String(r.reason)).toMatch(/conflict/i);
-      }
-    }
+    // A conflict is the only acceptable failure mode.
+    expect(rejectedReasons.every((reason) => /conflict/i.test(reason))).toBe(true);
 
     // HEAD and the descriptor pointer AGREE: the store's current descriptor's
     // snapshotId equals the artifact store's latest committed snapshot.

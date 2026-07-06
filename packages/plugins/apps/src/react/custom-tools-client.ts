@@ -1,4 +1,5 @@
 import type { Connection } from "@executor-js/sdk/shared";
+import { Data, Effect, Schema } from "effect";
 
 import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
 
@@ -15,12 +16,11 @@ export interface SyncGitHubSourceRequest {
   readonly connection: string;
 }
 
-export class CustomToolsClientError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CustomToolsClientError";
-  }
-}
+export type CustomToolsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export class CustomToolsClientError extends Data.TaggedError("CustomToolsClientError")<{
+  readonly message: string;
+}> {}
 
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
@@ -34,47 +34,83 @@ export const validateGitHubRepo = (repo: string): string | null => {
 export const githubConnections = (connections: readonly Connection[]): readonly Connection[] =>
   connections.filter((connection) => String(connection.integration) === "github");
 
-const parseJsonResponse = async <A>(response: Response, fallback: string): Promise<A> => {
-  const text = await response.text();
-  const body = text.length > 0 ? (JSON.parse(text) as unknown) : null;
-  if (!response.ok) {
-    const message =
-      body &&
-      typeof body === "object" &&
-      "error" in body &&
-      typeof (body as { error?: unknown }).error === "string"
-        ? (body as { error: string }).error
-        : fallback;
-    throw new CustomToolsClientError(message);
-  }
-  return body as A;
-};
+const decodeJsonText = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
-export const listCustomToolSources = async (
-  fetchImpl: typeof fetch = fetch,
-): Promise<GitHubSourcesListResponse> => {
-  const response = await fetchImpl("/api/apps/sources/github", {
-    credentials: "same-origin",
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const responseErrorMessage = (body: unknown, fallback: string): string =>
+  isRecord(body) && typeof body.error === "string" ? body.error : fallback;
+
+const parseJsonResponseEffect = <A>(
+  response: Response,
+  fallback: string,
+): Effect.Effect<A, CustomToolsClientError> =>
+  Effect.gen(function* () {
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: () => new CustomToolsClientError({ message: fallback }),
+    });
+    const body =
+      text.length > 0
+        ? yield* decodeJsonText(text).pipe(
+            Effect.mapError(() => new CustomToolsClientError({ message: fallback })),
+          )
+        : null;
+    if (!response.ok) {
+      return yield* new CustomToolsClientError({
+        message: responseErrorMessage(body, fallback),
+      });
+    }
+    return body as A;
   });
-  return parseJsonResponse<GitHubSourcesListResponse>(response, "Failed to load custom tools.");
-};
 
-export const syncCustomToolSource = async (
+export const listCustomToolSourcesEffect = (
+  fetchImpl: CustomToolsFetch = fetch,
+): Effect.Effect<GitHubSourcesListResponse, CustomToolsClientError> =>
+  Effect.tryPromise({
+    try: () =>
+      fetchImpl("/api/apps/sources/github", {
+        credentials: "same-origin",
+      }),
+    catch: () => new CustomToolsClientError({ message: "Failed to load custom tools." }),
+  }).pipe(
+    Effect.flatMap((response) =>
+      parseJsonResponseEffect<GitHubSourcesListResponse>(response, "Failed to load custom tools."),
+    ),
+  );
+
+export const listCustomToolSources = (
+  fetchImpl: CustomToolsFetch = fetch,
+): Promise<GitHubSourcesListResponse> => Effect.runPromise(listCustomToolSourcesEffect(fetchImpl));
+
+export const syncCustomToolSourceEffect = (
   input: SyncGitHubSourceRequest,
-  fetchImpl: typeof fetch = fetch,
-): Promise<GitHubSyncResult> => {
-  const response = await fetchImpl("/api/apps/sources/github/sync", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({
-      repo: input.repo.trim(),
-      ...(input.ref?.trim() ? { ref: input.ref.trim() } : {}),
-      connection: input.connection,
-    }),
-  });
-  return parseJsonResponse<GitHubSyncResult>(response, "Failed to sync custom tools.");
-};
+  fetchImpl: CustomToolsFetch = fetch,
+): Effect.Effect<GitHubSyncResult, CustomToolsClientError> =>
+  Effect.tryPromise({
+    try: () =>
+      fetchImpl("/api/apps/sources/github/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          repo: input.repo.trim(),
+          ...(input.ref?.trim() ? { ref: input.ref.trim() } : {}),
+          connection: input.connection,
+        }),
+      }),
+    catch: () => new CustomToolsClientError({ message: "Failed to sync custom tools." }),
+  }).pipe(
+    Effect.flatMap((response) =>
+      parseJsonResponseEffect<GitHubSyncResult>(response, "Failed to sync custom tools."),
+    ),
+  );
+
+export const syncCustomToolSource = (
+  input: SyncGitHubSourceRequest,
+  fetchImpl: CustomToolsFetch = fetch,
+): Promise<GitHubSyncResult> => Effect.runPromise(syncCustomToolSourceEffect(input, fetchImpl));
 
 export const syncStatusLabel = (result: GitHubSyncResult): string => {
   if (result.status === "published") return `Published ${result.tools.length} tools.`;
@@ -84,11 +120,11 @@ export const syncStatusLabel = (result: GitHubSyncResult): string => {
 
 export const formatSyncErrors = (result: GitHubSyncResult): readonly string[] => {
   if (result.status !== "failed") return [];
-  return result.errors.map((error) => {
-    const details = error.diagnostics?.map((d) => `${d.path}: ${d.message}`).join("; ");
-    return details
-      ? `${error.stage}: ${error.message} (${details})`
-      : `${error.stage}: ${error.message}`;
+  return result.errors.map((entry) => {
+    const message = entry.message;
+    const stage = entry.stage;
+    const details = entry.diagnostics?.map((d) => `${d.path}: ${d.message}`).join("; ");
+    return details ? `${stage}: ${message} (${details})` : `${stage}: ${message}`;
   });
 };
 

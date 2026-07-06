@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { bundleEntry } from "../pipeline/bundle";
 import { makeQuickjsToolSandbox } from "./quickjs-tool-sandbox";
@@ -100,10 +100,9 @@ export default defineTool({
       ),
     );
 
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag !== "Failure") throw new Error("expected validation failure");
-    expect(JSON.stringify(exit.cause)).toContain("InputValidationError");
-    expect(JSON.stringify(exit.cause)).toContain("q");
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("InputValidationError");
+    expect(JSON.stringify(exit)).toContain("q");
   });
 
   it("invokes raw JSON Schema tools without sandbox Standard Schema validation", async () => {
@@ -139,7 +138,7 @@ export default defineTool({
     const files = new Map([["tools/rng.ts", nondeterministic]]);
     const { code } = await run(bundleEntry({ files, entry: "tools/rng.ts" }));
     const exit = await Effect.runPromiseExit(sandbox.collect(code));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 
   it("denies network (fetch throws in the sandbox)", async () => {
@@ -156,7 +155,7 @@ export default defineTool({
     const exit = await Effect.runPromiseExit(
       sandbox.invoke(code, { artifact: "net", kind: "tool", input: {}, roots: {} }, bridge),
     );
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 
   it("returns typed InputValidationError from promise rejection", async () => {

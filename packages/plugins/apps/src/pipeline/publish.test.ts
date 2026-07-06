@@ -2,8 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { makeGitArtifactStore } from "../backing/git-artifact-store";
 import { makeQuickjsToolSandbox } from "../backing/quickjs-tool-sandbox";
@@ -89,7 +89,7 @@ export default defineTool({
 
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
 
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("collides");
     expect(JSON.stringify(exit)).toContain("crm");
   });
@@ -117,7 +117,7 @@ export default defineTool({
 
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
 
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("vendor-without-json-schema");
     expect(JSON.stringify(exit)).toContain("vendor");
     expect(JSON.stringify(exit)).toContain("input");
@@ -155,10 +155,8 @@ export default defineTool({
       ],
     ]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure") {
-      expect(JSON.stringify(exit.cause)).toContain("bundle");
-    }
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("bundle");
   });
 
   it("rejects an oversized publish set (too many files) and persists nothing", async () => {
@@ -168,7 +166,7 @@ export default defineTool({
       files.set(`tools/t${i}.ts`, "// noop");
     }
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("exceeding the limit");
     const latest = await run(
       Effect.flatMap(deps.artifactStore.forScope(scopeAddress("org", "s")), (s) => s.latest()),
@@ -181,7 +179,7 @@ export default defineTool({
     const big = "x".repeat(PUBLISH_LIMITS.maxFileBytes + 1);
     const files = new Map([["tools/big.ts", big]]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("per-file limit");
   });
 
@@ -192,7 +190,7 @@ export default defineTool({
     const count = Math.ceil(PUBLISH_LIMITS.maxTotalBytes / PUBLISH_LIMITS.maxFileBytes) + 1;
     for (let i = 0; i < count; i++) files.set(`tools/t${i}.ts`, half);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("total limit");
   });
 });

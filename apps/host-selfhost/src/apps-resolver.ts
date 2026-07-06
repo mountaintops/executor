@@ -6,7 +6,6 @@ import {
   ToolAddress,
   isToolResult,
   type ConnectionRef,
-  type ExecuteError,
   type Owner,
   type PluginCtx,
 } from "@executor-js/sdk";
@@ -29,22 +28,6 @@ const parseConnectionAddress = (address: string): ConnectionRef | null => {
   };
 };
 
-const bindingError = (input: {
-  readonly integration: string;
-  readonly connection?: string;
-  readonly message: string;
-  readonly cause?: unknown;
-}): BindingError =>
-  new BindingError({
-    role: input.integration,
-    integration: input.integration,
-    requestedConnection: input.connection,
-    message: input.message,
-  });
-
-const executeErrorMessage = (cause: ExecuteError): string =>
-  typeof cause.message === "string" && cause.message.length > 0 ? cause.message : cause._tag;
-
 const toCandidate = (connection: {
   readonly address: unknown;
   readonly integration: unknown;
@@ -61,12 +44,13 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
   listConnections: ({ integration }) =>
     input.ctx.connections.list({ integration: IntegrationSlug.make(integration) }).pipe(
       Effect.map((connections) => connections.map(toCandidate)),
-      Effect.mapError((cause) =>
-        bindingError({
-          integration,
-          message: `failed to list ${integration} connections`,
-          cause,
-        }),
+      Effect.mapError(
+        () =>
+          new BindingError({
+            role: integration,
+            integration,
+            message: `failed to list ${integration} connections`,
+          }),
       ),
     ),
 
@@ -75,13 +59,14 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
       const ref = parseConnectionAddress(connection);
       if (!ref) return null;
       const row = yield* input.ctx.connections.get(ref).pipe(
-        Effect.mapError((cause) =>
-          bindingError({
-            integration: String(ref.integration),
-            connection,
-            message: `failed to resolve connection ${connection}`,
-            cause,
-          }),
+        Effect.mapError(
+          () =>
+            new BindingError({
+              role: String(ref.integration),
+              integration: String(ref.integration),
+              requestedConnection: connection,
+              message: `failed to resolve connection ${connection}`,
+            }),
         ),
       );
       return row ? toCandidate(row) : null;
@@ -91,16 +76,18 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
     Effect.gen(function* () {
       const ref = parseConnectionAddress(connection);
       if (!ref) {
-        return yield* bindingError({
+        return yield* new BindingError({
+          role: integration,
           integration,
-          connection,
+          requestedConnection: connection,
           message: `invalid connection address ${connection}`,
         });
       }
       if (String(ref.integration) !== integration) {
-        return yield* bindingError({
+        return yield* new BindingError({
+          role: integration,
           integration,
-          connection,
+          requestedConnection: connection,
           message: `connection "${connection}" belongs to integration "${ref.integration}", not "${integration}"`,
         });
       }
@@ -108,21 +95,24 @@ export const makeSelfHostAppsResolver = (input: { readonly ctx: PluginCtx }): Cl
       const address = ToolAddress.make(`${connection}.${tool}`);
       const payload = args[0] ?? {};
       const result = yield* input.ctx.execute(address, payload, invokeOptions).pipe(
-        Effect.mapError((cause) =>
-          bindingError({
-            integration,
-            connection,
-            message: executeErrorMessage(cause),
-            cause,
-          }),
+        Effect.mapError(
+          () =>
+            new BindingError({
+              role: integration,
+              integration,
+              requestedConnection: connection,
+              message: `failed to execute ${address}`,
+            }),
         ),
       );
       if (isToolResult(result)) {
         if (result.ok) return result.data;
-        return yield* bindingError({
+        const { message } = result.error;
+        return yield* new BindingError({
+          role: integration,
           integration,
-          connection,
-          message: result.error.message,
+          requestedConnection: connection,
+          message,
         });
       }
       return result;

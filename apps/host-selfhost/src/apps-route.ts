@@ -1,5 +1,5 @@
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { Data, Effect, Layer } from "effect";
+import { Data, Effect, Layer, Predicate } from "effect";
 
 import {
   IdentityProvider,
@@ -18,6 +18,9 @@ class AppsSyncRouteError extends Data.TaggedError("AppsSyncRouteError")<{
   readonly status: number;
   readonly message: string;
 }> {}
+
+const isAppsSyncRouteError = (failure: unknown): failure is AppsSyncRouteError =>
+  Predicate.isTagged("AppsSyncRouteError")(failure);
 
 const parseJson = (request: Request): Effect.Effect<unknown, AppsSyncRouteError> =>
   Effect.tryPromise({
@@ -50,29 +53,28 @@ const routeHandler = (
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, never, unknown> =>
   Effect.gen(function* () {
     const httpRequest = yield* HttpServerRequest.HttpServerRequest;
-    const request = yield* HttpServerRequest.toWeb(httpRequest).pipe(Effect.orDie);
+    const request = yield* HttpServerRequest.toWeb(httpRequest).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    if (request === null) {
+      return HttpServerResponse.text("Internal Server Error", { status: 500 });
+    }
     return yield* run(request).pipe(
       Effect.map((body) => HttpServerResponse.jsonUnsafe(body)),
-      Effect.catch((error: unknown) => {
-        const tag =
-          error && typeof error === "object" && "_tag" in error ? String(error._tag) : null;
-        if (tag === "Unauthorized") {
+      Effect.catch((failure: unknown) => {
+        if (Predicate.isTagged("Unauthorized")(failure)) {
           return Effect.succeed(HttpServerResponse.text("Unauthorized", { status: 401 }));
         }
-        if (tag === "NoOrganization") {
+        if (Predicate.isTagged("NoOrganization")(failure)) {
           return Effect.succeed(HttpServerResponse.text("Forbidden", { status: 403 }));
         }
-        if (tag === "Unavailable") {
+        if (Predicate.isTagged("Unavailable")(failure)) {
           return Effect.succeed(HttpServerResponse.text("Unavailable", { status: 503 }));
         }
-        if (tag === "AppsSyncRouteError") {
-          const routeError = error as AppsSyncRouteError;
-          return Effect.succeed(
-            HttpServerResponse.jsonUnsafe(
-              { error: routeError.message },
-              { status: routeError.status },
-            ),
-          );
+        if (isAppsSyncRouteError(failure)) {
+          const message = failure.message;
+          const status = failure.status;
+          return Effect.succeed(HttpServerResponse.jsonUnsafe({ error: message }, { status }));
         }
         return Effect.succeed(HttpServerResponse.text("Internal Server Error", { status: 500 }));
       }),

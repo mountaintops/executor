@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, expect, test } from "@effect/vitest";
+import { Effect, Schema } from "effect";
 import { createEmulator, type Emulator } from "@executor-js/emulate";
 
 const dataDir = mkdtempSync(join(tmpdir(), "eh-apps-wire-"));
@@ -69,16 +70,30 @@ const jsonHeaders = {
   "x-test-org": TEST_ORG,
 };
 
+const decodeJsonText = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+
+const parseJsonText = async <T>(text: string): Promise<T> => {
+  if (text.length === 0) return null as T;
+  const value = await Effect.runPromise(decodeJsonText(text));
+  return value as T;
+};
+
 const findFreePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const probe = createNetServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      probe.close((error) => (error ? reject(error) : resolve(port)));
-    });
-  });
+  Effect.runPromise(
+    Effect.callback<number, string>((resume) => {
+      const probe = createNetServer();
+      probe.once("error", () => resume(Effect.fail("failed to find a free port")));
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        probe.close((error) =>
+          error
+            ? resume(Effect.fail("failed to close free-port probe"))
+            : resume(Effect.succeed(port)),
+        );
+      });
+    }),
+  );
 
 const readRequestBody = async (request: IncomingMessage): Promise<Buffer | undefined> => {
   if (request.method === "GET" || request.method === "HEAD") return undefined;
@@ -118,29 +133,42 @@ const startHttpServer = async (
 ): Promise<TestHttpServer> => {
   let port = 0;
   const server = createServer((request, response) => {
-    void (async () => {
-      try {
-        await sendWebResponse(await handler(await webRequestFromNode(request, port)), response);
-      } catch (error) {
-        response.statusCode = 500;
-        response.end(error instanceof Error ? error.message : String(error));
-      }
-    })();
+    void Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          await sendWebResponse(await handler(await webRequestFromNode(request, port)), response);
+        },
+        catch: () => "request failed",
+      }).pipe(
+        Effect.catch(() =>
+          Effect.sync(() => {
+            response.statusCode = 500;
+            response.end("request failed");
+          }),
+        ),
+      ),
+    );
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      port = typeof address === "object" && address ? address.port : 0;
-      resolve();
-    });
-  });
+  await Effect.runPromise(
+    Effect.callback<void, string>((resume) => {
+      server.once("error", () => resume(Effect.fail("failed to start test server")));
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        port = typeof address === "object" && address ? address.port : 0;
+        resume(Effect.void);
+      });
+    }),
+  );
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     close: () =>
-      new Promise((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
+      Effect.runPromise(
+        Effect.callback<void, string>((resume) => {
+          server.close((error) =>
+            error ? resume(Effect.fail("failed to close test server")) : resume(Effect.void),
+          );
+        }),
+      ),
   };
 };
 
@@ -152,7 +180,7 @@ const requestJson = async <T>(
   const response = await fetch(`${server.baseUrl}${path}`, init);
   const text = await response.text();
   expect(response.status).toBe(expectedStatus);
-  return (text.length > 0 ? JSON.parse(text) : null) as T;
+  return parseJsonText<T>(text);
 };
 
 const postJson = <T>(path: string, body: unknown, expectedStatus = 200): Promise<T> =>
@@ -179,7 +207,7 @@ const githubFetch = async <T>(
   const response = await fetch(`${emulator.url}${path}`, { ...init, headers });
   const text = await response.text();
   expect(response.ok).toBe(true);
-  return (text.length > 0 ? JSON.parse(text) : null) as T;
+  return parseJsonText<T>(text);
 };
 
 const createIssue = (

@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 import type { InvokeOptions } from "@executor-js/sdk";
 
 import type { ArtifactStore } from "../seams/artifact-store";
@@ -100,6 +100,13 @@ const failNoDescriptor = (scope: string): PublishError =>
     diagnostics: [],
   });
 
+const isInvokePassthroughError = (
+  cause: unknown,
+): cause is BindingError | InputValidationError | OutputValidationError =>
+  Predicate.isTagged("BindingError")(cause) ||
+  Predicate.isTagged("InputValidationError")(cause) ||
+  Predicate.isTagged("OutputValidationError")(cause);
+
 export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   const defaultTenant = deps.defaultTenant ?? "org";
   const bundleCache = new Map<string, string>();
@@ -120,10 +127,17 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   ): Promise<A> => {
     const key = `${tenant}:${scope}`;
     const prior = publishChains.get(key) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(run);
+    const afterPrior = prior.then(
+      () => undefined,
+      () => undefined,
+    );
+    const next = afterPrior.then(run);
     publishChains.set(
       key,
-      next.catch(() => undefined),
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
     );
     return next;
   };
@@ -293,11 +307,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         )
         .pipe(
           Effect.mapError((c) => {
-            if (
-              c instanceof BindingError ||
-              c instanceof InputValidationError ||
-              c instanceof OutputValidationError
-            ) {
+            if (isInvokePassthroughError(c)) {
               return c;
             }
             return new PublishError({
@@ -340,9 +350,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
               ),
             );
           },
-          catch: (cause) =>
+          catch: (_cause) =>
             new PublishError({
-              message: cause instanceof Error ? cause.message : String(cause),
+              message: "publish failed before pipeline completed",
               stage: "project",
               diagnostics: [],
             }),
@@ -404,13 +414,11 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         const descriptor = yield* requireDescriptor(tenant, input.scope);
         const toolDesc = descriptor.tools.find((t) => t.name === input.tool);
         if (!toolDesc) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `tool "${input.tool}" is not published in scope "${input.scope}"`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `tool "${input.tool}" is not published in scope "${input.scope}"`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         return yield* invokeToolInternal(
           input.scope,

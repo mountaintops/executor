@@ -30,6 +30,14 @@ const BRANCH = "refs/heads/main";
 // scope repo). git treats the empty string as "the ref must not already exist".
 const EMPTY_OID = "";
 
+const stderrText = (stderr: string | Buffer): string =>
+  Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : String(stderr).trim();
+
+const gitFailureMessage = (command: string, stderr: string | Buffer): string => {
+  const detail = stderrText(stderr);
+  return detail ? `git ${command} failed: ${detail}` : `git ${command} failed`;
+};
+
 const run = (
   cwd: string,
   args: readonly string[],
@@ -45,7 +53,7 @@ const run = (
           resume(
             Effect.fail(
               new ArtifactStoreError({
-                message: `git ${args[0]} failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                message: gitFailureMessage(args[0] ?? "command", stderr),
                 cause: error,
               }),
             ),
@@ -114,7 +122,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
                   resume(
                     Effect.fail(
                       new ArtifactStoreError({
-                        message: `git ${args[0]} failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                        message: gitFailureMessage(args[0] ?? "command", stderr),
                         cause: error,
                       }),
                     ),
@@ -159,7 +167,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
                 resume(
                   Effect.fail(
                     new ArtifactStoreError({
-                      message: `git commit-tree failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                      message: gitFailureMessage("commit-tree", stderr),
                       cause: error,
                     }),
                   ),
@@ -271,11 +279,7 @@ export const makeGitArtifactStore = (options: GitArtifactStoreOptions): Artifact
   const init = async (key: string): Promise<ScopeArtifactStore> => {
     const repoDir = join(options.root, `${key}.git`);
     await mkdir(repoDir, { recursive: true });
-    await new Promise<void>((resolve, reject) => {
-      execFile("git", ["init", "--bare", "--quiet"], { cwd: repoDir }, (error) =>
-        error ? reject(error) : resolve(),
-      );
-    });
+    await Effect.runPromise(run(repoDir, ["init", "--bare", "--quiet"]));
     return makeScopeStore(repoDir);
   };
 
