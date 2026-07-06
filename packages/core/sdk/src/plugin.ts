@@ -334,6 +334,18 @@ export interface ResolveToolsResult {
   readonly incomplete?: boolean;
 }
 
+export interface ProjectToolSchemaInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly toolRow: ToolInvocationRow;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+export interface ProjectToolSchemaResult {
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Resolved credential handed to `invokeTool` so the plugin renders auth onto
 // the request (D11: "auth state derived into the auth-template format").
@@ -621,6 +633,13 @@ export interface PluginSpec<
    *  config-revision and stale-mark triggers every plugin gets. Leave unset
    *  for catalogs derived purely from stored state (specs, static config). */
   readonly remoteToolCatalog?: boolean;
+
+  /** Project a persisted tool row's stable schemas into the request-visible
+   *  schema view. Use this only for volatile presentation data that should be
+   *  current at read time, not persisted at catalog-refresh time. */
+  readonly projectToolSchema?: (
+    input: ProjectToolSchemaInput<TStore>,
+  ) => Effect.Effect<ProjectToolSchemaResult, unknown>;
 
   /** Invoke a dynamic tool. Called when the static-handler map doesn't have the
    *  address. The plugin applies `input.credential` to the outbound request. */

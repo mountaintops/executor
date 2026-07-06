@@ -95,6 +95,11 @@ const schemaDescription = (schema: JsonSchema): string | undefined => {
   return undefined;
 };
 
+export const emptyEnumGuidance = (description: string | undefined): string => {
+  const integration = description?.match(/^Connection to use for .+ \(([^)]+)\)$/)?.[1];
+  return integration ? `Connect ${integration} first.` : "No options available.";
+};
+
 const DEFAULT_BY_TYPE: Record<string, () => unknown> = {
   string: () => "",
   number: () => 0,
@@ -410,6 +415,18 @@ function FieldControl(props: {
   if (schema.const !== undefined) {
     return (
       <ConstField fieldId={fieldId} constValue={schema.const} value={value} onChange={onChange} />
+    );
+  }
+
+  if (Array.isArray(schema.enum) && schema.enum.length === 0) {
+    const guidance = emptyEnumGuidance(schemaDescription(schema));
+    return (
+      <div className="space-y-1">
+        <NativeSelect id={fieldId} className="w-full text-xs" value="" disabled={true}>
+          <NativeSelectOption value="">{guidance}</NativeSelectOption>
+        </NativeSelect>
+        <p className="text-[11px] leading-4 text-muted-foreground">{guidance}</p>
+      </div>
     );
   }
 

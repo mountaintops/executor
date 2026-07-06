@@ -426,7 +426,7 @@ const approvalFiles = (): Record<string, string> => ({
   "tools/approval-bridge.ts": approvalBridgeSource,
 });
 
-const registerGitHubIntegration = async (emulator: Emulator, token: string): Promise<void> => {
+const registerGitHubSpec = async (emulator: Emulator): Promise<void> => {
   const specResponse = await fetch(`${server.baseUrl}/api/openapi/specs`, {
     method: "POST",
     headers: jsonHeaders,
@@ -439,13 +439,18 @@ const registerGitHubIntegration = async (emulator: Emulator, token: string): Pro
   });
   expect([200, 409]).toContain(specResponse.status);
   await specResponse.text();
+};
+
+const createGitHubConnection = async (token: string): Promise<string> => {
   const existing = await requestJson<readonly ConnectionRow[]>(
     "/api/connections?integration=github",
     {
       headers: jsonHeaders,
     },
   );
-  if (existing.some((connection) => connection.address === GITHUB_CONNECTION)) return;
+  if (existing.some((connection) => connection.address === GITHUB_CONNECTION)) {
+    return GITHUB_CONNECTION;
+  }
   const created = await postJson<{ address: string }>("/api/connections", {
     owner: "user",
     name: "main",
@@ -454,6 +459,12 @@ const registerGitHubIntegration = async (emulator: Emulator, token: string): Pro
     value: token,
   });
   expect(created.address).toBe(GITHUB_CONNECTION);
+  return created.address;
+};
+
+const registerGitHubIntegration = async (emulator: Emulator, token: string): Promise<void> => {
+  await registerGitHubSpec(emulator);
+  await createGitHubConnection(token);
 };
 
 const sourceUrl = (repo = REPO_FULL_NAME): string => `https://github.com/${repo}`;
@@ -520,6 +531,62 @@ afterAll(async () => {
   await server?.close();
   await disposeApp();
   await github?.close();
+});
+
+test("custom tool connection schema updates when connections change after sync", async () => {
+  const credential = await github.credentials.mint({
+    type: "api-key",
+    login: OWNER,
+    scopes: ["repo", "user"],
+  });
+  const token = credential.token;
+  expect(token).toBeTruthy();
+  await registerGitHubSpec(github);
+  const initialConnections = await requestJson<readonly ConnectionRow[]>(
+    "/api/connections?integration=github",
+    { headers: jsonHeaders },
+  );
+  expect(initialConnections).toEqual([]);
+  await putRepoFiles(github, token!, initialFiles());
+
+  const published = await syncSource();
+  expect(published.status).toBe("published");
+
+  const listed = await listAppTools();
+  const dealSync = listed.find((tool) => tool.name === "deal-pipeline-sync");
+  expect(dealSync).toBeTruthy();
+  const beforeConnection = await requestJson<{
+    inputSchema: { properties?: Record<string, unknown>; required?: readonly string[] };
+  }>(`/api/tools/schema?address=${encodeURIComponent(dealSync!.address)}`, {
+    headers: jsonHeaders,
+  });
+  expect(beforeConnection.inputSchema.properties?.github).toMatchObject({
+    type: "string",
+    enum: [],
+  });
+  expect(beforeConnection.inputSchema.required ?? []).toContain("github");
+
+  await createGitHubConnection(token!);
+  const afterConnection = await requestJson<{
+    inputSchema: { properties?: Record<string, unknown>; required?: readonly string[] };
+  }>(`/api/tools/schema?address=${encodeURIComponent(dealSync!.address)}`, {
+    headers: jsonHeaders,
+  });
+  expect(afterConnection.inputSchema.properties?.github).toMatchObject({
+    type: "string",
+    enum: [GITHUB_CONNECTION],
+    default: GITHUB_CONNECTION,
+  });
+  expect(afterConnection.inputSchema.required ?? []).not.toContain("github");
+
+  const defaultInvoke = (await executeResult(
+    callAppToolCode("deal-pipeline-sync", {
+      owner: OWNER,
+      repo: REPO,
+    }),
+  )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
+  expect(defaultInvoke.result?.ok).toBe(true);
+  expect(defaultInvoke.result?.data?.synced).toBe(0);
 });
 
 test("GitHub source sync publishes and invokes custom tools through self-host HTTP", async () => {

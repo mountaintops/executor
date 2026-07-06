@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   coerceNumber,
   defaultForSchema,
+  emptyEnumGuidance,
   isRenderableObjectSchema,
   missingRequiredFields,
   removeProperty,
@@ -106,6 +107,13 @@ describe("json-schema-form value transforms", () => {
     );
     expect(defaultForSchema({ enum: ["a", "b"] }, root)).toBe("a");
     expect(defaultForSchema({ const: 7 }, root)).toBe(7);
+  });
+
+  it("empty enum guidance names connection integrations", () => {
+    expect(emptyEnumGuidance("Connection to use for github (github)")).toBe(
+      "Connect github first.",
+    );
+    expect(emptyEnumGuidance("Choose a value")).toBe("No options available.");
   });
 
   it("isRenderableObjectSchema gates form-mode availability", () => {

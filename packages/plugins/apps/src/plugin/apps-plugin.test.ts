@@ -73,7 +73,23 @@ describe("appsPlugin custom-tools contract", () => {
     );
     const syncTool = resolved.tools.find((tool) => String(tool.name) === "deal-pipeline-sync");
     expect(syncTool).toBeTruthy();
-    const inputSchema = syncTool!.inputSchema as {
+    const persistedInputSchema = syncTool!.inputSchema as {
+      properties: Record<string, unknown>;
+    };
+    expect(persistedInputSchema.properties.crm).toBeUndefined();
+
+    const projected = await run(
+      plugin.projectToolSchema!({
+        ctx: { owner: { tenant: "org" } },
+        toolRow: {
+          name: "deal-pipeline-sync",
+          connection: appConnection,
+        },
+        inputSchema: syncTool!.inputSchema,
+        outputSchema: syncTool!.outputSchema,
+      } as never),
+    );
+    const inputSchema = projected.inputSchema as {
       properties: Record<string, { enum?: string[]; default?: string; description?: string }>;
       required?: string[];
     };

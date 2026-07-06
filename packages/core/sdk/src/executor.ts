@@ -3089,6 +3089,30 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
         if (effective.action === "block") return null;
 
+        const runtime = runtimes.get(row.plugin_id);
+        const projected = runtime?.plugin.projectToolSchema
+          ? yield* runtime.plugin
+              .projectToolSchema({
+                ctx: runtime.ctx,
+                toolRow: row,
+                inputSchema: tool.inputSchema,
+                outputSchema: tool.outputSchema,
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  pluginStorageFailure(row.plugin_id, "projectToolSchema", cause),
+                ),
+              )
+          : null;
+        const inputSchema =
+          projected && Object.prototype.hasOwnProperty.call(projected, "inputSchema")
+            ? projected.inputSchema
+            : tool.inputSchema;
+        const outputSchema =
+          projected && Object.prototype.hasOwnProperty.call(projected, "outputSchema")
+            ? projected.outputSchema
+            : tool.outputSchema;
+
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
@@ -3100,15 +3124,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const defs = new Map<string, unknown>();
         for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
 
-        const referenced = collectReferencedDefinitions(
-          [tool.inputSchema, tool.outputSchema],
-          defs,
-        );
+        const referenced = collectReferencedDefinitions([inputSchema, outputSchema], defs);
         const preview = yield* Effect.tryPromise({
           try: () =>
             buildToolTypeScriptPreview({
-              inputSchema: tool.inputSchema,
-              outputSchema: tool.outputSchema,
+              inputSchema,
+              outputSchema,
               defs,
             }),
           catch: (cause) =>
@@ -3120,8 +3141,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           address,
           name: tool.name,
           description: tool.description,
-          inputSchema: tool.inputSchema,
-          outputSchema: tool.outputSchema,
+          inputSchema,
+          outputSchema,
           schemaDefinitions:
             Object.keys(referenced).length > 0
               ? (referenced as Record<string, unknown>)

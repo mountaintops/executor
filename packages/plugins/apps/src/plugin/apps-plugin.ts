@@ -332,19 +332,33 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const scope = yield* scopeFor(tenant, String(connection.name));
         const descriptor = yield* runtime.getDescriptor(tenant, scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
-        const resolver =
-          makeResolver && ctx ? makeResolver({ ctx, scope, tool: "*" }) : runtime.deps.resolver;
         const tools: ToolDef[] = [];
         for (const t of descriptor.tools) {
-          const byRole: Record<string, readonly ConnectionCandidate[]> = {};
-          for (const [role, decl] of Object.entries(t.integrations)) {
-            byRole[role] = yield* resolver
-              .listConnections({ integration: decl.integration })
-              .pipe(Effect.orElseSucceed(() => []));
-          }
-          tools.push(projectTool(t, byRole));
+          tools.push(projectTool(t));
         }
         return { tools } satisfies ResolveToolsResult;
+      }),
+
+    projectToolSchema: ({ ctx, toolRow, inputSchema, outputSchema }) =>
+      Effect.gen(function* () {
+        const tenant = tenantFor(ctx);
+        const scope = yield* scopeFor(tenant, String(toolRow.connection));
+        const descriptor = yield* runtime.getDescriptor(tenant, scope);
+        const toolDesc = descriptor?.tools.find((t) => t.name === toolRow.name);
+        if (!toolDesc) return { inputSchema, outputSchema };
+        const resolver = makeResolver
+          ? makeResolver({ ctx, scope, tool: toolRow.name })
+          : runtime.deps.resolver;
+        const byRole: Record<string, readonly ConnectionCandidate[]> = {};
+        for (const [role, decl] of Object.entries(toolDesc.integrations)) {
+          byRole[role] = yield* resolver
+            .listConnections({ integration: decl.integration })
+            .pipe(Effect.orElseSucceed(() => []));
+        }
+        return {
+          inputSchema: projectInputSchema(toolDesc.inputSchema, toolDesc.integrations, byRole),
+          outputSchema: toolDesc.outputSchema,
+        };
       }),
 
     invokeTool: ({ ctx, toolRow, args, invokeOptions }: InvokeToolInput<AppsStoreShape>) =>
@@ -382,13 +396,10 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   };
 });
 
-const projectTool = (
-  descriptor: ToolDescriptor,
-  byRole: Readonly<Record<string, readonly ConnectionCandidate[]>>,
-): ToolDef => ({
+const projectTool = (descriptor: ToolDescriptor): ToolDef => ({
   name: ToolName.make(descriptor.name),
   description: descriptor.description,
-  inputSchema: projectInputSchema(descriptor.inputSchema, descriptor.integrations, byRole),
+  inputSchema: descriptor.inputSchema,
   outputSchema: descriptor.outputSchema,
   annotations: {
     requiresApproval: descriptor.annotations?.destructive === true,
