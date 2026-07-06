@@ -246,12 +246,13 @@ const curlJson = (path: string, body: unknown): string =>
 const buildBanner = (input: {
   readonly repoUrl: string;
   readonly connectionAddress: string;
+  readonly githubToken: string;
   readonly token: string;
   readonly consoleUi: string;
 }): string => {
   const sync = curlJson("/api/apps/sources/github/sync", {
-    repo: DEMO_REPO,
-    connection: input.connectionAddress,
+    url: input.repoUrl,
+    token: input.githubToken,
   });
   const list = `curl -sS '${BASE_URL}/api/tools?integration=apps' | jq`;
   const repoSummary = curlJson("/api/executions", {
@@ -286,7 +287,7 @@ Auth:
   Bearer for direct API debugging:
   ${input.token}
 
-GitHub connection:
+GitHub invocation connection:
   ${input.connectionAddress}
 
 Sync the repo:
@@ -385,6 +386,7 @@ const main = async () => {
   const banner = buildBanner({
     repoUrl: `https://github.com/${DEMO_REPO}`,
     connectionAddress: created.address,
+    githubToken: token,
     token: selfHostToken,
     consoleUi,
   });

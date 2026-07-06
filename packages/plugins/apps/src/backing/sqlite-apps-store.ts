@@ -7,7 +7,7 @@ import { Effect, Schema } from "effect";
 import { StorageError, type StorageFailure } from "@executor-js/sdk";
 
 import type { AppDescriptor } from "../pipeline/descriptor";
-import type { AppsStore } from "../plugin/store";
+import type { AppsStore, GitHubSourceTokenRef } from "../plugin/store";
 
 // ---------------------------------------------------------------------------
 // SQLite-backed AppsStore (self-hosted). One small SQLite file stores the
@@ -19,6 +19,7 @@ const toUrl = (path: string): string => (path === ":memory:" ? path : `file:${re
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS descriptors (tenant TEXT NOT NULL, scope TEXT NOT NULL, snapshot_id TEXT NOT NULL, descriptor TEXT NOT NULL, published_at INTEGER NOT NULL, PRIMARY KEY (tenant, scope));
 CREATE TABLE IF NOT EXISTS scope_connections (tenant TEXT NOT NULL, connection_name TEXT NOT NULL, scope TEXT NOT NULL, PRIMARY KEY (tenant, connection_name));
+CREATE TABLE IF NOT EXISTS github_source_tokens (tenant TEXT NOT NULL, scope TEXT NOT NULL, provider TEXT NOT NULL, item_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (tenant, scope));
 `;
 
 const storageFail = (message: string, cause: unknown): StorageFailure =>
@@ -139,6 +140,35 @@ export const makeSqliteAppsStore = (options: SqliteAppsStoreOptions): AppsStore 
           return res.rows[0] ? String(res.rows[0].scope) : null;
         },
         catch: (cause) => storageFail("getScopeForConnection failed", cause),
+      }),
+    putGitHubSourceTokenRef: (tenant, scope, ref) =>
+      Effect.tryPromise({
+        try: async () => {
+          await init();
+          await client.execute({
+            sql: "INSERT INTO github_source_tokens (tenant, scope, provider, item_id, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant, scope) DO UPDATE SET provider=excluded.provider, item_id=excluded.item_id, updated_at=excluded.updated_at",
+            args: [tenant, scope, ref.provider, ref.itemId, ref.updatedAt],
+          });
+        },
+        catch: (cause) => storageFail("putGitHubSourceTokenRef failed", cause),
+      }),
+    getGitHubSourceTokenRef: (tenant, scope) =>
+      Effect.tryPromise({
+        try: async (): Promise<GitHubSourceTokenRef | null> => {
+          await init();
+          const res = await client.execute({
+            sql: "SELECT provider, item_id, updated_at FROM github_source_tokens WHERE tenant = ? AND scope = ?",
+            args: [tenant, scope],
+          });
+          const row = res.rows[0];
+          if (!row) return null;
+          return {
+            provider: String(row.provider),
+            itemId: String(row.item_id),
+            updatedAt: Number(row.updated_at),
+          };
+        },
+        catch: (cause) => storageFail("getGitHubSourceTokenRef failed", cause),
       }),
   };
 };

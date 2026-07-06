@@ -43,9 +43,10 @@ export interface AppsRuntimeDeps {
 
 export interface GitHubCustomToolsSourceSummary {
   readonly scope: string;
+  readonly url: string;
   readonly repo: string;
   readonly ref: string;
-  readonly connection?: string;
+  readonly hasToken: boolean;
   readonly upstreamSha: string;
   readonly snapshotId: string;
   readonly description?: string;
@@ -376,17 +377,23 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       const tenant = resolveTenant(tenantInput);
       return deps.store.listDescriptors(tenant).pipe(
         Effect.orElseSucceed(() => []),
-        Effect.map((records) =>
-          records.flatMap((record): GitHubCustomToolsSourceSummary[] => {
-            const { descriptor, publishedAt } = record;
-            const source = descriptor.source;
-            if (source?.kind !== "github") return [];
-            return [
-              {
+        Effect.flatMap((records) => {
+          const githubRecords = records.flatMap((record) => {
+            const source = record.descriptor.source;
+            return source?.kind === "github" ? [{ record, source }] : [];
+          });
+          return Effect.forEach(githubRecords, ({ record, source }) =>
+            Effect.gen(function* () {
+              const { descriptor, publishedAt } = record;
+              const tokenRef = yield* deps.store
+                .getGitHubSourceTokenRef(tenant, descriptor.scope)
+                .pipe(Effect.orElseSucceed(() => null));
+              return {
                 scope: descriptor.scope,
+                url: source.url,
                 repo: source.repo,
                 ref: source.ref,
-                ...(source.connection ? { connection: source.connection } : {}),
+                hasToken: tokenRef !== null,
                 upstreamSha: source.upstreamSha,
                 snapshotId: descriptor.snapshotId,
                 ...(descriptor.description ? { description: descriptor.description } : {}),
@@ -396,10 +403,10 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
                   ...(source.skipped ?? []),
                   ...(descriptor.skipped as readonly GitHubSkippedArtifact[]),
                 ],
-              },
-            ];
-          }),
-        ),
+              } satisfies GitHubCustomToolsSourceSummary;
+            }),
+          );
+        }),
       );
     },
 

@@ -89,24 +89,12 @@ export default function CustomToolsAccountsPanel() {
   const selected = sources.find((source) => source.scope === selectedScope) ?? sources[0] ?? null;
 
   const syncSelected = async (source: GitHubCustomToolsSourceSummary) => {
-    if (!source.connection) {
-      setNotice({
-        status: "failed",
-        message: "Sync failed.",
-        added: [],
-        removed: [],
-        errors: ["This source does not have a recorded GitHub connection."],
-      });
-      return;
-    }
     setSyncingScope(source.scope);
     setNotice(null);
     const beforeTools = source.tools;
     const exit = await Effect.runPromiseExit(
       syncCustomToolSourceEffect({
-        repo: source.repo,
-        ref: source.ref,
-        connection: source.connection,
+        url: source.url,
       }),
     );
     if (Exit.isFailure(exit)) {
@@ -181,7 +169,7 @@ export default function CustomToolsAccountsPanel() {
                 <CardStackEntry
                   key={source.scope}
                   asChild
-                  searchText={`${source.repo} ${source.ref}`}
+                  searchText={`${source.repo} ${source.ref} ${source.url}`}
                 >
                   <Button
                     type="button"
@@ -253,23 +241,18 @@ function SourceDetail(props: {
           <h3 className="truncate text-sm font-medium text-foreground">{source.repo}</h3>
           <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{source.scope}</p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={props.onSync}
-          loading={props.syncing}
-          disabled={!source.connection}
-        >
+        <Button type="button" size="sm" onClick={props.onSync} loading={props.syncing}>
           Sync
         </Button>
       </div>
 
       <div className="space-y-6 p-4">
         <dl className="grid gap-3 text-sm sm:grid-cols-2">
+          <LinkField label="GitHub URL" value={source.url} />
           <Field label="Ref" value={source.ref} />
           <Field label="Upstream SHA" value={source.upstreamSha} mono />
           <Field label="Last synced" value={formatDate(source.publishedAt)} />
-          <Field label="GitHub connection" value={source.connection ?? "Not recorded"} mono />
+          <Field label="Access token" value={source.hasToken ? "Stored" : "Not set"} />
         </dl>
 
         {notice && (
@@ -320,6 +303,19 @@ function SourceDetail(props: {
           )}
         </Section>
       </div>
+    </div>
+  );
+}
+
+function LinkField(props: { readonly label: string; readonly value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium text-muted-foreground">{props.label}</dt>
+      <dd className="mt-1 truncate text-sm text-foreground">
+        <a className="underline underline-offset-2" href={props.value}>
+          {props.value}
+        </a>
+      </dd>
     </div>
   );
 }

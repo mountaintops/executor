@@ -9,7 +9,7 @@ import appsClientPlugin, {
   listCustomToolSources,
   syncCustomToolSource,
   syncStatusLabel,
-  validateGitHubRepo,
+  validateGitHubSourceUrl,
 } from "@executor-js/plugin-apps/client";
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
@@ -34,18 +34,24 @@ describe("custom tools console client", () => {
     });
   });
 
-  it("validates the GitHub repo shape", () => {
-    expect(validateGitHubRepo("UsefulSoftwareCo/executor")).toBeNull();
-    expect(validateGitHubRepo("UsefulSoftwareCo")).toBe(
-      "Use owner/name, for example UsefulSoftwareCo/executor.",
+  it("validates the GitHub URL shape", () => {
+    expect(validateGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor")).toBeNull();
+    expect(validateGitHubSourceUrl("UsefulSoftwareCo/executor")).toBeNull();
+    expect(validateGitHubSourceUrl("https://gitlab.com/UsefulSoftwareCo/executor")).toBe(
+      "GitHub source URLs must use github.com.",
     );
-    expect(validateGitHubRepo("")).toBe("Enter a GitHub repo.");
+    expect(validateGitHubSourceUrl("UsefulSoftwareCo")).toBe(
+      "Use a GitHub repo URL like https://github.com/owner/repo, optionally with /tree/<ref> or /commit/<sha>.",
+    );
+    expect(validateGitHubSourceUrl("")).toBe("Enter a GitHub URL.");
   });
 
   it("surfaces successful sync and source detail data", async () => {
-    const fetchImpl: CustomToolsFetch = async (input) => {
+    let syncBody = "";
+    const fetchImpl: CustomToolsFetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith("/sync")) {
+        syncBody = String(init?.body ?? "");
         return jsonResponse({
           status: "published",
           snapshotId: "snap1",
@@ -58,9 +64,10 @@ describe("custom tools console client", () => {
         sources: [
           {
             scope: "github:RhysSullivan/executor-custom-tools-demo",
+            url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
             repo: "RhysSullivan/executor-custom-tools-demo",
             ref: "main",
-            connection: "tools.github.user.demo",
+            hasToken: true,
             upstreamSha: "abc123",
             snapshotId: "snap1",
             publishedAt: "2026-07-06T12:00:00.000Z",
@@ -73,15 +80,17 @@ describe("custom tools console client", () => {
 
     const syncResult = await syncCustomToolSource(
       {
-        repo: "RhysSullivan/executor-custom-tools-demo",
-        connection: "tools.github.user.demo",
+        url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
+        token: "ghp_demo",
       },
       fetchImpl,
     );
     const listed = await listCustomToolSources(fetchImpl);
 
     expect(syncStatusLabel(syncResult)).toBe("Published 2 tools.");
+    expect(syncBody).toContain("ghp_demo");
     expect(syncResult.tools).toEqual(["repo-summary", "stale-issues"]);
+    expect(listed.sources[0]?.hasToken).toBe(true);
     expect(listed.sources[0]?.tools).toEqual(["repo-summary", "stale-issues"]);
   });
 
@@ -102,8 +111,7 @@ describe("custom tools console client", () => {
 
     const result = await syncCustomToolSource(
       {
-        repo: "RhysSullivan/executor-custom-tools-demo",
-        connection: "tools.github.user.demo",
+        url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
       },
       fetchImpl,
     );
@@ -125,8 +133,7 @@ describe("custom tools console client", () => {
 
     const result = await syncCustomToolSource(
       {
-        repo: "RhysSullivan/executor-custom-tools-demo",
-        connection: "tools.github.user.demo",
+        url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
       },
       fetchImpl,
     );

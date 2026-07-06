@@ -30,9 +30,28 @@ export const scopeConnectionCollection = definePluginStorageCollection("apps_sco
   },
 });
 
+export const githubSourceTokenCollection = definePluginStorageCollection(
+  "apps_github_source_token",
+  {
+    Type: {} as {
+      readonly tenant: string;
+      readonly scope: string;
+      readonly provider: string;
+      readonly itemId: string;
+      readonly updatedAt: number;
+    },
+  },
+);
+
 export interface AppDescriptorRecord {
   readonly descriptor: AppDescriptor;
   readonly publishedAt: number;
+}
+
+export interface GitHubSourceTokenRef {
+  readonly provider: string;
+  readonly itemId: string;
+  readonly updatedAt: number;
 }
 
 export interface AppsStore {
@@ -57,6 +76,15 @@ export interface AppsStore {
     tenant: string,
     connectionName: string,
   ) => Effect.Effect<string | null, StorageFailure>;
+  readonly putGitHubSourceTokenRef: (
+    tenant: string,
+    scope: string,
+    ref: GitHubSourceTokenRef,
+  ) => Effect.Effect<void, StorageFailure>;
+  readonly getGitHubSourceTokenRef: (
+    tenant: string,
+    scope: string,
+  ) => Effect.Effect<GitHubSourceTokenRef | null, StorageFailure>;
 }
 
 export interface AppsStoreDeps {
@@ -66,6 +94,7 @@ export interface AppsStoreDeps {
 export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
   const descriptors = deps.pluginStorage.collection(descriptorCollection);
   const scopeConnections = deps.pluginStorage.collection(scopeConnectionCollection);
+  const githubSourceTokens = deps.pluginStorage.collection(githubSourceTokenCollection);
   // Tenant is now part of apps storage keys. The apps subsystem had not shipped
   // before this key shape, so no migration from the old scope-only keys is needed.
   const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
@@ -82,6 +111,18 @@ export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
       scopeConnections
         .get({ key: keyFor(tenant, connectionName) })
         .pipe(Effect.map((entry) => entry?.data.scope ?? null)),
+    putGitHubSourceTokenRef: (tenant, scope, ref) =>
+      githubSourceTokens
+        .put({
+          owner: "org",
+          key: keyFor(tenant, scope),
+          data: { tenant, scope, ...ref },
+        })
+        .pipe(Effect.asVoid),
+    getGitHubSourceTokenRef: (tenant, scope) =>
+      githubSourceTokens
+        .get({ key: keyFor(tenant, scope) })
+        .pipe(Effect.map((entry) => entry?.data ?? null)),
     putDescriptor: (tenant, owner, descriptor) =>
       descriptors
         .put({

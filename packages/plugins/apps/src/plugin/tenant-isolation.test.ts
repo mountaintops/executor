@@ -92,7 +92,7 @@ describe("tenant scope isolation", () => {
         runtime: hostA.runtime,
         tenant: tenantA,
         scope,
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: makeGitHubFetch({ toolName: "alpha", upstreamSha: "sha-a" }),
       }),
     );
@@ -101,7 +101,7 @@ describe("tenant scope isolation", () => {
         runtime: hostB.runtime,
         tenant: tenantB,
         scope,
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: makeGitHubFetch({ toolName: "beta", upstreamSha: "sha-b" }),
       }),
     );

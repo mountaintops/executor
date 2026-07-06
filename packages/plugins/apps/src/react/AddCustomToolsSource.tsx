@@ -1,10 +1,6 @@
-import { useMemo, useState } from "react";
-import { useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
 import { Effect, Exit } from "effect";
-import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 
-import { connectionsAllAtom } from "@executor-js/react/api/atoms";
-import { Alert, AlertDescription, AlertTitle } from "@executor-js/react/components/alert";
 import { Button } from "@executor-js/react/components/button";
 import {
   CardStack,
@@ -13,53 +9,38 @@ import {
 } from "@executor-js/react/components/card-stack";
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
-import { NativeSelect, NativeSelectOption } from "@executor-js/react/components/native-select";
 import { toast } from "@executor-js/react/components/sonner";
 import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
 
 import {
-  consoleIntegrationHref,
   formatSyncErrors,
-  githubConnections,
   syncCustomToolSourceEffect,
   syncStatusLabel,
-  validateGitHubRepo,
+  validateGitHubSourceUrl,
 } from "./custom-tools-client";
 
 export default function AddCustomToolsSource(props: {
   readonly onComplete: (slug?: string) => void;
   readonly onCancel: () => void;
 }) {
-  const connectionsResult = useAtomValue(connectionsAllAtom);
-  const connections = useMemo(
-    () =>
-      AsyncResult.isSuccess(connectionsResult) ? githubConnections(connectionsResult.value) : [],
-    [connectionsResult],
-  );
-  const [repo, setRepo] = useState("");
-  const [ref, setRef] = useState("");
-  const [connection, setConnection] = useState("");
-  const [repoError, setRepoError] = useState<string | null>(null);
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [tokenRevealed, setTokenRevealed] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
 
-  const selectedConnection = connection || connections[0]?.address || "";
-  const loadingConnections = !AsyncResult.isSuccess(connectionsResult);
-  const canSubmit =
-    repo.trim().length > 0 && selectedConnection.length > 0 && !syncing && !loadingConnections;
-
   const submit = async () => {
-    const validation = validateGitHubRepo(repo);
-    setRepoError(validation);
+    const validation = validateGitHubSourceUrl(url);
+    setUrlError(validation);
     setSyncError(null);
-    if (validation || !selectedConnection) return;
+    if (validation) return;
 
     setSyncing(true);
     const exit = await Effect.runPromiseExit(
       syncCustomToolSourceEffect({
-        repo,
-        ref,
-        connection: selectedConnection,
+        url,
+        token,
       }),
     );
     if (Exit.isFailure(exit)) {
@@ -88,66 +69,52 @@ export default function AddCustomToolsSource(props: {
 
       <CardStack>
         <CardStackContent className="border-t-0">
-          <CardStackEntryField label="GitHub repo" description="- Owner and repository name.">
+          <CardStackEntryField
+            label="GitHub URL"
+            description="- Repository URL, optionally with /tree/<ref> or /commit/<sha>."
+          >
             <div className="space-y-1.5">
               <Input
-                value={repo}
+                value={url}
                 onChange={(event) => {
-                  setRepo((event.target as HTMLInputElement).value);
-                  setRepoError(null);
+                  setUrl((event.target as HTMLInputElement).value);
+                  setUrlError(null);
                   setSyncError(null);
                 }}
-                onBlur={() => setRepoError(validateGitHubRepo(repo))}
-                placeholder="owner/name"
+                onBlur={() => setUrlError(validateGitHubSourceUrl(url))}
+                placeholder="https://github.com/UsefulSoftwareCo/executor"
                 className="font-mono text-sm"
-                aria-invalid={repoError ? true : undefined}
+                aria-invalid={urlError ? true : undefined}
               />
-              {repoError && <p className="text-xs text-destructive">{repoError}</p>}
+              {urlError && <p className="text-xs text-destructive">{urlError}</p>}
             </div>
           </CardStackEntryField>
 
-          <CardStackEntryField label="Ref" description="- Branch, tag, or commit SHA.">
-            <Input
-              value={ref}
-              onChange={(event) => setRef((event.target as HTMLInputElement).value)}
-              placeholder="default branch"
-              className="font-mono text-sm"
-            />
-          </CardStackEntryField>
-
           <CardStackEntryField
-            label="GitHub connection"
-            description="- Used to fetch the repo and later resync it."
+            label="Access token (optional)"
+            description="- Needed only for private repositories or higher GitHub API limits."
           >
-            {connections.length > 0 ? (
-              <NativeSelect
-                value={selectedConnection}
-                onChange={(event) => setConnection((event.target as HTMLSelectElement).value)}
-                className="w-full font-mono text-sm"
+            <div className="flex gap-2">
+              <Input
+                value={token}
+                type={tokenRevealed ? "text" : "password"}
+                onChange={(event) => {
+                  setToken((event.target as HTMLInputElement).value);
+                  setSyncError(null);
+                }}
+                autoComplete="off"
+                className="font-mono text-sm"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                aria-pressed={tokenRevealed}
+                onClick={() => setTokenRevealed((revealed) => !revealed)}
                 disabled={syncing}
               >
-                {connections.map((candidate) => (
-                  <NativeSelectOption key={candidate.address} value={candidate.address}>
-                    {candidate.address}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            ) : (
-              <Alert>
-                <AlertTitle>No GitHub connections</AlertTitle>
-                <AlertDescription>
-                  <span>
-                    Connect GitHub first, then return here to sync a custom-tools repo.{" "}
-                    <a
-                      className="font-medium text-foreground underline"
-                      href={consoleIntegrationHref("/integrations/github")}
-                    >
-                      Open GitHub
-                    </a>
-                  </span>
-                </AlertDescription>
-              </Alert>
-            )}
+                Show
+              </Button>
+            </div>
           </CardStackEntryField>
         </CardStackContent>
       </CardStack>
@@ -158,7 +125,7 @@ export default function AddCustomToolsSource(props: {
         <Button type="button" variant="ghost" onClick={() => props.onCancel()} disabled={syncing}>
           Cancel
         </Button>
-        <Button type="button" onClick={() => void submit()} disabled={!canSubmit} loading={syncing}>
+        <Button type="button" onClick={() => void submit()} disabled={syncing} loading={syncing}>
           Sync repo
         </Button>
       </FloatActions>

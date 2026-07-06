@@ -26,6 +26,7 @@ import type {
   ConnectionName,
   IntegrationSlug,
   Owner,
+  ProviderItemId,
   ProviderKey,
   Subject,
   Tenant,
@@ -247,6 +248,26 @@ export interface PluginCtx<TStore = unknown> {
     readonly items: (
       provider: ProviderKey,
     ) => Effect.Effect<readonly ProviderEntry[], StorageFailure>;
+    /** Read an opaque item from a provider. Plugins use this for secret values
+     *  they own that are not modeled as connections. */
+    readonly get: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<string | null, StorageFailure>;
+    readonly has: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<boolean, StorageFailure>;
+    /** Write through the executor's default writable provider and return the
+     *  provider key that owns the item. */
+    readonly setDefault: (
+      id: ProviderItemId,
+      value: string,
+    ) => Effect.Effect<ProviderKey, CredentialProviderNotRegisteredError | StorageFailure>;
+    readonly remove: (
+      provider: ProviderKey,
+      id: ProviderItemId,
+    ) => Effect.Effect<void, StorageFailure>;
   };
 
   /** Shared OAuth service. */

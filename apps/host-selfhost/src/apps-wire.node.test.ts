@@ -456,10 +456,14 @@ const registerGitHubIntegration = async (emulator: Emulator, token: string): Pro
   expect(created.address).toBe(GITHUB_CONNECTION);
 };
 
-const syncSource = (repo = REPO_FULL_NAME): Promise<SyncResult> =>
+const sourceUrl = (repo = REPO_FULL_NAME): string => `https://github.com/${repo}`;
+
+const syncSource = (
+  input: { readonly repo?: string; readonly token?: string } = {},
+): Promise<SyncResult> =>
   postJson<SyncResult>("/api/apps/sources/github/sync", {
-    repo,
-    connection: GITHUB_CONNECTION,
+    url: sourceUrl(input.repo),
+    ...(input.token ? { token: input.token } : {}),
   });
 
 const listAppTools = (): Promise<readonly ToolRow[]> =>
@@ -534,16 +538,28 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   const unauthorized = await fetch(`${server.baseUrl}/api/apps/sources/github/sync`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repo: REPO_FULL_NAME, connection: GITHUB_CONNECTION }),
+    body: JSON.stringify({ url: sourceUrl(), token }),
   });
   expect(unauthorized.status).toBe(401);
 
   const published = await syncSource();
   expect(published.status).toBe("published");
+  expect(JSON.stringify(published)).not.toContain(token!);
   expect(published.tools).toEqual(["deal-pipeline-sync", "find-deal-docs"]);
   expect(published.skipped).toEqual([]);
   const firstSnapshot = published.snapshotId;
   expect(firstSnapshot).toBeTruthy();
+
+  const tokenUpToDate = await syncSource({ token: token! });
+  expect(tokenUpToDate.status).toBe("up-to-date");
+  expect(JSON.stringify(tokenUpToDate)).not.toContain(token!);
+
+  const sourcesList = await requestJson<{ sources: readonly { hasToken: boolean }[] }>(
+    "/api/apps/sources/github",
+    { headers: jsonHeaders },
+  );
+  expect(sourcesList.sources[0]?.hasToken).toBe(true);
+  expect(JSON.stringify(sourcesList)).not.toContain(token!);
 
   const listed = await listAppTools();
   expect(listed.map((tool) => tool.name).sort()).toEqual(["deal-pipeline-sync", "find-deal-docs"]);
@@ -573,6 +589,9 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   expect(invoke.result?.data?.synced).toBe(2);
 
   const ledger = await github.ledger.list();
+  const sourceFetches = ledger.filter((entry) => entry.path === `/repos/${OWNER}/${REPO}`);
+  expect(sourceFetches.some((entry) => entry.identity.user?.login === OWNER)).toBe(true);
+  expect(sourceFetches.some((entry) => !entry.identity.user)).toBe(true);
   const issueList = ledger.find(
     (entry) =>
       entry.operationId === "issues/listForRepo" && entry.path === `/repos/${OWNER}/${REPO}/issues`,
@@ -639,7 +658,7 @@ test("bridged integration calls inherit the caller approval handler", async () =
   await registerGitHubIntegration(github, token!);
   await createIssue(github, token!, "Approval-gated issue");
   await putRepoFiles(github, token!, approvalFiles());
-  const published = await syncSource();
+  const published = await syncSource({ token: token! });
   expect(published.status).toBe("published");
 
   const githubTools = await requestJson<readonly ToolRow[]>("/api/tools?integration=github", {

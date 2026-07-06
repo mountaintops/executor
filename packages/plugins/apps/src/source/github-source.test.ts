@@ -9,7 +9,7 @@ import { makeSelfHostAppsRuntime } from "../plugin/self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
 import { PUBLISH_LIMITS } from "../pipeline/publish";
 import { scopeAddress } from "../seams/scope-address";
-import { fetchGitHubSource, syncGitHubSource } from "./github-source";
+import { fetchGitHubSource, parseGitHubSourceUrl, syncGitHubSource } from "./github-source";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -71,7 +71,9 @@ const makeGitHubFetch = (input: {
     }
   }
   let blobCalls = 0;
-  const fetch = (async (rawUrl: string) => {
+  const authHeaders: (string | null)[] = [];
+  const fetch = (async (rawUrl: string, init?: RequestInit) => {
+    authHeaders.push(new Headers(init?.headers).get("authorization"));
     const url = new URL(rawUrl);
     if (url.pathname === repoPath) return json({ default_branch: "main" });
     if (url.pathname === `${repoPath}/git/ref/heads%2Fmain`) {
@@ -110,10 +112,97 @@ const makeGitHubFetch = (input: {
   return {
     fetch,
     blobCalls: () => blobCalls,
+    authHeaders: () => authHeaders,
   };
 };
 
 describe("GitHub custom-tools source", () => {
+  it("parses strict GitHub source URLs", () => {
+    expect(parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor")).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        url: "https://github.com/UsefulSoftwareCo/executor",
+      },
+    });
+    expect(parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor.git/")).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        url: "https://github.com/UsefulSoftwareCo/executor",
+      },
+    });
+    expect(parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor/tree/main")).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        ref: "main",
+        url: "https://github.com/UsefulSoftwareCo/executor/tree/main",
+      },
+    });
+    expect(
+      parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor/tree/feature/tools"),
+    ).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        ref: "feature/tools",
+        url: "https://github.com/UsefulSoftwareCo/executor/tree/feature/tools",
+      },
+    });
+    expect(
+      parseGitHubSourceUrl(
+        "https://github.com/UsefulSoftwareCo/executor/commit/0123456789abcdef0123456789abcdef01234567",
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        ref: "0123456789abcdef0123456789abcdef01234567",
+        url: "https://github.com/UsefulSoftwareCo/executor/commit/0123456789abcdef0123456789abcdef01234567",
+      },
+    });
+    expect(parseGitHubSourceUrl("UsefulSoftwareCo/executor")).toEqual({
+      ok: true,
+      value: {
+        owner: "UsefulSoftwareCo",
+        name: "executor",
+        repo: "UsefulSoftwareCo/executor",
+        url: "https://github.com/UsefulSoftwareCo/executor",
+      },
+    });
+    expect(parseGitHubSourceUrl("https://gitlab.com/UsefulSoftwareCo/executor")).toEqual({
+      ok: false,
+      message: "GitHub source URLs must use github.com.",
+    });
+    expect(parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo")).toEqual({
+      ok: false,
+      message:
+        "Use a GitHub repo URL like https://github.com/owner/repo, optionally with /tree/<ref> or /commit/<sha>.",
+    });
+    expect(parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor/issues")).toEqual({
+      ok: false,
+      message:
+        "Use a GitHub repo URL like https://github.com/owner/repo, optionally with /tree/<ref> or /commit/<sha>.",
+    });
+    expect(
+      parseGitHubSourceUrl("https://github.com/UsefulSoftwareCo/executor/commit/main"),
+    ).toEqual({
+      ok: false,
+      message: "GitHub commit URLs must include a commit SHA.",
+    });
+  });
+
   it("fetches a repo fileset and publishes provenance, description, and skipped entries", async () => {
     const files = new Map<string, string>([
       [
@@ -129,8 +218,11 @@ describe("GitHub custom-tools source", () => {
       ["docs/readme.md", "ignored"],
     ]);
     const github = makeGitHubFetch({ files, upstreamSha: "commit-a" });
-    const snapshot = await run(fetchGitHubSource({ repo: "acme/tools", fetch: github.fetch }));
+    const snapshot = await run(
+      fetchGitHubSource({ url: "https://github.com/acme/tools", fetch: github.fetch }),
+    );
     expect([...snapshot.files.keys()].sort()).toEqual(["executor.json", "tools/hello.ts"]);
+    expect(github.authHeaders().every((header) => header === null)).toBe(true);
     expect(snapshot.skipped).toEqual([
       { path: "workflows/deferred.ts", reason: "not supported yet" },
       { path: "docs/readme.md", reason: "ignored" },
@@ -142,7 +234,7 @@ describe("GitHub custom-tools source", () => {
       syncGitHubSource({
         runtime: host.runtime,
         scope: "githubTools",
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: github.fetch,
       }),
     );
@@ -156,6 +248,7 @@ describe("GitHub custom-tools source", () => {
     expect(descriptor?.description).toBe("Acme tools");
     expect(descriptor?.source).toEqual({
       kind: "github",
+      url: "https://github.com/acme/tools",
       repo: "acme/tools",
       ref: "main",
       upstreamSha: "commit-a",
@@ -177,7 +270,7 @@ describe("GitHub custom-tools source", () => {
       syncGitHubSource({
         runtime: host.runtime,
         scope: "githubTools",
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: github.fetch,
       }),
     );
@@ -185,7 +278,7 @@ describe("GitHub custom-tools source", () => {
       syncGitHubSource({
         runtime: host.runtime,
         scope: "githubTools",
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: github.fetch,
       }),
     );
@@ -206,7 +299,7 @@ describe("GitHub custom-tools source", () => {
     }
     const github = makeGitHubFetch({ files });
     const exit = await Effect.runPromiseExit(
-      fetchGitHubSource({ repo: "acme/tools", fetch: github.fetch }),
+      fetchGitHubSource({ url: "https://github.com/acme/tools", fetch: github.fetch }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("exceeding the limit");
@@ -230,7 +323,7 @@ export default defineTool({ description: "bad", input: { type: "object" }, async
       syncGitHubSource({
         runtime: host.runtime,
         scope: "githubTools",
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
         fetch: github.fetch,
       }),
     );
@@ -276,12 +369,14 @@ export default defineTool({ description: "bad", input: { type: "object" }, async
       syncGitHubSource({
         runtime: host.runtime,
         scope: "githubTools",
-        repo: "acme/tools",
+        url: "https://github.com/acme/tools",
+        token: "source-token",
         fetch: github.fetch,
       }),
     );
 
     expect(result.status).toBe("published");
+    expect(github.authHeaders().every((header) => header === "Bearer source-token")).toBe(true);
     expect(result.tools).toEqual(["ok"]);
     expect(result.skipped).toEqual([
       { path: "tools/link.ts", reason: "unsupported file type" },

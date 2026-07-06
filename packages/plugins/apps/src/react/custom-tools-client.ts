@@ -1,7 +1,7 @@
-import type { Connection } from "@executor-js/sdk/shared";
 import { Data, Effect, Schema } from "effect";
 
 import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
+import { parseGitHubSourceUrl } from "../source/github-url";
 
 export const CUSTOM_TOOLS_PLUGIN_KEY = "apps";
 export const CUSTOM_TOOLS_LABEL = "Custom tools";
@@ -11,9 +11,9 @@ export interface GitHubSourcesListResponse {
 }
 
 export interface SyncGitHubSourceRequest {
-  readonly repo: string;
+  readonly url: string;
   readonly ref?: string;
-  readonly connection: string;
+  readonly token?: string;
 }
 
 export type CustomToolsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -22,17 +22,14 @@ export class CustomToolsClientError extends Data.TaggedError("CustomToolsClientE
   readonly message: string;
 }> {}
 
-const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+export { parseGitHubSourceUrl };
 
-export const validateGitHubRepo = (repo: string): string | null => {
-  const trimmed = repo.trim();
-  if (trimmed.length === 0) return "Enter a GitHub repo.";
-  if (!REPO_RE.test(trimmed)) return "Use owner/name, for example UsefulSoftwareCo/executor.";
-  return null;
+export const validateGitHubSourceUrl = (url: string): string | null => {
+  const parsed = parseGitHubSourceUrl(url);
+  return parsed.ok ? null : parsed.message;
 };
 
-export const githubConnections = (connections: readonly Connection[]): readonly Connection[] =>
-  connections.filter((connection) => String(connection.integration) === "github");
+export const validateGitHubRepo = validateGitHubSourceUrl;
 
 const decodeJsonText = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
@@ -95,9 +92,9 @@ export const syncCustomToolSourceEffect = (
         headers: { "content-type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({
-          repo: input.repo.trim(),
+          url: input.url.trim(),
           ...(input.ref?.trim() ? { ref: input.ref.trim() } : {}),
-          connection: input.connection,
+          ...(input.token?.trim() ? { token: input.token.trim() } : {}),
         }),
       }),
     catch: () => new CustomToolsClientError({ message: "Failed to sync custom tools." }),

@@ -32,7 +32,9 @@ export {
   makeAppsStore,
   type AppsStore,
   type AppsStoreDeps,
+  type GitHubSourceTokenRef,
   descriptorCollection,
+  githubSourceTokenCollection,
   scopeConnectionCollection,
 } from "./plugin/store";
 export {

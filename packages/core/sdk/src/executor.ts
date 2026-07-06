@@ -3148,6 +3148,53 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return yield* provider.list();
       });
 
+    const providersGet = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<string | null, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider) return null;
+        return yield* provider.get(id);
+      });
+
+    const providersHas = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<boolean, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider) return false;
+        if (provider.has) return yield* provider.has(id);
+        const value = yield* provider.get(id);
+        return value !== null;
+      });
+
+    const providersSetDefault = (
+      id: ProviderItemId,
+      value: string,
+    ): Effect.Effect<ProviderKey, CredentialProviderNotRegisteredError | StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = defaultWritableProvider();
+        if (!provider || !provider.set) {
+          return yield* new CredentialProviderNotRegisteredError({
+            provider: ProviderKey.make("default"),
+          });
+        }
+        yield* provider.set(id, value);
+        return provider.key;
+      });
+
+    const providersRemove = (
+      key: ProviderKey,
+      id: ProviderItemId,
+    ): Effect.Effect<void, StorageFailure> =>
+      Effect.gen(function* () {
+        const provider = credentialProviders.get(String(key));
+        if (!provider || !provider.delete) return;
+        yield* provider.delete(id);
+      });
+
     // ------------------------------------------------------------------
     // Policies — owner-ranked (user=0 inner, org=1 outer).
     // ------------------------------------------------------------------
@@ -3732,6 +3779,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         providers: {
           list: () => providersList(),
           items: (key) => providersItems(key),
+          get: (key, id) => providersGet(key, id),
+          has: (key, id) => providersHas(key, id),
+          setDefault: (id, value) => providersSetDefault(id, value),
+          remove: (key, id) => providersRemove(key, id),
         },
         oauth,
         execute: (address, args, options) => execute(address, args, options),

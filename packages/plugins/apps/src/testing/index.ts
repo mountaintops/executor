@@ -21,6 +21,10 @@ export const makeInMemoryAppsStore = (): AppsStore & {
   const descriptors = new Map<string, AppDescriptor>();
   const publishedAt = new Map<string, number>();
   const scopeConnections = new Map<string, string>();
+  const githubSourceTokens = new Map<
+    string,
+    { provider: string; itemId: string; updatedAt: number }
+  >();
   const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
     descriptors,
@@ -45,6 +49,10 @@ export const makeInMemoryAppsStore = (): AppsStore & {
       Effect.sync(() => void scopeConnections.set(keyFor(tenant, connectionName), scope)),
     getScopeForConnection: (tenant, connectionName) =>
       Effect.sync(() => scopeConnections.get(keyFor(tenant, connectionName)) ?? null),
+    putGitHubSourceTokenRef: (tenant, scope, ref) =>
+      Effect.sync(() => void githubSourceTokens.set(keyFor(tenant, scope), ref)),
+    getGitHubSourceTokenRef: (tenant, scope) =>
+      Effect.sync(() => githubSourceTokens.get(keyFor(tenant, scope)) ?? null),
   };
 };
 

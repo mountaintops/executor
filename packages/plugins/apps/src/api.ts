@@ -23,6 +23,7 @@ export {
 } from "./plugin/bindings";
 export {
   fetchGitHubSource,
+  parseGitHubSourceUrl,
   syncGitHubSource,
   GitHubSourceError,
   type GitHubSourceInput,

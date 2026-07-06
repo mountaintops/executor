@@ -7,7 +7,7 @@
 
 /** Descriptor schema version. Bumped on any breaking shape change. A reader
  *  refuses a descriptor from a version it does not understand. */
-export const DESCRIPTOR_VERSION = 4 as const;
+export const DESCRIPTOR_VERSION = 5 as const;
 
 /** Where an entry came from: path + content hash. Lets a projection point back
  *  at the exact source bytes without re-reading the snapshot, and makes the
@@ -38,10 +38,10 @@ export interface SourceSkippedArtifact {
 
 export interface GitHubSourceRef {
   readonly kind: "github";
+  readonly url: string;
   readonly repo: string;
   readonly ref: string;
   readonly upstreamSha: string;
-  readonly connection?: string;
   readonly skipped?: readonly SourceSkippedArtifact[];
 }
 

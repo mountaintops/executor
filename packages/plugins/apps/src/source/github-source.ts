@@ -5,9 +5,10 @@ import { PUBLISH_LIMITS, enforcePublishLimits } from "../pipeline/publish";
 import type { AppSourceRef, SourceSkippedArtifact } from "../pipeline/descriptor";
 import type { AppsRuntime } from "../plugin/runtime";
 import type { FileSet, SnapshotId } from "../seams/artifact-store";
+import { parseGitHubSourceUrl, type ParsedGitHubSourceUrl } from "./github-url";
 
 export interface GitHubSourceInput {
-  readonly repo: string;
+  readonly url: string;
   readonly ref?: string;
   readonly token?: string | null;
   readonly baseUrl?: string;
@@ -16,6 +17,7 @@ export interface GitHubSourceInput {
 
 export interface GitHubSourceSnapshot {
   readonly files: FileSet;
+  readonly url: string;
   readonly repo: string;
   readonly ref: string;
   readonly upstreamSha: string;
@@ -66,7 +68,6 @@ export interface SyncGitHubSourceInput extends GitHubSourceInput {
   readonly runtime: AppsRuntime;
   readonly tenant?: string;
   readonly scope: string;
-  readonly connection?: string;
 }
 
 const TOOL_RE = /^tools\/([a-z0-9][a-z0-9-]*)\.(ts|tsx|js|jsx)$/;
@@ -75,23 +76,21 @@ const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
 
 const trimBaseUrl = (baseUrl: string): string => baseUrl.replace(/\/+$/, "");
 
-const repoParts = (repo: string): { owner: string; name: string } | null => {
-  const [owner, name, ...rest] = repo.split("/");
-  if (!owner || !name || rest.length > 0) return null;
-  return { owner, name };
-};
+const encodedRepoPath = (source: ParsedGitHubSourceUrl): string =>
+  `${encodeURIComponent(source.owner)}/${encodeURIComponent(source.name)}`;
 
-const encodedRepoPath = (repo: string): Effect.Effect<string, GitHubSourceError> => {
-  const parsed = repoParts(repo);
-  if (!parsed) {
-    return Effect.fail(
-      new GitHubSourceError({
-        message: `GitHub repo must be "owner/name"; got "${repo}"`,
-        path: repo,
-      }),
-    );
-  }
-  return Effect.succeed(`${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.name)}`);
+const parseSourceInput = (
+  input: GitHubSourceInput,
+): Effect.Effect<ParsedGitHubSourceUrl, GitHubSourceError> => {
+  const parsed = parseGitHubSourceUrl(input.url, { ref: input.ref });
+  return parsed.ok
+    ? Effect.succeed(parsed.value)
+    : Effect.fail(
+        new GitHubSourceError({
+          message: parsed.message,
+          path: input.url,
+        }),
+      );
 };
 
 const acceptedPath = (path: string): boolean => path === "executor.json" || TOOL_RE.test(path);
@@ -298,9 +297,10 @@ export const fetchGitHubSource = (
   input: GitHubSourceInput,
 ): Effect.Effect<GitHubSourceSnapshot, GitHubSourceError | PublishError> =>
   Effect.gen(function* () {
-    const repoPath = yield* encodedRepoPath(input.repo);
+    const source = yield* parseSourceInput(input);
+    const repoPath = encodedRepoPath(source);
     const repo = yield* requestJson<RepoResponse>(input, `/repos/${repoPath}`);
-    const ref = input.ref ?? asString(repo.default_branch) ?? "main";
+    const ref = source.ref ?? asString(repo.default_branch) ?? "main";
     const branchRef = yield* requestJson<RefResponse>(
       input,
       `/repos/${repoPath}/git/ref/${encodeURIComponent(`heads/${ref}`)}`,
@@ -354,7 +354,8 @@ export const fetchGitHubSource = (
 
     return {
       files,
-      repo: input.repo,
+      url: source.ref ? source.url : `https://github.com/${source.repo}`,
+      repo: source.repo,
       ref,
       upstreamSha,
       description: yield* executorDescription(files),
@@ -379,12 +380,12 @@ const sourceErrorToSyncError = (sourceFailure: GitHubSourceError): SyncErrorData
   };
 };
 
-const sourceRef = (snapshot: GitHubSourceSnapshot, connection?: string): AppSourceRef => ({
+const sourceRef = (snapshot: GitHubSourceSnapshot): AppSourceRef => ({
   kind: "github",
+  url: snapshot.url,
   repo: snapshot.repo,
   ref: snapshot.ref,
   upstreamSha: snapshot.upstreamSha,
-  ...(connection ? { connection } : {}),
   skipped: snapshot.skipped,
 });
 
@@ -427,7 +428,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
         scope: input.scope,
         files: snapshot.files,
         description: snapshot.description,
-        source: sourceRef(snapshot, input.connection),
+        source: sourceRef(snapshot),
         message: `sync ${snapshot.repo}@${snapshot.upstreamSha}`,
       })
       .pipe(Effect.result);
@@ -449,3 +450,6 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
       skipped: [...snapshot.skipped, ...published.success.skipped],
     } satisfies GitHubSyncResult;
   });
+
+export { parseGitHubSourceUrl } from "./github-url";
+export type { ParsedGitHubSourceUrl } from "./github-url";
