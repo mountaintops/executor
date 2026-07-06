@@ -53,24 +53,28 @@ import {
   microsoftServiceSlug,
 } from "./presets";
 
-export interface MicrosoftGraphConfig {
-  readonly presetIds?: readonly string[];
-  readonly customScopes?: readonly string[];
-  readonly slug?: string;
-  readonly name?: string;
-  readonly description?: string;
-  readonly baseUrl?: string;
-  readonly specUrl?: string;
-  readonly authorizationUrl?: string;
-  readonly tokenUrl?: string;
-  readonly clientCredentialsTokenUrl?: string;
-}
+export const MICROSOFT_CUSTOM_WORKLOAD_ID = "custom";
 
-export interface MicrosoftWorkloadConfig {
+export interface MicrosoftPresetWorkloadConfig {
   readonly presetId: string;
   readonly slug?: string;
   readonly name?: string;
 }
+
+export interface MicrosoftCustomWorkloadConfig {
+  readonly custom: {
+    readonly customScopes: readonly string[];
+    readonly slug?: string;
+    readonly name: string;
+    readonly description?: string;
+    readonly specUrl?: string;
+    readonly authorizationUrl?: string;
+    readonly tokenUrl?: string;
+    readonly clientCredentialsTokenUrl?: string;
+  };
+}
+
+export type MicrosoftWorkloadConfig = MicrosoftPresetWorkloadConfig | MicrosoftCustomWorkloadConfig;
 
 export interface MicrosoftAddWorkloadsInput {
   readonly workloads: readonly MicrosoftWorkloadConfig[];
@@ -126,16 +130,28 @@ export interface MicrosoftUpdateResult {
 export interface MicrosoftPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
   /**
-   * Allows `addGraph` to point spec/base/OAuth URLs at a trusted https host
-   * other than the pinned Microsoft Graph endpoints, or at plain http on
-   * loopback (local Graph emulators). Off by default; hosts wire this to
-   * their own local-network dev posture (e.g. `allowLocalNetwork`), never on
+   * Allows custom workload entries to point spec/base/OAuth URLs at a trusted
+   * https host other than the pinned Microsoft Graph endpoints, or at plain
+   * http on loopback (local Graph emulators). Off by default; hosts wire this
+   * to their own local-network dev posture (e.g. `allowLocalNetwork`), never
    * in production.
    */
   readonly allowUnsafeUrlOverrides?: boolean;
 }
 
 const DEFAULT_MICROSOFT_SLUG = "microsoft_graph";
+
+const isMicrosoftPresetWorkloadConfig = (
+  workload: MicrosoftWorkloadConfig,
+): workload is MicrosoftPresetWorkloadConfig => "presetId" in workload;
+
+const microsoftWorkloadEntryId = (workload: MicrosoftWorkloadConfig): string =>
+  isMicrosoftPresetWorkloadConfig(workload) ? workload.presetId : MICROSOFT_CUSTOM_WORKLOAD_ID;
+
+const microsoftWorkloadEntrySlug = (workload: MicrosoftWorkloadConfig): IntegrationSlug =>
+  isMicrosoftPresetWorkloadConfig(workload)
+    ? IntegrationSlug.make(workload.slug?.trim() || microsoftServiceSlug(workload.presetId))
+    : IntegrationSlug.make(workload.custom.slug?.trim() || "microsoft_graph_custom");
 
 type MicrosoftAddWorkloadOutcome = {
   readonly added: readonly MicrosoftAddWorkloadsAdded[];
@@ -150,7 +166,7 @@ const microsoftAddWorkloadFailure = (
 ): MicrosoftAddWorkloadOutcome => ({
   added: [],
   skipped: [],
-  failed: [{ slug, presetId: workload.presetId, error }],
+  failed: [{ slug, presetId: microsoftWorkloadEntryId(workload), error }],
 });
 
 const describeMicrosoftAuthMethods = (
@@ -210,7 +226,7 @@ const makeMicrosoftPluginExtension = (
       keepPathItem: microsoftGraphKeepPathItem(graph),
     });
 
-  const addMicrosoftGraphIntegration = (input: {
+  const addMicrosoftOpenApiIntegration = (input: {
     readonly selection: MicrosoftGraphSelectionInput;
     readonly slug: IntegrationSlug;
     readonly name: string;
@@ -284,17 +300,35 @@ const makeMicrosoftPluginExtension = (
       return { slug, toolCount: persisted.toolCount };
     });
 
-  const addGraph = (config: MicrosoftGraphConfig) =>
-    addMicrosoftGraphIntegration({
-      selection: config,
-      slug: IntegrationSlug.make(config.slug?.trim() || DEFAULT_MICROSOFT_SLUG),
-      name: config.name?.trim() || "Microsoft Graph",
-      description: config.description ?? "Selected Microsoft Graph workloads.",
-      baseUrl: config.baseUrl,
-    });
-
   const addOneWorkload = (workload: MicrosoftWorkloadConfig, baseUrl?: string) =>
     Effect.gen(function* () {
+      if (!isMicrosoftPresetWorkloadConfig(workload)) {
+        if (workload.custom.customScopes.length === 0) {
+          return yield* new OpenApiParseError({
+            message: "Custom Microsoft Graph workload requires at least one scope",
+          });
+        }
+        return yield* addMicrosoftOpenApiIntegration({
+          selection: {
+            presetIds: [],
+            customScopes: workload.custom.customScopes,
+            ...(baseUrl ? { baseUrl } : {}),
+            ...(workload.custom.specUrl ? { specUrl: workload.custom.specUrl } : {}),
+            ...(workload.custom.authorizationUrl
+              ? { authorizationUrl: workload.custom.authorizationUrl }
+              : {}),
+            ...(workload.custom.tokenUrl ? { tokenUrl: workload.custom.tokenUrl } : {}),
+            ...(workload.custom.clientCredentialsTokenUrl
+              ? { clientCredentialsTokenUrl: workload.custom.clientCredentialsTokenUrl }
+              : {}),
+          },
+          slug: microsoftWorkloadEntrySlug(workload),
+          name: workload.custom.name.trim() || "Custom Microsoft Graph",
+          description: workload.custom.description ?? "Custom Microsoft Graph scopes.",
+          baseUrl,
+        });
+      }
+
       const preset = microsoftGraphPresetForId(workload.presetId);
       if (!preset) {
         return yield* new OpenApiParseError({
@@ -308,7 +342,7 @@ const makeMicrosoftPluginExtension = (
       // check even when the profile workload is not selected. Scopes are this
       // preset's scopes plus the identity scope (User.Read), derived by
       // `microsoftGraphScopesForPresetIds` inside the spec build.
-      return yield* addMicrosoftGraphIntegration({
+      return yield* addMicrosoftOpenApiIntegration({
         selection: { presetIds: [preset.id] },
         slug: IntegrationSlug.make(workload.slug?.trim() || microsoftServiceSlug(preset.id)),
         name: workload.name?.trim() || preset.name,
@@ -325,16 +359,15 @@ const makeMicrosoftPluginExtension = (
       const outcomes = yield* Effect.forEach(
         input.workloads,
         (workload): Effect.Effect<MicrosoftAddWorkloadOutcome, never> => {
-          const slug = IntegrationSlug.make(
-            workload.slug?.trim() || microsoftServiceSlug(workload.presetId),
-          );
+          const slug = microsoftWorkloadEntrySlug(workload);
+          const presetId = microsoftWorkloadEntryId(workload);
           return addOneWorkload(workload, input.baseUrl).pipe(
             Effect.map(
               (result): MicrosoftAddWorkloadOutcome => ({
                 added: [
                   {
                     slug: result.slug,
-                    presetId: workload.presetId,
+                    presetId,
                     toolCount: result.toolCount,
                   },
                 ],
@@ -348,7 +381,7 @@ const makeMicrosoftPluginExtension = (
                 skipped: [
                   {
                     slug,
-                    presetId: workload.presetId,
+                    presetId,
                     reason: "already_exists" as const,
                   },
                 ],
@@ -458,7 +491,6 @@ const makeMicrosoftPluginExtension = (
     });
 
   return {
-    addGraph,
     addWorkloads,
     updateGraph,
     removeGraph: (slug: string) =>
@@ -559,7 +591,7 @@ export const microsoftPlugin = definePlugin((options?: MicrosoftPluginOptions) =
     }),
 
   // Health checks reuse the OpenAPI backing (same store). GET /me is
-  // auto-defaulted at addGraph when present; core owns the stored spec.
+  // auto-defaulted when present; core owns the stored spec.
   listHealthCheckCandidates: (input) =>
     listHealthCheckCandidatesOpenApi({ ctx: input.ctx, integration: input.integration }),
   checkHealth: (input) =>

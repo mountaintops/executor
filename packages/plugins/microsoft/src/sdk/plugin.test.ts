@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 import {
@@ -14,10 +14,7 @@ import { microsoftPlugin, type MicrosoftPluginOptions } from "./plugin";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
-  MICROSOFT_GRAPH_ALL_PRESET_IDS,
   MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES,
-  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
-  MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_GRAPH_PERMISSIONS_REFERENCE_URL,
 } from "./presets";
@@ -140,6 +137,9 @@ paths:
   /v1.0/users:
     get:
       operationId: graphUser_List
+      security:
+        - azureAdDelegated:
+            - User.Read.All
       responses:
         "200":
           description: OK
@@ -177,6 +177,9 @@ paths:
   /v1.0/users:
     get:
       operationId: graphUser_List
+      security:
+        - azureAdDelegated:
+            - User.Read.All
       responses:
         "200":
           description: OK
@@ -265,160 +268,67 @@ describe("Microsoft Graph provider", () => {
           }),
         );
 
-        const exit = yield* executor.microsoft
-          .addGraph({
-            slug: "bad_graph",
-            baseUrl: "https://attacker.example/v1.0",
-            specUrl: "https://attacker.example/openapi.yaml",
-            authorizationUrl: "https://attacker.example/oauth2/v2.0/authorize",
-            tokenUrl: "https://attacker.example/oauth2/v2.0/token",
-            clientCredentialsTokenUrl: "https://attacker.example/oauth2/v2.0/token",
-          })
-          .pipe(Effect.exit);
+        const result = yield* executor.microsoft.addWorkloads({
+          baseUrl: "https://attacker.example/v1.0",
+          workloads: [
+            {
+              custom: {
+                customScopes: ["User.Read.All"],
+                slug: "bad_graph",
+                name: "Bad Graph",
+                specUrl: "https://attacker.example/openapi.yaml",
+                authorizationUrl: "https://attacker.example/oauth2/v2.0/authorize",
+                tokenUrl: "https://attacker.example/oauth2/v2.0/token",
+                clientCredentialsTokenUrl: "https://attacker.example/oauth2/v2.0/token",
+              },
+            },
+          ],
+        });
 
-        expect(Exit.isFailure(exit)).toBe(true);
+        expect(result).toEqual({
+          added: [],
+          skipped: [],
+          failed: [
+            {
+              slug: IntegrationSlug.make("bad_graph"),
+              presetId: "custom",
+              error:
+                "Microsoft Graph specUrl must point to the trusted Microsoft Graph OpenAPI source",
+            },
+          ],
+        });
         expect(requests).toBe(0);
       }),
     ),
   );
 
-  it.effect("adds a selected Graph workload source with one OAuth template", () =>
+  it.effect("custom workload with custom scopes stays custom-only, no default workloads", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
 
-        const result = yield* executor.microsoft.addGraph({
-          presetIds: ["profile", "mail"],
-          slug: "microsoft_graph",
-          description: "Microsoft Graph",
+        const result = yield* executor.microsoft.addWorkloads({
+          workloads: [
+            {
+              custom: {
+                customScopes: ["Custom.Scope"],
+                slug: "microsoft_graph_custom",
+                name: "Custom Microsoft Graph",
+              },
+            },
+          ],
         });
 
-        expect(String(result.slug)).toBe("microsoft_graph");
-
-        const config = yield* executor.microsoft.getConfig("microsoft_graph");
-        expect(config?.microsoftGraphPresetIds).toEqual(["profile", "mail"]);
-        expect(config?.microsoftGraphCoversFullGraph).toBe(false);
-        expect(config?.microsoftGraphScopes).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Mail.Send",
-          "MailboxSettings.ReadWrite",
-        ]);
-
-        const oauthTemplates = config?.authenticationTemplate?.filter(
-          (entry) => entry.kind === "oauth2",
-        );
-        const delegated = oauthTemplates?.find(
-          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
-        );
-        const clientCredentials = oauthTemplates?.find(
-          (entry) => String(entry.slug) === MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
-        );
-        expect(delegated?.kind === "oauth2" ? delegated.slug : undefined).toBe(
-          AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
-        );
-        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Mail.Send",
-          "MailboxSettings.ReadWrite",
-        ]);
-        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.slug : undefined).toBe(
-          AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
-        );
-        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.scopes : undefined).toEqual(
-          [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
-        );
-
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("main"),
-          integration: IntegrationSlug.make("microsoft_graph"),
-          template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
-          value: "token-xyz",
-        });
-
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("me.getUser");
-        expect(toolNames).toContain("me.messagesListMessages");
-        expect(toolNames).not.toContain("sites.listSites");
-      }),
-    ),
-  );
-
-  it.effect("adds common Microsoft Graph workloads by default", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
-
-        yield* executor.microsoft.addGraph({
-          slug: "microsoft_graph_all",
-          description: "Microsoft Graph",
-        });
-
-        const config = yield* executor.microsoft.getConfig("microsoft_graph_all");
-        expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_DEFAULT_PRESET_IDS);
-        expect(config?.microsoftGraphCoversFullGraph).toBe(false);
-        expect(config?.microsoftGraphScopes).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Mail.Send",
-          "MailboxSettings.ReadWrite",
-          "Calendars.ReadWrite",
-          "Contacts.ReadWrite",
-          "People.Read.All",
-          "Tasks.ReadWrite",
-          "Files.ReadWrite.All",
-          "Sites.ReadWrite.All",
-          "Notes.ReadWrite",
-          "Chat.ReadWrite",
-          "Team.ReadBasic.All",
-          "Channel.ReadBasic.All",
-          "ChannelMessage.Read.All",
-          "ChannelMessage.Send",
-          "OnlineMeetings.ReadWrite",
-        ]);
-
-        const delegated = config?.authenticationTemplate?.find(
-          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
-        );
-        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual(
-          config?.microsoftGraphScopes,
-        );
-
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("all"),
-          integration: IntegrationSlug.make("microsoft_graph_all"),
-          template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
-          value: "token-xyz",
-        });
-
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("me.getUser");
-        expect(toolNames).toContain("me.messagesListMessages");
-        expect(toolNames).toContain("me.eventsListEvents");
-        expect(toolNames).toContain("me.onenotePagesListPages");
-        expect(toolNames).toContain("sites.listSites");
-      }),
-    ),
-  );
-
-  it.effect("empty presetIds with custom scopes stays custom-only, no default workloads", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
-
-        // The add flow fans checked workloads out through addWorkloads and
-        // sends the custom scopes here with presetIds: []. Folding the
-        // defaults back in would duplicate the fanned-out workloads' tools.
-        yield* executor.microsoft.addGraph({
-          slug: "microsoft_graph_custom",
-          presetIds: [],
-          customScopes: ["Custom.Scope"],
+        expect(result).toEqual({
+          added: [
+            {
+              slug: IntegrationSlug.make("microsoft_graph_custom"),
+              presetId: "custom",
+              toolCount: 1,
+            },
+          ],
+          skipped: [],
+          failed: [],
         });
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph_custom");
@@ -434,149 +344,68 @@ describe("Microsoft Graph provider", () => {
     ),
   );
 
-  it.effect("uses the app registration default scope when every Graph workload is selected", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
+  it.effect(
+    "adds a custom Microsoft workload from the emulator spec with app-only OAuth endpoints",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const executor = yield* createExecutor(
+            makeTestConfig({ plugins: graphPlugins({ allowUnsafeUrlOverrides: true }) }),
+          );
 
-        yield* executor.microsoft.addGraph({
-          presetIds: [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
-          slug: "microsoft_graph_full",
-          description: "Microsoft Graph",
-        });
+          yield* executor.microsoft.addWorkloads({
+            baseUrl: EMULATOR_BASE_URL,
+            workloads: [
+              {
+                custom: {
+                  customScopes: ["User.Read.All"],
+                  slug: "microsoft_graph_emulated",
+                  name: "Microsoft Graph Emulator",
+                  specUrl: EMULATOR_SPEC_URL,
+                },
+              },
+            ],
+          });
 
-        const config = yield* executor.microsoft.getConfig("microsoft_graph_full");
-        expect(config?.microsoftGraphPresetIds).toEqual(MICROSOFT_GRAPH_ALL_PRESET_IDS);
-        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
-        expect(config?.microsoftGraphScopes).toEqual(MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES);
+          const config = yield* executor.microsoft.getConfig("microsoft_graph_emulated");
+          expect(config?.sourceUrl).toBe(EMULATOR_SPEC_URL);
+          expect(config?.baseUrl).toBe(EMULATOR_BASE_URL);
+          expect(config?.microsoftGraphAuthorizationUrl).toBe(
+            `${EMULATOR_BASE_URL}/oauth2/v2.0/authorize`,
+          );
+          expect(config?.microsoftGraphTokenUrl).toBe(`${EMULATOR_BASE_URL}/oauth2/v2.0/token`);
+          expect(config?.microsoftGraphClientCredentialsTokenUrl).toBe(
+            `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
+          );
 
-        const delegated = config?.authenticationTemplate?.find(
-          (entry) => String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
-        );
-        expect(delegated?.kind === "oauth2" ? delegated.scopes : undefined).toEqual([
-          ...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
-        ]);
+          const delegated = config?.authenticationTemplate?.find(
+            (entry) =>
+              entry.kind === "oauth2" && String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
+          );
+          const clientCredentials = config?.authenticationTemplate?.find(
+            (entry) =>
+              entry.kind === "oauth2" &&
+              String(entry.slug) === MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+          );
+          expect(delegated?.kind === "oauth2" ? delegated.tokenUrl : undefined).toBe(
+            `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
+          );
+          expect(
+            clientCredentials?.kind === "oauth2" ? clientCredentials.scopes : undefined,
+          ).toEqual([...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES]);
 
-        // Full-graph add routes through the streaming compile (the path the
-        // real 37MB spec takes): the source text is structurally split and each
-        // op's binding plus a `description` is persisted, alongside the
-        // content-addressed defs blob, never materializing the whole-document
-        // tree. Read the operations back through the live serve path to prove
-        // they landed in storage AND that the serve fast path rebuilds tools
-        // from the persisted bindings (no spec parse).
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("full"),
-          integration: IntegrationSlug.make("microsoft_graph_full"),
-          template: AuthTemplateSlug.make(MICROSOFT_AUTH_TEMPLATE_SLUG),
-          value: "token-xyz",
-        });
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("machine"),
+            integration: IntegrationSlug.make("microsoft_graph_emulated"),
+            template: AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
+            value: "token-xyz",
+          });
 
-        const tools = yield* executor.tools.list();
-        const toolNames = tools.map((tool) => String(tool.name));
-        expect(toolNames).toContain("me.getUser");
-        expect(toolNames).toContain("me.messagesListMessages");
-        expect(toolNames).toContain("sites.listSites");
-
-        // The serve fast path must rebuild every tool's description from the
-        // persisted operation, not drop it. Each graph tool carries a non-empty
-        // description.
-        for (const tool of tools) {
-          expect(tool.description.length).toBeGreaterThan(0);
-        }
-
-        // `me.getUser`'s spec summary survives the add -> persist -> serve
-        // round-trip. The bare `${METHOD} ${path}` fallback inside the serve
-        // path would be "GET /me", so matching the summary proves the persisted
-        // `description` field is what's served.
-        const getUser = tools.find((tool) => String(tool.name) === "me.getUser");
-        expect(getUser?.description).toBe("Get the signed-in user profile");
-
-        // An op without a spec summary falls back to `${METHOD} ${path}`, also
-        // sourced from the persisted binding on the serve fast path.
-        const listSites = tools.find((tool) => String(tool.name) === "sites.listSites");
-        expect(listSites?.description).toBe("GET /sites");
-      }),
-    ),
-  );
-
-  it.effect("uses explicit full Graph scopes when custom dynamic scopes are added", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
-
-        yield* executor.microsoft.addGraph({
-          slug: "microsoft_graph_all_custom",
-          presetIds: [...MICROSOFT_GRAPH_ALL_PRESET_IDS],
-          customScopes: ["Custom.Scope"],
-        });
-
-        const config = yield* executor.microsoft.getConfig("microsoft_graph_all_custom");
-        expect(config?.microsoftGraphCoversFullGraph).toBe(true);
-        expect(config?.microsoftGraphScopes).toEqual([
-          "offline_access",
-          "User.Read",
-          "Mail.ReadWrite",
-          "Calendars.ReadWrite",
-          "Notes.ReadWrite",
-          "Custom.Scope",
-        ]);
-      }),
-    ),
-  );
-
-  it.effect("adds Microsoft Graph from the emulator spec with app-only OAuth endpoints", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const executor = yield* createExecutor(
-          makeTestConfig({ plugins: graphPlugins({ allowUnsafeUrlOverrides: true }) }),
-        );
-
-        yield* executor.microsoft.addGraph({
-          presetIds: ["users"],
-          slug: "microsoft_graph_emulated",
-          baseUrl: EMULATOR_BASE_URL,
-          specUrl: EMULATOR_SPEC_URL,
-        });
-
-        const config = yield* executor.microsoft.getConfig("microsoft_graph_emulated");
-        expect(config?.sourceUrl).toBe(EMULATOR_SPEC_URL);
-        expect(config?.baseUrl).toBe(EMULATOR_BASE_URL);
-        expect(config?.microsoftGraphAuthorizationUrl).toBe(
-          `${EMULATOR_BASE_URL}/oauth2/v2.0/authorize`,
-        );
-        expect(config?.microsoftGraphTokenUrl).toBe(`${EMULATOR_BASE_URL}/oauth2/v2.0/token`);
-        expect(config?.microsoftGraphClientCredentialsTokenUrl).toBe(
-          `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
-        );
-
-        const delegated = config?.authenticationTemplate?.find(
-          (entry) => entry.kind === "oauth2" && String(entry.slug) === MICROSOFT_AUTH_TEMPLATE_SLUG,
-        );
-        const clientCredentials = config?.authenticationTemplate?.find(
-          (entry) =>
-            entry.kind === "oauth2" &&
-            String(entry.slug) === MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
-        );
-        expect(delegated?.kind === "oauth2" ? delegated.tokenUrl : undefined).toBe(
-          `${EMULATOR_BASE_URL}/oauth2/v2.0/token`,
-        );
-        expect(clientCredentials?.kind === "oauth2" ? clientCredentials.scopes : undefined).toEqual(
-          [...MICROSOFT_GRAPH_CLIENT_CREDENTIALS_SCOPES],
-        );
-
-        yield* executor.connections.create({
-          owner: "org",
-          name: ConnectionName.make("machine"),
-          integration: IntegrationSlug.make("microsoft_graph_emulated"),
-          template: AuthTemplateSlug.make(MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG),
-          value: "token-xyz",
-        });
-
-        const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
-        expect(toolNames).toContain("users.graphUserList");
-      }),
-    ),
+          const toolNames = (yield* executor.tools.list()).map((tool) => String(tool.name));
+          expect(toolNames).toContain("users.graphUserList");
+        }),
+      ),
   );
 
   it.effect("accepts a loopback http emulator spec only when the override is enabled", () =>
@@ -586,11 +415,18 @@ describe("Microsoft Graph provider", () => {
           makeTestConfig({ plugins: graphPlugins({ allowUnsafeUrlOverrides: true }) }),
         );
 
-        yield* executor.microsoft.addGraph({
-          presetIds: ["users"],
-          slug: "microsoft_graph_local_emulated",
+        yield* executor.microsoft.addWorkloads({
           baseUrl: LOCAL_EMULATOR_BASE_URL,
-          specUrl: LOCAL_EMULATOR_SPEC_URL,
+          workloads: [
+            {
+              custom: {
+                customScopes: ["User.Read.All"],
+                slug: "microsoft_graph_local_emulated",
+                name: "Microsoft Graph Local Emulator",
+                specUrl: LOCAL_EMULATOR_SPEC_URL,
+              },
+            },
+          ],
         });
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph_local_emulated");
@@ -605,15 +441,28 @@ describe("Microsoft Graph provider", () => {
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
 
-        const exit = yield* executor.microsoft
-          .addGraph({
-            slug: "microsoft_graph_local_disabled",
-            baseUrl: LOCAL_EMULATOR_BASE_URL,
-            specUrl: LOCAL_EMULATOR_SPEC_URL,
-          })
-          .pipe(Effect.exit);
+        const result = yield* executor.microsoft.addWorkloads({
+          baseUrl: LOCAL_EMULATOR_BASE_URL,
+          workloads: [
+            {
+              custom: {
+                customScopes: ["User.Read.All"],
+                slug: "microsoft_graph_local_disabled",
+                name: "Microsoft Graph Local Emulator",
+                specUrl: LOCAL_EMULATOR_SPEC_URL,
+              },
+            },
+          ],
+        });
 
-        expect(Exit.isFailure(exit)).toBe(true);
+        expect(result.failed).toEqual([
+          {
+            slug: IntegrationSlug.make("microsoft_graph_local_disabled"),
+            presetId: "custom",
+            error:
+              "Microsoft Graph specUrl must point to the trusted Microsoft Graph OpenAPI source",
+          },
+        ]);
       }),
     ),
   );
@@ -645,15 +494,28 @@ describe("Microsoft Graph provider", () => {
           }),
         );
 
-        const exit = yield* executor.microsoft
-          .addGraph({
-            slug: "microsoft_graph_http_example",
-            baseUrl: "http://example.com/v1.0",
-            specUrl: "http://example.com/openapi.yaml",
-          })
-          .pipe(Effect.exit);
+        const result = yield* executor.microsoft.addWorkloads({
+          baseUrl: "http://example.com/v1.0",
+          workloads: [
+            {
+              custom: {
+                customScopes: ["User.Read.All"],
+                slug: "microsoft_graph_http_example",
+                name: "Microsoft Graph HTTP Example",
+                specUrl: "http://example.com/openapi.yaml",
+              },
+            },
+          ],
+        });
 
-        expect(Exit.isFailure(exit)).toBe(true);
+        expect(result.failed).toEqual([
+          {
+            slug: IntegrationSlug.make("microsoft_graph_http_example"),
+            presetId: "custom",
+            error:
+              "Microsoft Graph specUrl must point to the trusted Microsoft Graph OpenAPI source",
+          },
+        ]);
         expect(requests).toBe(0);
       }),
     ),
@@ -955,15 +817,19 @@ describe("Microsoft Graph per-workload add flow", () => {
 });
 
 describe("Microsoft Graph health-check default", () => {
-  it.effect("addGraph without profile still auto-configures the /me identity check", () =>
+  it.effect("mail workload still auto-configures the /me identity check", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
 
-        yield* executor.microsoft.addGraph({
-          presetIds: ["mail"],
-          slug: "microsoft_graph_mail_hc",
-          description: "Microsoft Graph",
+        yield* executor.microsoft.addWorkloads({
+          workloads: [
+            {
+              presetId: "mail",
+              slug: "microsoft_graph_mail_hc",
+              name: "Microsoft Graph Mail",
+            },
+          ],
         });
 
         const config = yield* executor.microsoft.getConfig("microsoft_graph_mail_hc");
@@ -1000,15 +866,19 @@ describe("Microsoft Graph health-check default", () => {
     ),
   );
 
-  it.effect("addGraph with a /me workload auto-configures the identity health check", () =>
+  it.effect("profile workload auto-configures the identity health check", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const executor = yield* createExecutor(makeTestConfig({ plugins: graphPlugins() }));
 
-        yield* executor.microsoft.addGraph({
-          presetIds: ["profile", "mail"],
-          slug: "microsoft_graph_hc",
-          description: "Microsoft Graph",
+        yield* executor.microsoft.addWorkloads({
+          workloads: [
+            {
+              presetId: "profile",
+              slug: "microsoft_graph_hc",
+              name: "Microsoft Graph Profile",
+            },
+          ],
         });
 
         // GET /me is the canonical Graph identity endpoint: the default probe

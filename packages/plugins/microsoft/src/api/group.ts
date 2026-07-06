@@ -46,29 +46,26 @@ const OAuthTemplatePayload = Schema.Struct({
 const AuthenticationPayload = Schema.Union([OAuthTemplatePayload, ApiKeyAuthTemplate]);
 const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMethod]);
 
-const AddGraphPayload = Schema.Struct({
-  presetIds: Schema.Array(Schema.String),
-  customScopes: Schema.optional(Schema.Array(Schema.String)),
-  slug: Schema.optional(Schema.String),
-  name: Schema.optional(Schema.String),
-  description: Schema.optional(Schema.String),
-  baseUrl: Schema.optional(Schema.String),
-  specUrl: Schema.optional(Schema.String),
-  authorizationUrl: Schema.optional(Schema.String),
-  tokenUrl: Schema.optional(Schema.String),
-  clientCredentialsTokenUrl: Schema.optional(Schema.String),
-});
-
-const AddGraphResponse = Schema.Struct({
-  slug: IntegrationSlug,
-  toolCount: Schema.Number,
-});
-
-const AddWorkloadPayload = Schema.Struct({
+const AddPresetWorkloadPayload = Schema.Struct({
   presetId: Schema.String,
   slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
 });
+
+const AddCustomWorkloadPayload = Schema.Struct({
+  custom: Schema.Struct({
+    customScopes: Schema.Array(Schema.String),
+    slug: Schema.optional(Schema.String),
+    name: Schema.String,
+    description: Schema.optional(Schema.String),
+    specUrl: Schema.optional(Schema.String),
+    authorizationUrl: Schema.optional(Schema.String),
+    tokenUrl: Schema.optional(Schema.String),
+    clientCredentialsTokenUrl: Schema.optional(Schema.String),
+  }),
+});
+
+const AddWorkloadPayload = Schema.Union([AddPresetWorkloadPayload, AddCustomWorkloadPayload]);
 
 const AddWorkloadsPayload = Schema.Struct({
   workloads: Schema.Array(AddWorkloadPayload),
@@ -152,13 +149,6 @@ const ConfigureResponse = Schema.Struct({
 });
 
 export const MicrosoftGroup = HttpApiGroup.make("microsoft")
-  .add(
-    HttpApiEndpoint.post("addGraph", "/microsoft/graph", {
-      payload: AddGraphPayload,
-      success: AddGraphResponse,
-      error: DomainErrors,
-    }),
-  )
   .add(
     HttpApiEndpoint.post("addWorkloads", "/microsoft/workloads", {
       payload: AddWorkloadsPayload,

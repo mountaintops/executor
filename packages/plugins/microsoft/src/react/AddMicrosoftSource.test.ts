@@ -7,7 +7,6 @@ import type { ReactElement, ReactNode } from "react";
 import {
   MicrosoftWorkloadResultPanel,
   microsoftAddWorkloadsPayload,
-  microsoftCustomGraphPayload,
   submitMicrosoftWorkloadsSelection,
   type AddMicrosoftWorkloadsMutation,
 } from "./AddMicrosoftSource";
@@ -90,6 +89,11 @@ describe("AddMicrosoftSource per-workload submit", () => {
           presetId: "files",
           error: "Graph spec failed",
         },
+        {
+          slug: IntegrationSlug.make("microsoft_graph_custom"),
+          presetId: "custom",
+          error: "Custom Graph scope failed",
+        },
       ],
     };
 
@@ -107,6 +111,8 @@ describe("AddMicrosoftSource per-workload submit", () => {
     expect(text).toContain("Already exists");
     expect(text).toContain("OneDrive Files");
     expect(text).toContain("Graph spec failed");
+    expect(text).toContain("Custom Graph scopes");
+    expect(text).toContain("Custom Graph scope failed");
     expect(text).toContain("Retry");
   });
 
@@ -171,24 +177,32 @@ describe("AddMicrosoftSource per-workload submit", () => {
     });
   });
 
-  it("mixed flow: the custom Graph payload carries only custom scopes, never the fanned-out presets", () => {
-    // Checked workloads go through addWorkloads as their own integrations in
-    // the same submit; if the custom addGraph payload repeated their preset
-    // ids, the custom bundle would duplicate the same tools.
+  it("mixed flow: the custom workload entry carries only custom scopes, never the fanned-out presets", () => {
     expect(
-      microsoftCustomGraphPayload({
-        customScopes: ["Sites.Read.All", "Custom.Scope"],
-        slug: "microsoft_graph_custom",
-        name: "Custom Microsoft Graph",
-        description: "Custom Microsoft Graph scopes.",
-        baseUrl: "",
+      microsoftAddWorkloadsPayload({
+        presetIds: ["mail", "calendar"],
+        custom: {
+          customScopes: ["Sites.Read.All", "Custom.Scope"],
+          slug: "microsoft_graph_custom",
+          name: "Custom Microsoft Graph",
+          description: "Custom Microsoft Graph scopes.",
+        },
+        baseUrl: " https://graph.microsoft.com/beta ",
       }),
     ).toEqual({
-      presetIds: [],
-      customScopes: ["Sites.Read.All", "Custom.Scope"],
-      slug: "microsoft_graph_custom",
-      name: "Custom Microsoft Graph",
-      description: "Custom Microsoft Graph scopes.",
+      workloads: [
+        { presetId: "mail" },
+        { presetId: "calendar" },
+        {
+          custom: {
+            customScopes: ["Sites.Read.All", "Custom.Scope"],
+            slug: "microsoft_graph_custom",
+            name: "Custom Microsoft Graph",
+            description: "Custom Microsoft Graph scopes.",
+          },
+        },
+      ],
+      baseUrl: "https://graph.microsoft.com/beta",
     });
   });
 });

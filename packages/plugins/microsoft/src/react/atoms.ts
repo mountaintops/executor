@@ -17,8 +17,6 @@ export const microsoftConfigAtom = (slug: IntegrationSlug) =>
     reactivityKeys: [ReactivityKey.integrations, ReactivityKey.tools],
   });
 
-export const addMicrosoftGraph = MicrosoftClient.mutation("microsoft", "addGraph");
-
 export const addMicrosoftWorkloads = MicrosoftClient.mutation("microsoft", "addWorkloads");
 
 export const updateMicrosoftGraph = MicrosoftClient.mutation("microsoft", "updateGraph");

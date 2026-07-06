@@ -17,25 +17,6 @@ export const MicrosoftHandlers = HttpApiBuilder.group(
   "microsoft",
   (handlers) =>
     handlers
-      .handle("addGraph", ({ payload }) =>
-        capture(
-          Effect.gen(function* () {
-            const ext = yield* MicrosoftExtensionService;
-            return yield* ext.addGraph({
-              presetIds: payload.presetIds,
-              customScopes: payload.customScopes,
-              slug: payload.slug,
-              name: payload.name,
-              description: payload.description,
-              baseUrl: payload.baseUrl,
-              specUrl: payload.specUrl,
-              authorizationUrl: payload.authorizationUrl,
-              tokenUrl: payload.tokenUrl,
-              clientCredentialsTokenUrl: payload.clientCredentialsTokenUrl,
-            });
-          }),
-        ),
-      )
       .handle("addWorkloads", ({ payload }) =>
         capture(
           Effect.gen(function* () {

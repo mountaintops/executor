@@ -1,7 +1,6 @@
 export { microsoftIntegrationPlugin } from "./source-plugin";
 export { MicrosoftClient } from "./client";
 export {
-  addMicrosoftGraph,
   addMicrosoftWorkloads,
   microsoftConfigAtom,
   microsoftConfigFamily,
