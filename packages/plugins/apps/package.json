@@ -18,6 +18,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
+    "./client": "./src/react/plugin-client.tsx",
     "./seams": "./src/seams/index.ts",
     "./testing": "./src/testing/index.ts"
   },
@@ -37,14 +38,32 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@effect/atom-react": "catalog:",
     "@effect/vitest": "catalog:",
+    "@executor-js/react": "workspace:*",
     "@types/node": "catalog:",
+    "@types/react": "catalog:",
     "bun-types": "catalog:",
     "effect": "catalog:",
+    "react": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "effect": "catalog:"
+    "@effect/atom-react": "catalog:",
+    "@executor-js/react": "workspace:*",
+    "effect": "catalog:",
+    "react": "catalog:"
+  },
+  "peerDependenciesMeta": {
+    "@effect/atom-react": {
+      "optional": true
+    },
+    "@executor-js/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }

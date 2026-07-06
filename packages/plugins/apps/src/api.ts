@@ -13,7 +13,7 @@ export {
   type SelfHostAppsRuntime,
   type SelfHostAppsRuntimeOptions,
 } from "./plugin/self-host-runtime";
-export { type AppsRuntime } from "./plugin/runtime";
+export { type AppsRuntime, type GitHubCustomToolsSourceSummary } from "./plugin/runtime";
 export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
 export {
   BindingError,

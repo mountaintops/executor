@@ -159,6 +159,10 @@ describe("GitHub custom-tools source", () => {
       repo: "acme/tools",
       ref: "main",
       upstreamSha: "commit-a",
+      skipped: [
+        { path: "workflows/deferred.ts", reason: "not supported yet" },
+        { path: "docs/readme.md", reason: "ignored" },
+      ],
     });
     await host.close();
   });

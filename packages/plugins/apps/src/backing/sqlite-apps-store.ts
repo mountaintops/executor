@@ -77,6 +77,21 @@ export const makeSqliteAppsStore = (options: SqliteAppsStoreOptions): AppsStore 
         },
         catch: (cause) => storageFail("getDescriptor failed", cause),
       }),
+    listDescriptors: (tenant) =>
+      Effect.tryPromise({
+        try: async () => {
+          await init();
+          const res = await client.execute({
+            sql: "SELECT descriptor, published_at FROM descriptors WHERE tenant = ? ORDER BY published_at DESC",
+            args: [tenant],
+          });
+          return res.rows.map((row) => ({
+            descriptor: JSON.parse(String(row.descriptor)) as AppDescriptor,
+            publishedAt: Number(row.published_at),
+          }));
+        },
+        catch: (cause) => storageFail("listDescriptors failed", cause),
+      }),
     putScopeForConnection: (tenant, connectionName, scope) =>
       Effect.tryPromise({
         try: async () => {

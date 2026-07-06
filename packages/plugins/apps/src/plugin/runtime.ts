@@ -25,6 +25,7 @@ import {
 } from "./bindings";
 import type { AppsStore } from "./store";
 import { scopeAddress } from "../seams/scope-address";
+import type { GitHubSkippedArtifact } from "../source/github-source";
 
 // ---------------------------------------------------------------------------
 // AppsRuntime: the substrate-neutral core for published custom tools.
@@ -40,6 +41,19 @@ export interface AppsRuntimeDeps {
   readonly defaultTenant?: string;
 }
 
+export interface GitHubCustomToolsSourceSummary {
+  readonly scope: string;
+  readonly repo: string;
+  readonly ref: string;
+  readonly connection?: string;
+  readonly upstreamSha: string;
+  readonly snapshotId: string;
+  readonly description?: string;
+  readonly publishedAt: string;
+  readonly tools: readonly string[];
+  readonly skipped: readonly GitHubSkippedArtifact[];
+}
+
 export interface AppsRuntime {
   readonly publish: (input: {
     readonly tenant?: string;
@@ -53,6 +67,9 @@ export interface AppsRuntime {
     tenantOrScope: string,
     scope?: string,
   ) => Effect.Effect<AppDescriptor | null>;
+  readonly listGitHubSources: (
+    tenant?: string,
+  ) => Effect.Effect<readonly GitHubCustomToolsSourceSummary[]>;
   /** Re-derive the published-descriptor pointer from the latest committed
    *  snapshot. */
   readonly repair: (
@@ -341,6 +358,37 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           pointer
             ? Effect.succeed(pointer)
             : recoverFromSnapshot(tenant, scope).pipe(Effect.orElseSucceed(() => null)),
+        ),
+      );
+    },
+
+    listGitHubSources: (tenantInput) => {
+      const tenant = resolveTenant(tenantInput);
+      return deps.store.listDescriptors(tenant).pipe(
+        Effect.orElseSucceed(() => []),
+        Effect.map((records) =>
+          records.flatMap((record): GitHubCustomToolsSourceSummary[] => {
+            const { descriptor, publishedAt } = record;
+            const source = descriptor.source;
+            if (source?.kind !== "github") return [];
+            return [
+              {
+                scope: descriptor.scope,
+                repo: source.repo,
+                ref: source.ref,
+                ...(source.connection ? { connection: source.connection } : {}),
+                upstreamSha: source.upstreamSha,
+                snapshotId: descriptor.snapshotId,
+                ...(descriptor.description ? { description: descriptor.description } : {}),
+                publishedAt: new Date(publishedAt).toISOString(),
+                tools: descriptor.tools.map((tool) => tool.name),
+                skipped: [
+                  ...(source.skipped ?? []),
+                  ...(descriptor.skipped as readonly GitHubSkippedArtifact[]),
+                ],
+              },
+            ];
+          }),
         ),
       );
     },

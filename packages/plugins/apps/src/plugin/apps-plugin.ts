@@ -269,6 +269,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                   scope,
                   repo,
                   ref,
+                  connection,
                   token,
                   baseUrl: configBaseUrl(integration?.config),
                 });
@@ -277,6 +278,16 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                   yield* ctx.connections.refresh(catalog.ref).pipe(Effect.orElseSucceed(() => []));
                 }
                 return result;
+              }),
+          }),
+          tool<AppsStoreShape>({
+            name: "list_github_sources",
+            description: "List synced GitHub repositories that publish custom tools.",
+            execute: (_args, { ctx }) =>
+              Effect.gen(function* () {
+                const tenant = tenantFor(ctx);
+                const sources = yield* runtime.listGitHubSources(tenant);
+                return { sources };
               }),
           }),
         ],

@@ -153,8 +153,9 @@ export function IntegrationDetailPage(props: { namespace: string }) {
   // Find the plugin edit component based on integration kind
   const editPlugin = useMemo(() => {
     if (!integrationData) return null;
+    if (namespace === "apps") return integrationPlugins.find((p) => p.key === "apps") ?? null;
     return integrationPlugins.find((p) => p.key === integrationData.kind) ?? null;
-  }, [integrationData, integrationPlugins]);
+  }, [integrationData, integrationPlugins, namespace]);
 
   // Policies are pre-sorted by the server in evaluation order (owner rank, then
   // position ASC). The matcher walks the list and stops at the first hit per

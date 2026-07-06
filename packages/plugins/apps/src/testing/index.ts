@@ -19,14 +19,28 @@ export const makeInMemoryAppsStore = (): AppsStore & {
   readonly descriptors: Map<string, AppDescriptor>;
 } => {
   const descriptors = new Map<string, AppDescriptor>();
+  const publishedAt = new Map<string, number>();
   const scopeConnections = new Map<string, string>();
   const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
     descriptors,
     putDescriptor: (tenant, _owner, descriptor) =>
-      Effect.sync(() => void descriptors.set(keyFor(tenant, descriptor.scope), descriptor)),
+      Effect.sync(() => {
+        const key = keyFor(tenant, descriptor.scope);
+        descriptors.set(key, descriptor);
+        publishedAt.set(key, Date.now());
+      }),
     getDescriptor: (tenant, scope) =>
       Effect.sync(() => descriptors.get(keyFor(tenant, scope)) ?? null),
+    listDescriptors: (tenant) =>
+      Effect.sync(() =>
+        [...descriptors.entries()]
+          .filter(([key]) => key.startsWith(`${tenant}:`))
+          .map(([key, descriptor]) => ({
+            descriptor,
+            publishedAt: publishedAt.get(key) ?? 0,
+          })),
+      ),
     putScopeForConnection: (tenant, connectionName, scope) =>
       Effect.sync(() => void scopeConnections.set(keyFor(tenant, connectionName), scope)),
     getScopeForConnection: (tenant, connectionName) =>

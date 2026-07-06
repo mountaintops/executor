@@ -1,4 +1,4 @@
-import { HttpEffect, HttpRouter } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { Data, Effect, Layer } from "effect";
 
 import {
@@ -18,12 +18,6 @@ class AppsSyncRouteError extends Data.TaggedError("AppsSyncRouteError")<{
   readonly status: number;
   readonly message: string;
 }> {}
-
-const jsonResponse = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
 
 const parseJson = (request: Request): Effect.Effect<unknown, AppsSyncRouteError> =>
   Effect.tryPromise({
@@ -51,41 +45,76 @@ export interface SelfHostAppsSyncRouteDeps {
   readonly db: SelfHostDbHandle;
 }
 
+const routeHandler = (
+  run: (request: Request) => Effect.Effect<unknown, unknown, unknown>,
+): Effect.Effect<HttpServerResponse.HttpServerResponse, never, unknown> =>
+  Effect.gen(function* () {
+    const httpRequest = yield* HttpServerRequest.HttpServerRequest;
+    const request = yield* HttpServerRequest.toWeb(httpRequest).pipe(Effect.orDie);
+    return yield* run(request).pipe(
+      Effect.map((body) => HttpServerResponse.jsonUnsafe(body)),
+      Effect.catch((error: unknown) => {
+        const tag =
+          error && typeof error === "object" && "_tag" in error ? String(error._tag) : null;
+        if (tag === "Unauthorized") {
+          return Effect.succeed(HttpServerResponse.text("Unauthorized", { status: 401 }));
+        }
+        if (tag === "NoOrganization") {
+          return Effect.succeed(HttpServerResponse.text("Forbidden", { status: 403 }));
+        }
+        if (tag === "Unavailable") {
+          return Effect.succeed(HttpServerResponse.text("Unavailable", { status: 503 }));
+        }
+        if (tag === "AppsSyncRouteError") {
+          const routeError = error as AppsSyncRouteError;
+          return Effect.succeed(
+            HttpServerResponse.jsonUnsafe(
+              { error: routeError.message },
+              { status: routeError.status },
+            ),
+          );
+        }
+        return Effect.succeed(HttpServerResponse.text("Internal Server Error", { status: 500 }));
+      }),
+      Effect.catchCause(() =>
+        Effect.succeed(HttpServerResponse.text("Internal Server Error", { status: 500 })),
+      ),
+    );
+  });
+
 export const makeSelfHostAppsSyncRoute = ({ identity, db }: SelfHostAppsSyncRouteDeps) => {
   const services = Layer.merge(
     SelfHostScopedExecutorSeams.pipe(Layer.provide(Layer.succeed(SelfHostDb)(db))),
     identity,
   );
-  return HttpRouter.add(
-    "POST",
-    "/api/apps/sources/github/sync",
-    HttpEffect.fromWebHandler(
-      (request): Promise<Response> =>
-        Effect.runPromise(
-          Effect.gen(function* () {
-            const identityProvider = yield* IdentityProvider;
-            const principal = yield* identityProvider.authenticate(request);
-            const payload = yield* parseJson(request);
-            const executor = yield* buildExecutor(principal, request);
-            const result = yield* executor.execute(
-              ToolAddress.make("executor.apps.sync_github_source"),
-              payload,
-            );
-            return jsonResponse(result);
-          }).pipe(
-            Effect.catchTags({
-              Unauthorized: () => Effect.succeed(new Response("Unauthorized", { status: 401 })),
-              NoOrganization: () => Effect.succeed(new Response("Forbidden", { status: 403 })),
-              Unavailable: () => Effect.succeed(new Response("Unavailable", { status: 503 })),
-              AppsSyncRouteError: (error) =>
-                Effect.succeed(jsonResponse({ error: error.message }, error.status)),
-            }),
-            Effect.catchCause(() =>
-              Effect.succeed(new Response("Internal Server Error", { status: 500 })),
-            ),
-            Effect.provide(services),
-          ),
-        ),
+  return Layer.mergeAll(
+    HttpRouter.add(
+      "GET",
+      "/api/apps/sources/github",
+      routeHandler((request) =>
+        Effect.gen(function* () {
+          const identityProvider = yield* IdentityProvider;
+          const principal = yield* identityProvider.authenticate(request);
+          const executor = yield* buildExecutor(principal, request);
+          return yield* executor.execute(ToolAddress.make("executor.apps.list_github_sources"), {});
+        }),
+      ),
     ),
-  );
+    HttpRouter.add(
+      "POST",
+      "/api/apps/sources/github/sync",
+      routeHandler((request) =>
+        Effect.gen(function* () {
+          const identityProvider = yield* IdentityProvider;
+          const principal = yield* identityProvider.authenticate(request);
+          const payload = yield* parseJson(request);
+          const executor = yield* buildExecutor(principal, request);
+          return yield* executor.execute(
+            ToolAddress.make("executor.apps.sync_github_source"),
+            payload,
+          );
+        }),
+      ),
+    ),
+  ).pipe(HttpRouter.provideRequest(services));
 };

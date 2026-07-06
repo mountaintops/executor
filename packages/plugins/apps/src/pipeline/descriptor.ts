@@ -31,11 +31,18 @@ export interface IntegrationDecl {
   readonly integration: string;
 }
 
+export interface SourceSkippedArtifact {
+  readonly path: string;
+  readonly reason: "not supported yet" | "unsupported file type" | "ignored";
+}
+
 export interface GitHubSourceRef {
   readonly kind: "github";
   readonly repo: string;
   readonly ref: string;
   readonly upstreamSha: string;
+  readonly connection?: string;
+  readonly skipped?: readonly SourceSkippedArtifact[];
 }
 
 export type AppSourceRef = GitHubSourceRef;

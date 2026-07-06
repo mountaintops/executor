@@ -30,6 +30,11 @@ export const scopeConnectionCollection = definePluginStorageCollection("apps_sco
   },
 });
 
+export interface AppDescriptorRecord {
+  readonly descriptor: AppDescriptor;
+  readonly publishedAt: number;
+}
+
 export interface AppsStore {
   readonly putDescriptor: (
     tenant: string,
@@ -40,6 +45,9 @@ export interface AppsStore {
     tenant: string,
     scope: string,
   ) => Effect.Effect<AppDescriptor | null, StorageFailure>;
+  readonly listDescriptors: (
+    tenant: string,
+  ) => Effect.Effect<readonly AppDescriptorRecord[], StorageFailure>;
   readonly putScopeForConnection: (
     tenant: string,
     connectionName: string,
@@ -92,5 +100,14 @@ export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
       descriptors
         .get({ key: keyFor(tenant, scope) })
         .pipe(Effect.map((entry) => entry?.data.descriptor ?? null)),
+    listDescriptors: (tenant) =>
+      descriptors.list({ keyPrefix: `${tenant}:` }).pipe(
+        Effect.map((entries) =>
+          entries.map((entry) => ({
+            descriptor: entry.data.descriptor,
+            publishedAt: entry.data.publishedAt,
+          })),
+        ),
+      ),
   };
 };

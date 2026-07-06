@@ -2,7 +2,7 @@ import { Data, Effect, Result } from "effect";
 
 import { PublishError, type FileDiagnostic } from "../pipeline/discover";
 import { PUBLISH_LIMITS, enforcePublishLimits } from "../pipeline/publish";
-import type { AppSourceRef } from "../pipeline/descriptor";
+import type { AppSourceRef, SourceSkippedArtifact } from "../pipeline/descriptor";
 import type { AppsRuntime } from "../plugin/runtime";
 import type { FileSet, SnapshotId } from "../seams/artifact-store";
 
@@ -36,10 +36,7 @@ export interface SyncErrorData {
   readonly diagnostics?: readonly FileDiagnostic[];
 }
 
-export interface GitHubSkippedArtifact {
-  readonly path: string;
-  readonly reason: "not supported yet" | "unsupported file type" | "ignored";
-}
+export type GitHubSkippedArtifact = SourceSkippedArtifact;
 
 export type GitHubSyncResult =
   | {
@@ -69,6 +66,7 @@ export interface SyncGitHubSourceInput extends GitHubSourceInput {
   readonly runtime: AppsRuntime;
   readonly tenant?: string;
   readonly scope: string;
+  readonly connection?: string;
 }
 
 const TOOL_RE = /^tools\/([a-z0-9][a-z0-9-]*)\.(ts|tsx|js|jsx)$/;
@@ -374,11 +372,13 @@ const sourceErrorToSyncError = (error: GitHubSourceError): SyncErrorData => ({
   diagnostics: error.path ? [{ path: error.path, message: error.message }] : [],
 });
 
-const sourceRef = (snapshot: GitHubSourceSnapshot): AppSourceRef => ({
+const sourceRef = (snapshot: GitHubSourceSnapshot, connection?: string): AppSourceRef => ({
   kind: "github",
   repo: snapshot.repo,
   ref: snapshot.ref,
   upstreamSha: snapshot.upstreamSha,
+  ...(connection ? { connection } : {}),
+  skipped: snapshot.skipped,
 });
 
 export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<GitHubSyncResult> =>
@@ -420,7 +420,7 @@ export const syncGitHubSource = (input: SyncGitHubSourceInput): Effect.Effect<Gi
         scope: input.scope,
         files: snapshot.files,
         description: snapshot.description,
-        source: sourceRef(snapshot),
+        source: sourceRef(snapshot, input.connection),
         message: `sync ${snapshot.repo}@${snapshot.upstreamSha}`,
       })
       .pipe(Effect.result);
