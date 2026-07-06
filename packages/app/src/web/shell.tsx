@@ -205,9 +205,13 @@ function SidebarContent(props: {
         <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
         {/* Sources list */}
-        <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          <a href="/">Integrations</a>
-        </div>
+        <Link
+          to="/{-$orgSlug}"
+          className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground"
+          onClick={props.onNavigate}
+        >
+          <span>Integrations</span>
+        </Link>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
