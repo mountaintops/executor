@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
+import { PlusIcon } from "lucide-react";
 import type { Integration } from "@executor-js/sdk/shared";
 import {
   integrationsAtom,
@@ -15,6 +16,7 @@ import { CommandPalette } from "@executor-js/react/components/command-palette";
 import { useClientPlugins, useIntegrationPlugins } from "@executor-js/sdk/client";
 import { SidebarUpdateCard } from "@executor-js/react/components/update-card";
 import { Wordmark } from "@executor-js/react/components/wordmark";
+import { ConnectDialog } from "@executor-js/react/pages/integrations";
 import { ServerConnectionMenu } from "./server-connection-menu";
 
 // ── Env ─────────────────────────────────────────────────────────────────
@@ -162,6 +164,7 @@ function SidebarContent(props: {
   const isSecrets = props.pathname === "/secrets";
   const isPolicies = props.pathname === "/policies";
   const isToolkits = props.pathname === "/toolkits" || props.pathname.startsWith("/toolkits/");
+  const [connectOpen, setConnectOpen] = useState(false);
 
   return (
     <>
@@ -205,12 +208,29 @@ function SidebarContent(props: {
         <PluginNav pathname={props.pathname} onNavigate={props.onNavigate} />
 
         {/* Sources list */}
-        <div className="mt-5 mb-1 px-2.5 text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          <a href="/">Integrations</a>
+        <div className="mt-5 mb-1 flex items-center justify-between gap-1 pr-1 pl-2.5">
+          <Link
+            to="/{-$orgSlug}"
+            onClick={props.onNavigate}
+            className="text-xs font-medium uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Integrations
+          </Link>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Connect an integration"
+            className="text-muted-foreground/60 hover:text-foreground"
+            onClick={() => setConnectOpen(true)}
+          >
+            <PlusIcon className="size-3.5" />
+          </Button>
         </div>
 
         <IntegrationList pathname={props.pathname} onNavigate={props.onNavigate} />
       </nav>
+
+      <ConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
 
       <SidebarUpdateCard />
 
