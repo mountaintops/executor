@@ -591,15 +591,21 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   expect(defaultInvoke.result?.ok).toBe(true);
   expect(defaultInvoke.result?.data?.synced).toBe(2);
 
-  const bareNameInvoke = (await executeResult(
+  const bareNameInvoke = await execute(
     callAppToolCode("deal-pipeline-sync", {
       github: "main",
       owner: OWNER,
       repo: REPO,
     }),
-  )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
-  expect(bareNameInvoke.result?.ok).toBe(true);
-  expect(bareNameInvoke.result?.data?.synced).toBe(2);
+  );
+  const bareNameStructured = bareNameInvoke.structured.result as {
+    readonly result?: { readonly error?: { readonly message?: string } };
+  };
+  expect(bareNameInvoke.status).toBe("completed");
+  expect(bareNameStructured.result?.error?.message).toContain(
+    'unknown connection "main" for role "github" (github)',
+  );
+  expect(bareNameStructured.result?.error?.message).toContain(GITHUB_CONNECTION);
 
   const invoke = (await executeResult(
     callAppToolCode("deal-pipeline-sync", {

@@ -123,38 +123,15 @@ describe("HandleBridge strict dispatch", () => {
     ).toBe(true);
   });
 
-  it("accepts an unambiguous bare connection name", async () => {
-    const resolved = await Effect.runPromise(
-      resolveIntegrationBindings(declared, { gh: "main", q: "docs" }, okResolver),
-    );
-    expect(resolved.bindings).toEqual({ gh: "tools.github.user.main" });
-    expect(resolved.input).toEqual({ q: "docs" });
-  });
-
-  it("fails when a bare connection name is ambiguous", async () => {
-    const resolver: ClientResolver = {
-      ...okResolver,
-      listConnections: () =>
-        Effect.succeed([
-          {
-            address: "tools.github.user.personal",
-            integration: "github",
-            name: "personal",
-            owner: "user",
-          },
-          {
-            address: "tools.github.org.personal",
-            integration: "github",
-            name: "personal",
-            owner: "org",
-          },
-        ]),
-    };
+  it("rejects a bare connection name and lists valid addresses", async () => {
     const text = await failureText(
-      resolveIntegrationBindings(declared, { gh: "personal" }, resolver),
+      resolveIntegrationBindings(declared, { gh: "main" }, okResolver),
     );
-    expect(text).toContain("ambiguous connection name");
-    expect(text).toContain("tools.github.user.personal");
-    expect(text).toContain("tools.github.org.personal");
+    expect(text).toContain('"message"');
+    expect(text).toContain("unknown connection");
+    expect(text).toContain("for role");
+    expect(text).toContain('"requestedConnection":"main"');
+    expect(text).toContain("tools.github.user.main");
+    expect(text).not.toContain("unambiguous connection name");
   });
 });
