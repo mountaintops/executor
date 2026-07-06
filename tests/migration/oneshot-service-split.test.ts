@@ -1,11 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  operationStorageKey,
   planMigration,
   verifyPolicyRewriteNeverWidens,
+  type BlobRow,
   type ConnectionRow,
   type IntegrationRow,
   type MigrationInput,
+  type PluginStorageRow,
   type ToolPolicyRow,
   type ToolRow,
 } from "../../scripts/migration/oneshot-service-split";
@@ -77,6 +80,37 @@ const tool = (name: string, overrides: Partial<ToolRow> = {}): ToolRow => ({
   ...overrides,
 });
 
+const operation = (name: string, overrides: Partial<PluginStorageRow> = {}): PluginStorageRow => ({
+  tenant: "org_1",
+  owner: "org",
+  subject: "",
+  plugin_id: "google",
+  collection: "operation",
+  key: operationStorageKey("google", name),
+  data: {
+    integration: "google",
+    toolName: name,
+    binding: {
+      method: "get",
+      servers: [],
+      pathTemplate: `/${name}`,
+      parameters: [],
+    },
+    description: name,
+  },
+  created_at: now,
+  updated_at: now,
+  row_id: `op_${name}`,
+  ...overrides,
+});
+
+const blob = (key: string, overrides: Partial<BlobRow> = {}): BlobRow => ({
+  id: `blob_${key}`,
+  namespace: "o:org_1/google",
+  key,
+  ...overrides,
+});
+
 const policy = (pattern: string, overrides: Partial<ToolPolicyRow> = {}): ToolPolicyRow => ({
   tenant: "org_1",
   owner: "org",
@@ -95,6 +129,8 @@ const input = (overrides: Partial<MigrationInput> = {}): MigrationInput => ({
   integrations: [integration()],
   connections: [connection()],
   tools: [tool("calendar.events.list")],
+  pluginStorage: [operation("calendar.events.list")],
+  blobs: [blob("spec/mono-hash"), blob("defs/mono-hash")],
   policies: [],
   ...overrides,
 });
@@ -119,10 +155,16 @@ describe("one-shot service split migration planner", () => {
                 "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
                 "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
               ],
+              specHash: "mono-hash",
             },
           }),
         ],
         tools: [tool("calendar.events.list"), tool("gmail.users.messages.send")],
+        pluginStorage: [
+          operation("calendar.events.list"),
+          operation("gmail.users.messages.send"),
+          operation("oauth2.userinfo.get"),
+        ],
       }),
     );
 
@@ -131,6 +173,22 @@ describe("one-shot service split migration planner", () => {
       "google_gmail",
     ]);
     expect(plan.summary.connectionsClone).toBe(2);
+  });
+
+  it("models migrated integration serving storage under the new slug", () => {
+    const plan = planMigration(input());
+    const planned = plan.orgs[0]?.integrations[0];
+
+    expect(planned?.config).toMatchObject({ specHash: "mono-hash" });
+    expect(planned?.servingState).toMatchObject({
+      specHash: "mono-hash",
+      specSource: "google/google",
+      specBlobPresent: true,
+      defsBlobPresent: true,
+      operationsToBuild: 1,
+      operationToolNames: ["calendar.events.list"],
+    });
+    expect(operationStorageKey("google_calendar", "calendar.events.list")).toMatch(/^op\./);
   });
 
   it("fans out wildcard policies by matched service without widening inventory matches", () => {
@@ -142,10 +200,15 @@ describe("one-shot service split migration planner", () => {
               "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
               "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
             ],
+            specHash: "mono-hash",
           },
         }),
       ],
       tools: [tool("calendar.events.delete"), tool("gmail.users.messages.delete")],
+      pluginStorage: [
+        operation("calendar.events.delete"),
+        operation("gmail.users.messages.delete"),
+      ],
       policies: [policy("google.*")],
     });
     const plan = planMigration(migrationInput);
@@ -158,6 +221,63 @@ describe("one-shot service split migration planner", () => {
       ok: true,
       checkedPolicies: 1,
     });
+  });
+
+  it("fans restrictive wildcard policies out to every monolith service, not only currently matching tools", () => {
+    const migrationInput = input({
+      integrations: [
+        integration({
+          config: {
+            googleDiscoveryUrls: [
+              "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
+              "https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest",
+              "https://www.googleapis.com/discovery/v1/apis/sheets/v4/rest",
+            ],
+            specHash: "mono-hash",
+          },
+        }),
+      ],
+      tools: [tool("calendar.events.update")],
+      pluginStorage: [
+        operation("calendar.events.update"),
+        operation("gmail.users.messages.update"),
+      ],
+      policies: [policy("google.*.*.*.*.update")],
+    });
+    const plan = planMigration(migrationInput);
+
+    expect(plan.orgs[0]?.policies[0]?.afterPatterns).toEqual([
+      "google_calendar.*.*.*.*.update",
+      "google_gmail.*.*.*.*.update",
+      "google_sheets.*.*.*.*.update",
+    ]);
+    expect(verifyPolicyRewriteNeverWidens(plan, migrationInput)).toMatchObject({
+      ok: true,
+      checkedPolicies: 1,
+      narrowed: [],
+    });
+  });
+
+  it("hard-errors when a policy would be dropped instead of silently skipped", () => {
+    expect(() =>
+      planMigration(
+        input({
+          integrations: [
+            integration({
+              config: {
+                googleDiscoveryUrls: [
+                  "https://www.googleapis.com/discovery/v1/apis/searchconsole/v1/rest",
+                ],
+                specHash: "mono-hash",
+              },
+            }),
+          ],
+          tools: [tool("searchconsole.sites.list")],
+          pluginStorage: [operation("searchconsole.sites.list")],
+          policies: [policy("google.*.*.gmail.users.messages.send")],
+        }),
+      ),
+    ).toThrow(/would be dropped/);
   });
 
   it("skips openapi lookalike google slugs because plugin ownership is not google", () => {

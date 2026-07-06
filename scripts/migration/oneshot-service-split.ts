@@ -353,17 +353,23 @@ export interface ToolRow {
   readonly row_id: string;
 }
 
-export interface DefinitionRow {
+export interface PluginStorageRow {
   readonly tenant: string;
   readonly owner: string;
   readonly subject: string;
-  readonly integration: string;
-  readonly connection: string;
   readonly plugin_id: string;
-  readonly name: string;
-  readonly schema: unknown;
+  readonly collection: string;
+  readonly key: string;
+  readonly data: unknown;
   readonly created_at: string;
+  readonly updated_at: string;
   readonly row_id: string;
+}
+
+export interface BlobRow {
+  readonly id: string;
+  readonly namespace: string;
+  readonly key: string;
 }
 
 export interface ToolPolicyRow {
@@ -383,10 +389,13 @@ export interface MigrationInput {
   readonly integrations: readonly IntegrationRow[];
   readonly connections: readonly ConnectionRow[];
   readonly tools: readonly ToolRow[];
-  readonly definitions?: readonly DefinitionRow[];
+  readonly pluginStorage?: readonly PluginStorageRow[];
+  readonly blobs?: readonly BlobRow[];
   readonly policies: readonly ToolPolicyRow[];
   readonly completedTenants?: readonly string[];
   readonly trafficLastTenant?: string;
+  readonly collectPolicyErrors?: boolean;
+  readonly blobBackend?: "database" | "external";
 }
 
 export interface ServiceTarget {
@@ -402,6 +411,15 @@ export interface PlannedIntegration {
   readonly target: ServiceTarget;
   readonly action: "create" | "skip_existing";
   readonly config: unknown;
+  readonly servingState: {
+    readonly specHash: string;
+    readonly specSource: string;
+    readonly blobBackend: "database" | "external";
+    readonly specBlobPresent: boolean;
+    readonly defsBlobPresent: boolean;
+    readonly operationsToBuild: number;
+    readonly operationToolNames: readonly string[];
+  };
 }
 
 export interface PlannedConnection {
@@ -416,8 +434,7 @@ export interface PlannedPolicyRewrite {
     ToolPolicyRow,
     "tenant" | "owner" | "subject" | "id" | "pattern" | "action" | "position"
   >;
-  readonly action: "rewrite" | "skip";
-  readonly reason?: string;
+  readonly action: "rewrite";
   readonly afterPatterns: readonly string[];
   readonly matchedServices: readonly string[];
 }
@@ -434,7 +451,8 @@ export interface OrgPlan {
     "tenant" | "slug" | "plugin_id" | "name"
   >[];
   readonly clonedToolRows: number;
-  readonly clonedDefinitionRows: number;
+  readonly operationsToBuild: number;
+  readonly hardErrors: readonly string[];
 }
 
 export interface MigrationPlan {
@@ -451,7 +469,11 @@ export interface MigrationPlan {
     readonly policyRowsAfter: number;
     readonly monolithDeletes: number;
     readonly clonedToolRows: number;
-    readonly clonedDefinitionRows: number;
+    readonly operationsToBuild: number;
+    readonly integrationsMissingSpecBlob: number;
+    readonly integrationsMissingDefsBlob: number;
+    readonly hardErrorOrgs: number;
+    readonly policyHardErrors: number;
   };
 }
 
@@ -497,11 +519,22 @@ export const tenantHash = (tenant: string): string =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const recordFromJsonLike = (value: unknown): Record<string, unknown> => {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
 const stringArray = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
 const configRecord = (integration: IntegrationRow): Record<string, unknown> =>
-  isRecord(integration.config) ? integration.config : {};
+  recordFromJsonLike(integration.config);
 
 const toolAddress = (
   tool: Pick<ToolRow, "integration" | "owner" | "connection" | "name">,
@@ -564,7 +597,10 @@ const googlePresetIdsFromConfig = (integration: IntegrationRow): readonly string
 const microsoftPresetIdsFromConfig = (integration: IntegrationRow): readonly string[] => {
   const config = configRecord(integration);
   const configured = stringArray(config.microsoftGraphPresetIds);
-  return configured.length > 0 ? unique(configured) : MICROSOFT_GRAPH_DEFAULT_PRESET_IDS;
+  if (configured.length > 0) return unique(configured);
+  throw new Error(
+    `Microsoft monolith ${tenantHash(integration.tenant)}/${integration.slug} has no stored microsoftGraphPresetIds; refusing to fabricate ${MICROSOFT_GRAPH_DEFAULT_PRESET_IDS.length} default workloads`,
+  );
 };
 
 const googlePresetIdForTool = (toolName: string): string | undefined =>
@@ -609,6 +645,8 @@ const deriveServices = (
 
 const configForService = (source: IntegrationRow, target: ServiceTarget): unknown => {
   const config = configRecord(source);
+  const specHash =
+    typeof config.specHash === "string" && config.specHash.length > 0 ? config.specHash : undefined;
   if (target.pluginId === "google") {
     const preset = googlePresetById.get(target.presetId);
     const sourceUrls = stringArray(config.googleDiscoveryUrls);
@@ -622,7 +660,7 @@ const configForService = (source: IntegrationRow, target: ServiceTarget): unknow
     return {
       ...config,
       googleDiscoveryUrls,
-      specHash: undefined,
+      specHash,
     };
   }
   const presetIds = [target.presetId];
@@ -633,11 +671,65 @@ const configForService = (source: IntegrationRow, target: ServiceTarget): unknow
       presetIds,
       stringArray(config.microsoftGraphCustomScopes),
     ),
-    specHash: undefined,
+    specHash,
   };
 };
 
 const rowKey = (...parts: readonly string[]): string => parts.join("\u0000");
+
+const stableKeyHash = (value: string): string => {
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = (hash * prime) & mask;
+  }
+  return hash.toString(36).padStart(13, "0");
+};
+
+export const operationStorageKey = (integration: string, toolName: string): string =>
+  `op.${stableKeyHash(integration)}.${stableKeyHash(toolName)}`;
+
+export const storageDataRecord = (row: Pick<PluginStorageRow, "data">): Record<string, unknown> =>
+  recordFromJsonLike(row.data);
+
+const operationToolName = (row: PluginStorageRow): string | undefined => {
+  const value = storageDataRecord(row).toolName;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
+const operationIntegration = (row: PluginStorageRow): string | undefined => {
+  const value = storageDataRecord(row).integration;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+};
+
+const specHashFor = (integration: IntegrationRow): string => {
+  const value = configRecord(integration).specHash;
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error(
+    `Monolith ${tenantHash(integration.tenant)}/${integration.plugin_id}/${integration.slug} has no specHash; serving state cannot be migrated`,
+  );
+};
+
+const pluginBlobNamespace = (tenant: string, pluginId: string): string => `o:${tenant}/${pluginId}`;
+
+const operationRowsForService = (
+  monolith: IntegrationRow,
+  target: ServiceTarget,
+  rows: readonly PluginStorageRow[],
+): readonly PluginStorageRow[] =>
+  rows.filter((row) => {
+    if (row.tenant !== monolith.tenant) return false;
+    if (row.plugin_id !== monolith.plugin_id) return false;
+    if (row.collection !== "operation") return false;
+    if (operationIntegration(row) !== monolith.slug) return false;
+    const toolName = operationToolName(row);
+    if (!toolName) return false;
+    return serviceForMatchedTool(monolith.plugin_id as PluginId, toolName, [target]).includes(
+      target.slug,
+    );
+  });
 
 const serviceForMatchedTool = (
   pluginId: PluginId,
@@ -653,6 +745,48 @@ const serviceForMatchedTool = (
     return services.map((service) => service.slug);
   }
   return [];
+};
+
+const allServiceSlugs = (services: readonly ServiceTarget[]): readonly string[] =>
+  services.map((service) => service.slug);
+
+const serviceSlugsForToolPattern = (
+  pluginId: PluginId,
+  toolSegments: readonly string[],
+  services: readonly ServiceTarget[],
+): readonly string[] => {
+  const firstToolSegment = toolSegments[0];
+  if (!firstToolSegment || firstToolSegment === "*") return allServiceSlugs(services);
+  const presetId =
+    pluginId === "google"
+      ? GOOGLE_TOOL_PREFIX_TO_PRESET_ID.get(firstToolSegment)
+      : microsoftPresetIdForTool(firstToolSegment);
+  if (!presetId) return [];
+  const slug = serviceSlugForPreset(pluginId, presetId);
+  return services.some((service) => service.slug === slug) ? [slug] : [];
+};
+
+const serviceSlugsForPolicyPattern = (
+  policy: ToolPolicyRow,
+  monolith: IntegrationRow,
+  services: readonly ServiceTarget[],
+): readonly string[] => {
+  const tail = withoutToolsPrefix(policy.pattern);
+  const segments = tail.split(".");
+  const rest = segments.slice(1);
+  const pluginId = monolith.plugin_id as PluginId;
+  if (rest.length === 0) return allServiceSlugs(services);
+
+  if (rest[0] === "org" || rest[0] === "user") {
+    return serviceSlugsForToolPattern(pluginId, rest.slice(2), services);
+  }
+
+  if (rest[0] === "*") {
+    if (rest.length <= 2) return allServiceSlugs(services);
+    return serviceSlugsForToolPattern(pluginId, rest.slice(2), services);
+  }
+
+  return serviceSlugsForToolPattern(pluginId, rest, services);
 };
 
 const rewritePatternIntegration = (pattern: string, targetSlug: string): string => {
@@ -672,36 +806,20 @@ const rewritePolicy = (
   policy: ToolPolicyRow,
   monolith: IntegrationRow,
   services: readonly ServiceTarget[],
-  tools: readonly ToolRow[],
 ): PlannedPolicyRewrite => {
   const patternIntegration = integrationPatternSegment(policy.pattern).integration;
   if (patternIntegration !== monolith.slug) {
-    return {
-      policy,
-      action: "skip",
-      reason: "pattern integration does not match plugin-owned monolith",
-      afterPatterns: [],
-      matchedServices: [],
-    };
+    throw new Error(
+      `Policy ${policy.id} for org ${tenantHash(policy.tenant)} does not target ${monolith.slug}`,
+    );
   }
 
-  const pluginId = monolith.plugin_id as PluginId;
-  const matchedTools = tools.filter((tool) => policyMatches(policy.pattern, tool));
-  const serviceSlugs = unique(
-    matchedTools.flatMap((tool) => serviceForMatchedTool(pluginId, tool.name, services)),
-  );
+  const serviceSlugs = unique(serviceSlugsForPolicyPattern(policy, monolith, services));
 
   if (serviceSlugs.length === 0) {
-    return {
-      policy,
-      action: "skip",
-      reason:
-        matchedTools.length === 0
-          ? "pattern matches no monolith tools"
-          : "matched tools have no service target",
-      afterPatterns: [],
-      matchedServices: [],
-    };
+    throw new Error(
+      `Policy ${policy.id} (${policy.pattern}) for org ${tenantHash(policy.tenant)} would be dropped; no target service could be derived`,
+    );
   }
 
   return {
@@ -721,6 +839,11 @@ export interface NeverWidenResult {
     readonly afterPatterns: readonly string[];
     readonly extraAddresses: readonly string[];
   }[];
+  readonly narrowed: readonly {
+    readonly policyId: string;
+    readonly beforePattern: string;
+    readonly missingServices: readonly string[];
+  }[];
 }
 
 export const verifyPolicyRewriteNeverWidens = (
@@ -733,6 +856,11 @@ export const verifyPolicyRewriteNeverWidens = (
     readonly afterPatterns: readonly string[];
     readonly extraAddresses: readonly string[];
   }[] = [];
+  const narrowed: {
+    readonly policyId: string;
+    readonly beforePattern: string;
+    readonly missingServices: readonly string[];
+  }[] = [];
   let checkedPolicies = 0;
 
   for (const org of plan.orgs) {
@@ -740,6 +868,25 @@ export const verifyPolicyRewriteNeverWidens = (
     for (const policy of org.policies) {
       if (policy.action !== "rewrite") continue;
       checkedPolicies += 1;
+      if (policy.policy.action === "block" || policy.policy.action === "require_approval") {
+        const afterServices = new Set(
+          policy.afterPatterns.map(
+            (afterPattern) => integrationPatternSegment(afterPattern).integration,
+          ),
+        );
+        const missingServices = policy.matchedServices.filter((service) => {
+          if (!afterServices.has(service)) return true;
+          const expectedPattern = rewritePatternIntegration(policy.policy.pattern, service);
+          return !policy.afterPatterns.includes(expectedPattern);
+        });
+        if (missingServices.length > 0) {
+          narrowed.push({
+            policyId: policy.policy.id,
+            beforePattern: policy.policy.pattern,
+            missingServices,
+          });
+        }
+      }
       const before = new Set(
         orgTools
           .filter((tool) => policyMatches(policy.policy.pattern, tool))
@@ -790,7 +937,7 @@ export const verifyPolicyRewriteNeverWidens = (
     }
   }
 
-  return { ok: widened.length === 0, checkedPolicies, widened };
+  return { ok: widened.length === 0 && narrowed.length === 0, checkedPolicies, widened, narrowed };
 };
 
 export const planMigration = (input: MigrationInput): MigrationPlan => {
@@ -810,6 +957,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
     : tenants;
 
   const integrationExists = new Set(input.integrations.map((row) => rowKey(row.tenant, row.slug)));
+  const blobBackend = input.blobBackend ?? "database";
   const connectionExists = new Set(
     input.connections.map((row) =>
       rowKey(row.tenant, row.owner, row.subject, row.integration, row.name),
@@ -819,23 +967,47 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
   const orgs = orderedTenants.map((tenant): OrgPlan => {
     const orgMonoliths = monoliths.filter((row) => row.tenant === tenant);
     const orgTools = input.tools.filter((row) => row.tenant === tenant);
-    const orgDefinitions = input.definitions?.filter((row) => row.tenant === tenant) ?? [];
+    const orgStorage = input.pluginStorage?.filter((row) => row.tenant === tenant) ?? [];
+    const orgBlobs = input.blobs?.filter((row) => row.namespace.startsWith(`o:${tenant}/`)) ?? [];
     const orgIntegrations: PlannedIntegration[] = [];
     const orgConnections: PlannedConnection[] = [];
     const orgPolicies: PlannedPolicyRewrite[] = [];
+    const hardErrors: string[] = [];
     let clonedToolRows = 0;
-    let clonedDefinitionRows = 0;
+    let operationsToBuild = 0;
 
     for (const monolith of orgMonoliths) {
       const monolithTools = orgTools.filter((tool) => tool.integration === monolith.slug);
       const services = deriveServices(monolith, monolithTools);
+      const specHash = specHashFor(monolith);
+      const namespace = pluginBlobNamespace(tenant, monolith.plugin_id);
+      const specBlobPresent =
+        blobBackend === "external" ||
+        orgBlobs.some((blob) => blob.namespace === namespace && blob.key === `spec/${specHash}`);
+      const defsBlobPresent =
+        blobBackend === "external" ||
+        orgBlobs.some((blob) => blob.namespace === namespace && blob.key === `defs/${specHash}`);
       for (const target of services) {
         const exists = integrationExists.has(rowKey(tenant, target.slug));
+        const serviceOperations = operationRowsForService(monolith, target, orgStorage);
+        const operationToolNames = unique(
+          serviceOperations.flatMap((row) => operationToolName(row) ?? []),
+        );
+        operationsToBuild += operationToolNames.length;
         orgIntegrations.push({
           source: monolith,
           target,
           action: exists ? "skip_existing" : "create",
           config: configForService(monolith, target),
+          servingState: {
+            specHash,
+            specSource: `${monolith.plugin_id}/${monolith.slug}`,
+            blobBackend,
+            specBlobPresent,
+            defsBlobPresent,
+            operationsToBuild: operationToolNames.length,
+            operationToolNames,
+          },
         });
       }
 
@@ -854,18 +1026,9 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
             tokenReuse: "copy_item_ids_and_oauth_columns",
           });
           clonedToolRows += monolithTools.filter((tool) =>
-            serviceForMatchedTool(monolith.plugin_id as PluginId, tool.name, services).includes(
+            serviceForMatchedTool(monolith.plugin_id as PluginId, tool.name, [target]).includes(
               target.slug,
             ),
-          ).length;
-          clonedDefinitionRows += orgDefinitions.filter(
-            (definition) =>
-              definition.integration === monolith.slug &&
-              serviceForMatchedTool(
-                monolith.plugin_id as PluginId,
-                definition.name,
-                services,
-              ).includes(target.slug),
           ).length;
         }
       }
@@ -874,7 +1037,12 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       for (const policy of candidatePolicies) {
         const patternIntegration = integrationPatternSegment(policy.pattern).integration;
         if (patternIntegration !== monolith.slug) continue;
-        orgPolicies.push(rewritePolicy(policy, monolith, services, monolithTools));
+        try {
+          orgPolicies.push(rewritePolicy(policy, monolith, services));
+        } catch (error) {
+          if (!input.collectPolicyErrors) throw error;
+          hardErrors.push(error instanceof Error ? error.message : String(error));
+        }
       }
     }
 
@@ -887,11 +1055,12 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       policies: orgPolicies,
       deleteMonoliths: orgMonoliths,
       clonedToolRows,
-      clonedDefinitionRows,
+      operationsToBuild,
+      hardErrors,
     };
   });
 
-  const activeOrgs = orgs.filter((org) => !org.completed);
+  const activeOrgs = orgs.filter((org) => !org.completed && org.hardErrors.length === 0);
   const summary = {
     orgs: orgs.length,
     completedOrgs: orgs.length - activeOrgs.length,
@@ -910,14 +1079,21 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
     policiesRewrite: activeOrgs
       .flatMap((org) => org.policies)
       .filter((row) => row.action === "rewrite").length,
-    policiesSkip: activeOrgs.flatMap((org) => org.policies).filter((row) => row.action === "skip")
-      .length,
+    policiesSkip: 0,
     policyRowsAfter: activeOrgs
       .flatMap((org) => org.policies)
-      .reduce((sum, row) => sum + (row.action === "rewrite" ? row.afterPatterns.length : 0), 0),
+      .reduce((sum, row) => sum + row.afterPatterns.length, 0),
     monolithDeletes: activeOrgs.flatMap((org) => org.deleteMonoliths).length,
     clonedToolRows: activeOrgs.reduce((sum, org) => sum + org.clonedToolRows, 0),
-    clonedDefinitionRows: activeOrgs.reduce((sum, org) => sum + org.clonedDefinitionRows, 0),
+    operationsToBuild: activeOrgs.reduce((sum, org) => sum + org.operationsToBuild, 0),
+    integrationsMissingSpecBlob: activeOrgs
+      .flatMap((org) => org.integrations)
+      .filter((row) => !row.servingState.specBlobPresent).length,
+    integrationsMissingDefsBlob: activeOrgs
+      .flatMap((org) => org.integrations)
+      .filter((row) => !row.servingState.defsBlobPresent).length,
+    hardErrorOrgs: orgs.filter((org) => !org.completed && org.hardErrors.length > 0).length,
+    policyHardErrors: orgs.reduce((sum, org) => sum + org.hardErrors.length, 0),
   };
   return { orgs, summary };
 };
@@ -934,10 +1110,21 @@ export const renderOrgDiff = (org: OrgPlan): string => {
     lines.push("");
     return lines.join("\n");
   }
+  if (org.hardErrors.length > 0) {
+    lines.push("## Hard Errors");
+    lines.push("Apply is blocked for this org until these policies are handled.");
+    for (const error of org.hardErrors) {
+      lines.push(`- ${error}`);
+    }
+    lines.push("");
+  }
   lines.push("## Integrations");
   for (const row of org.integrations) {
     lines.push(
       `- ${row.action}: ${row.source.plugin_id}/${row.source.slug} (${row.source.name ?? "unnamed"}) -> ${row.target.slug} (${row.target.name})`,
+    );
+    lines.push(
+      `  serving: operations to build: ${row.servingState.operationsToBuild} / spec source: ${row.servingState.specSource} / blob backend: ${row.servingState.blobBackend} / specHash: ${row.servingState.specHash} / spec blob: ${row.servingState.specBlobPresent ? "present" : "missing"} / defs blob: ${row.servingState.defsBlobPresent ? "present" : "missing"}`,
     );
     lines.push(`  config: ${printableJson(row.config).replaceAll("\n", "\n  ")}`);
   }
@@ -956,10 +1143,6 @@ export const renderOrgDiff = (org: OrgPlan): string => {
   lines.push("");
   lines.push("## Policies");
   for (const row of org.policies) {
-    if (row.action === "skip") {
-      lines.push(`- skip ${row.policy.id}: ${row.policy.pattern} (${row.reason ?? "no rewrite"})`);
-      continue;
-    }
     lines.push(`- rewrite ${row.policy.id}: ${row.policy.pattern}`);
     for (const after of row.afterPatterns) {
       lines.push(`  -> ${after}`);
@@ -968,7 +1151,7 @@ export const renderOrgDiff = (org: OrgPlan): string => {
   lines.push("");
   lines.push("## Internal Rows");
   lines.push(`- tool rows cloned in apply mode: ${org.clonedToolRows}`);
-  lines.push(`- definition rows cloned in apply mode: ${org.clonedDefinitionRows}`);
+  lines.push(`- operation rows copied in apply mode: ${org.operationsToBuild}`);
   lines.push("");
   return lines.join("\n");
 };
@@ -987,6 +1170,10 @@ export const renderSummary = (plan: MigrationPlan): string => {
     `policies_skip=${s.policiesSkip}`,
     `monolith_deletes=${s.monolithDeletes}`,
     `tool_rows_clone=${s.clonedToolRows}`,
-    `definition_rows_clone=${s.clonedDefinitionRows}`,
+    `operation_rows_build=${s.operationsToBuild}`,
+    `integrations_missing_spec_blob=${s.integrationsMissingSpecBlob}`,
+    `integrations_missing_defs_blob=${s.integrationsMissingDefsBlob}`,
+    `hard_error_orgs=${s.hardErrorOrgs}`,
+    `policy_hard_errors=${s.policyHardErrors}`,
   ].join("\n");
 };

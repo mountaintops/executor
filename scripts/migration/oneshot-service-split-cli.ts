@@ -6,16 +6,19 @@ import { resolve } from "node:path";
 import postgres from "../../apps/cloud/node_modules/postgres/src/index.js";
 
 import {
+  operationStorageKey,
   planMigration,
   renderOrgDiff,
   renderSummary,
+  storageDataRecord,
   tenantHash,
   verifyPolicyRewriteNeverWidens,
+  type BlobRow,
   type ConnectionRow,
-  type DefinitionRow,
   type IntegrationRow,
   type MigrationInput,
   type OrgPlan,
+  type PluginStorageRow,
   type ToolPolicyRow,
   type ToolRow,
 } from "./oneshot-service-split";
@@ -73,7 +76,11 @@ const readCompletedTenants = async (
   return rows.map((row) => row.tenant);
 };
 
-const readDatabaseInput = async (sql: SqlClient, dryRun: boolean): Promise<MigrationInput> => {
+const readDatabaseInput = async (
+  sql: SqlClient,
+  dryRun: boolean,
+  blobBackend: MigrationInput["blobBackend"],
+): Promise<MigrationInput> => {
   const completedTenants = await readCompletedTenants(sql, dryRun);
   const integrations = await readRows<IntegrationRow[]>(
     sql,
@@ -118,21 +125,40 @@ const readDatabaseInput = async (sql: SqlClient, dryRun: boolean): Promise<Migra
         WHERE (plugin_id = 'google' AND slug = 'google')
            OR (plugin_id = 'microsoft' AND slug = 'microsoft')
       )
+        AND integration IN ('google', 'microsoft')
       ORDER BY tenant, integration, connection, name
     `,
   );
-  const definitions = await readRows<DefinitionRow[]>(
-    sql,
+  const pluginStorage = await sql.unsafe<PluginStorageRow[]>(
     `
-      SELECT tenant, owner, subject, integration, connection, plugin_id, name, schema,
-        created_at::text, row_id
-      FROM definition
+      SELECT tenant, owner, subject, plugin_id, collection, key, data,
+        created_at::text, updated_at::text, row_id
+      FROM plugin_storage
       WHERE tenant IN (
         SELECT tenant FROM integration
         WHERE (plugin_id = 'google' AND slug = 'google')
            OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+        )
+        AND plugin_id IN ('google', 'microsoft')
+        AND collection = 'operation'
+        AND (key LIKE $1 OR key LIKE $2 OR key LIKE 'google.%' OR key LIKE 'microsoft.%')
+      ORDER BY tenant, plugin_id, collection, key
+    `,
+    [operationKeyPrefix("google"), operationKeyPrefix("microsoft")],
+  );
+  const blobs = await readRows<BlobRow[]>(
+    sql,
+    `
+      SELECT id, namespace, key
+      FROM blob
+      WHERE namespace IN (
+        SELECT 'o:' || tenant || '/' || plugin_id
+        FROM integration
+        WHERE (plugin_id = 'google' AND slug = 'google')
+           OR (plugin_id = 'microsoft' AND slug = 'microsoft')
       )
-      ORDER BY tenant, integration, connection, name
+        AND (key LIKE 'spec/%' OR key LIKE 'defs/%')
+      ORDER BY namespace, key
     `,
   );
   const policies = await readRows<ToolPolicyRow[]>(
@@ -153,10 +179,12 @@ const readDatabaseInput = async (sql: SqlClient, dryRun: boolean): Promise<Migra
     integrations,
     connections,
     tools,
-    definitions,
+    pluginStorage,
+    blobs,
     policies,
     completedTenants,
     trafficLastTenant,
+    blobBackend,
   };
 };
 
@@ -181,56 +209,8 @@ const stableId = (...parts: readonly string[]): string => {
   return `oneshot_${hash.toString(36)}`;
 };
 
-const serviceToolSql = (presetId: string): string => {
-  const prefixesByPreset: Readonly<Record<string, readonly string[]>> = {
-    "google-calendar": ["calendar."],
-    "google-gmail": ["gmail."],
-    "google-sheets": ["sheets."],
-    "google-drive": ["drive."],
-    "google-docs": ["docs."],
-    "google-slides": ["slides."],
-    "google-forms": ["forms."],
-    "google-tasks": ["tasks."],
-    "google-people": ["people."],
-    "google-photos-library": ["photoslibrary."],
-    "google-photos-picker": ["photospicker."],
-    "google-chat": ["chat."],
-    "google-keep": ["keep."],
-    "google-youtube-data": ["youtube."],
-    "google-search-console": ["searchconsole.", "webmasters."],
-    "google-classroom": ["classroom."],
-    "google-admin-directory": ["admin."],
-    "google-admin-reports": ["admin."],
-    "google-apps-script": ["script."],
-    "google-bigquery": ["bigquery."],
-    "google-cloud-resource-manager": ["cloudresourcemanager."],
-    profile: ["meUser.", "usersUser.", "meProfilePhoto."],
-    mail: [
-      "meMessage.",
-      "usersMessage.",
-      "meMail",
-      "usersMail",
-      "meMailbox",
-      "meOutlook",
-      "usersOutlook",
-    ],
-    calendar: ["meCalendar", "usersCalendar", "meEvent.", "usersEvent."],
-    contacts: ["meContact", "usersContact", "mePerson.", "usersPerson."],
-    tasks: ["meTodo.", "usersTodo."],
-    planner: ["planner.", "mePlanner.", "usersPlanner."],
-    files: ["drives", "meDrive", "usersDrive", "groupsDrive", "shares"],
-    excel: ["workbook", "Workbook"],
-    sites: ["sites"],
-    onenote: ["meOnenote", "usersOnenote", "groupsOnenote", "sitesOnenote"],
-    "teams-chat": ["chats", "meChat"],
-    "teams-channels": ["teams", "teamwork", "meTeam", "groupsTeam"],
-    "meetings-calls": ["communications", "meOnlineMeeting", "usersOnlineMeeting"],
-  };
-  const prefixes = prefixesByPreset[presetId] ?? [];
-  const clauses = prefixes.map((prefix) => `name LIKE '${prefix.replaceAll("'", "''")}%'`);
-  if (presetId.startsWith("google-")) clauses.push("name LIKE 'oauth2.%'");
-  return clauses.length > 0 ? `(${clauses.join(" OR ")})` : "false";
-};
+const operationKeyPrefix = (integration: string): string =>
+  `${operationStorageKey(integration, "").split(".").slice(0, 2).join(".")}.%`;
 
 const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
   if (org.completed) return;
@@ -296,45 +276,92 @@ const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
     }
 
     for (const integration of org.integrations) {
-      const whereTools = serviceToolSql(integration.target.presetId);
-      await tx.unsafe(
-        `
-          INSERT INTO tool (
-            integration, connection, plugin_id, name, description, input_schema, output_schema,
-            annotations, created_at, updated_at, row_id, tenant, owner, subject
-          )
-          SELECT $1, connection, plugin_id, name, description, input_schema, output_schema,
-            annotations, created_at, $2, concat($3::text, '_', row_id), tenant, owner, subject
-          FROM tool
-          WHERE tenant = $4 AND integration = $5 AND ${whereTools}
-          ON CONFLICT (tenant, owner, subject, integration, connection, name) DO NOTHING
-        `,
-        [
-          integration.target.slug,
-          now,
-          stableId("tool", org.tenant, integration.target.slug),
-          org.tenant,
-          integration.source.slug,
-        ],
-      );
-      await tx.unsafe(
-        `
-          INSERT INTO definition (
-            integration, connection, plugin_id, name, schema, created_at, row_id, tenant, owner, subject
-          )
-          SELECT $1, connection, plugin_id, name, schema, created_at, concat($2::text, '_', row_id),
-            tenant, owner, subject
-          FROM definition
-          WHERE tenant = $3 AND integration = $4 AND ${whereTools}
-          ON CONFLICT (tenant, owner, subject, integration, connection, name) DO NOTHING
-        `,
-        [
-          integration.target.slug,
-          stableId("definition", org.tenant, integration.target.slug),
-          org.tenant,
-          integration.source.slug,
-        ],
-      );
+      for (const toolName of integration.servingState.operationToolNames) {
+        const [operation] = await tx.unsafe<
+          {
+            readonly data: unknown;
+            readonly created_at: string;
+            readonly updated_at: string;
+          }[]
+        >(
+          `
+            SELECT data, created_at::text, updated_at::text
+            FROM plugin_storage
+            WHERE tenant = $1
+              AND owner = 'org'
+              AND subject = ''
+              AND plugin_id = $2
+              AND collection = 'operation'
+              AND (
+                key = $3
+                OR (
+                  data::jsonb ->> 'integration' = $4
+                  AND data::jsonb ->> 'toolName' = $5
+                )
+              )
+            LIMIT 1
+          `,
+          [
+            org.tenant,
+            integration.source.plugin_id,
+            operationStorageKey(integration.source.slug, toolName),
+            integration.source.slug,
+            toolName,
+          ],
+        );
+        if (!operation) {
+          throw new Error(
+            `Missing operation row for ${tenantHash(org.tenant)}/${integration.source.slug}/${toolName}`,
+          );
+        }
+        await tx.unsafe(
+          `
+            INSERT INTO plugin_storage (
+              plugin_id, collection, key, data, created_at, updated_at, row_id,
+              tenant, owner, subject
+            )
+            VALUES ($1, 'operation', $2, $3::json, $4, $5, $6, $7, 'org', '')
+            ON CONFLICT (tenant, owner, subject, plugin_id, collection, key)
+            DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
+          `,
+          [
+            integration.source.plugin_id,
+            operationStorageKey(integration.target.slug, toolName),
+            JSON.stringify(
+              scrubJson({
+                ...storageDataRecord(operation),
+                integration: integration.target.slug,
+                toolName,
+              }),
+            ),
+            operation.created_at,
+            now,
+            stableId("operation", org.tenant, integration.target.slug, toolName),
+            org.tenant,
+          ],
+        );
+        await tx.unsafe(
+          `
+            INSERT INTO tool (
+              integration, connection, plugin_id, name, description, input_schema, output_schema,
+              annotations, created_at, updated_at, row_id, tenant, owner, subject
+            )
+            SELECT $1, connection, plugin_id, name, description, input_schema, output_schema,
+              annotations, created_at, $2, concat($3::text, '_', row_id), tenant, owner, subject
+            FROM tool
+            WHERE tenant = $4 AND integration = $5 AND name = $6
+            ON CONFLICT (tenant, owner, subject, integration, connection, name) DO NOTHING
+          `,
+          [
+            integration.target.slug,
+            now,
+            stableId("tool", org.tenant, integration.target.slug),
+            org.tenant,
+            integration.source.slug,
+            toolName,
+          ],
+        );
+      }
     }
 
     for (const policy of org.policies.filter((item) => item.action === "rewrite")) {
@@ -369,10 +396,6 @@ const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
     }
 
     for (const monolith of org.deleteMonoliths) {
-      await tx.unsafe("DELETE FROM definition WHERE tenant = $1 AND integration = $2", [
-        org.tenant,
-        monolith.slug,
-      ]);
       await tx.unsafe("DELETE FROM tool WHERE tenant = $1 AND integration = $2", [
         org.tenant,
         monolith.slug,
@@ -399,7 +422,7 @@ const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
 };
 
 const writeDryRun = (planInput: MigrationInput): void => {
-  const plan = planMigration(planInput);
+  const plan = planMigration({ ...planInput, collectPolicyErrors: true });
   const neverWiden = verifyPolicyRewriteNeverWidens(plan, planInput);
   mkdirSync(outputDir, { recursive: true });
   for (const org of plan.orgs) {
@@ -414,7 +437,26 @@ const writeDryRun = (planInput: MigrationInput): void => {
   console.log(`policy_never_widen_checked=${neverWiden.checkedPolicies}`);
   console.log(`diff_dir=${outputDir}`);
   if (!neverWiden.ok) {
-    throw new Error(`Policy rewrite widened ${neverWiden.widened.length} policy row(s)`);
+    throw new Error(
+      `Policy rewrite failed coverage checks: widened=${neverWiden.widened.length}, narrowed=${neverWiden.narrowed.length}`,
+    );
+  }
+  if (
+    plan.summary.integrationsMissingSpecBlob > 0 ||
+    plan.summary.integrationsMissingDefsBlob > 0
+  ) {
+    throw new Error(
+      `Serving blob check failed: missing spec=${plan.summary.integrationsMissingSpecBlob}, missing defs=${plan.summary.integrationsMissingDefsBlob}`,
+    );
+  }
+  const zeroOperationIntegrations = plan.orgs
+    .filter((org) => !org.completed && org.hardErrors.length === 0)
+    .flatMap((org) => org.integrations)
+    .filter((integration) => integration.servingState.operationsToBuild === 0);
+  if (zeroOperationIntegrations.length > 0) {
+    throw new Error(
+      `Serving operation check failed for ${zeroOperationIntegrations.length} planned integration(s)`,
+    );
   }
 };
 
@@ -434,15 +476,34 @@ const main = async (): Promise<void> => {
     ...(usesLocalDatabase ? {} : { ssl: "require" as const }),
   }) as unknown as SqlClient;
   try {
-    const input = await readDatabaseInput(sql, !apply);
-    const plan = planMigration(input);
+    const input = await readDatabaseInput(sql, !apply, usesLocalDatabase ? "database" : "external");
     if (!apply) {
       writeDryRun(input);
       return;
     }
+    const plan = planMigration(input);
     const neverWiden = verifyPolicyRewriteNeverWidens(plan, input);
     if (!neverWiden.ok) {
-      throw new Error(`Policy rewrite widened ${neverWiden.widened.length} policy row(s)`);
+      throw new Error(
+        `Policy rewrite failed coverage checks: widened=${neverWiden.widened.length}, narrowed=${neverWiden.narrowed.length}`,
+      );
+    }
+    if (
+      plan.summary.integrationsMissingSpecBlob > 0 ||
+      plan.summary.integrationsMissingDefsBlob > 0
+    ) {
+      throw new Error(
+        `Serving blob check failed: missing spec=${plan.summary.integrationsMissingSpecBlob}, missing defs=${plan.summary.integrationsMissingDefsBlob}`,
+      );
+    }
+    const zeroOperationIntegrations = plan.orgs
+      .filter((org) => !org.completed && org.hardErrors.length === 0)
+      .flatMap((org) => org.integrations)
+      .filter((integration) => integration.servingState.operationsToBuild === 0);
+    if (zeroOperationIntegrations.length > 0) {
+      throw new Error(
+        `Serving operation check failed for ${zeroOperationIntegrations.length} planned integration(s)`,
+      );
     }
     for (const org of plan.orgs) {
       await applyOrg(sql, org);
