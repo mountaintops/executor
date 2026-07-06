@@ -4,6 +4,11 @@ import { Effect } from "effect";
 
 import { ToolSandboxError } from "../seams/tool-sandbox";
 
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: esbuild rejects with unknown host errors
+  return cause instanceof Error ? cause.message : String(cause);
+};
+
 // ---------------------------------------------------------------------------
 // UI shell: wrap a published ui view's compiled bundle into a COMPLETE HTML
 // document that a real MCP-Apps host (Claude / ChatGPT, or the sunpeak host
@@ -196,6 +201,7 @@ export const buildUiDocument = (input: {
         define: { "process.env.NODE_ENV": '"production"' },
       });
       const runtimeJs = result.outputFiles?.[0]?.text;
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: esbuild adapter reports an impossible missing output through the existing tryPromise path
       if (runtimeJs === undefined) throw new Error("ui runtime produced no output");
 
       const dataIsland = safeJsonForScript({
@@ -222,7 +228,7 @@ export const buildUiDocument = (input: {
     catch: (cause) =>
       new ToolSandboxError({
         kind: "bundle",
-        message: `ui document build failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: `ui document build failed: ${unknownMessage(cause)}`,
         cause,
       }),
   });

@@ -125,6 +125,13 @@ const failNoDescriptor = (scope: string): PublishError =>
     diagnostics: [],
   });
 
+// oxlint-disable-next-line executor/no-unknown-error-message -- boundary: `cause` is a typed value with a `message` field, not an unknown error
+const taggedMessage = (cause: { readonly message: string }): string => cause.message;
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: preserve existing promise-lock rejection text
+  return cause instanceof Error ? cause.message : String(cause);
+};
+
 export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   // Bundle cache keyed by (snapshot, sourcePath): a published snapshot is
   // immutable, so its bundles never change.
@@ -140,12 +147,15 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   const publishChains = new Map<string, Promise<unknown>>();
   const withScopePublishLock = <A>(scope: string, run: () => Promise<A>): Promise<A> => {
     const prior = publishChains.get(scope) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(run);
+    const next = prior.then(run, run);
     // Keep the chain alive regardless of this publish's outcome; swallow so a
     // failed publish does not reject the NEXT waiter's `.then`.
     publishChains.set(
       scope,
-      next.catch(() => undefined),
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
     );
     return next;
   };
@@ -162,7 +172,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "project",
               diagnostics: [],
             }),
@@ -172,7 +182,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "project",
               diagnostics: [],
             }),
@@ -182,9 +192,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "bundle",
-              diagnostics: [{ path: sourcePath, message: c.message }],
+              diagnostics: [{ path: sourcePath, message: taggedMessage(c) }],
             }),
         ),
       );
@@ -197,7 +207,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       Effect.mapError(
         (c) =>
           new PublishError({
-            message: String(c),
+            message: unknownMessage(c),
             stage: "project",
             diagnostics: [],
           }),
@@ -214,7 +224,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       Effect.mapError(
         (c) =>
           new PublishError({
-            message: String(c),
+            message: unknownMessage(c),
             stage: "project",
             diagnostics: [],
           }),
@@ -227,7 +237,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       Effect.mapError(
         (c) =>
           new PublishError({
-            message: String(c),
+            message: unknownMessage(c),
             stage: "project",
             diagnostics: [],
           }),
@@ -242,7 +252,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "project",
               diagnostics: [],
             }),
@@ -252,7 +262,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "project",
               diagnostics: [],
             }),
@@ -312,7 +322,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "project",
               diagnostics: [],
             }),
@@ -332,9 +342,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           Effect.mapError(
             (c) =>
               new PublishError({
-                message: c.message,
+                message: taggedMessage(c),
                 stage: "project",
-                diagnostics: [{ path: toolDesc.sourcePath, message: c.message }],
+                diagnostics: [{ path: toolDesc.sourcePath, message: taggedMessage(c) }],
               }),
           ),
         );
@@ -355,7 +365,17 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
   ): WorkflowBindings => ({
     runTool: async (address: string, toolArgs: unknown) => {
       const toolDesc = descriptor.tools.find((t) => t.name === address);
-      if (!toolDesc) throw new Error(`workflow step.tool: unknown tool "${address}"`);
+      if (!toolDesc) {
+        return Effect.runPromise(
+          Effect.fail(
+            new PublishError({
+              message: `workflow step.tool: unknown tool "${address}"`,
+              stage: "project",
+              diagnostics: [],
+            }),
+          ),
+        );
+      }
       // Bind the called tool's declared connections: use the run's recorded
       // bindings where present, else default each role to a same-named
       // connection (self-host single-tenant convention).
@@ -374,9 +394,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         }
       }
       return Effect.runPromise(
-        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, toolBindings, resolver).pipe(
-          Effect.orDie,
-        ),
+        invokeToolInternal(scope, descriptor, toolDesc, toolArgs, toolBindings, resolver),
       );
     },
     notify: async (_msg: { title: string; body?: string; link?: string }) => {
@@ -384,10 +402,10 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       // this to notifications. No-op body here keeps the workflow durable.
     },
     runDb: async (dbScope: string, sql: string, params: readonly unknown[]) => {
-      const db = await Effect.runPromise(deps.scopeDb.forScope(dbScope).pipe(Effect.orDie));
+      const db = await Effect.runPromise(deps.scopeDb.forScope(dbScope));
       // The workflow shim sends a `?`-parameterized statement; run it via the
       // scope db's exec path (a plain string statement with positional params).
-      return Effect.runPromise(db.exec(sql, params as unknown[]).pipe(Effect.orDie));
+      return Effect.runPromise(db.exec(sql, params as unknown[]));
     },
   });
 
@@ -429,7 +447,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             ),
           catch: (cause) =>
             new PublishError({
-              message: cause instanceof Error ? cause.message : String(cause),
+              message: unknownMessage(cause),
               stage: "project",
               diagnostics: [],
             }),
@@ -459,13 +477,11 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         const descriptor = yield* requireDescriptor(input.scope);
         const toolDesc = descriptor.tools.find((t) => t.name === input.tool);
         if (!toolDesc) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `tool "${input.tool}" is not published in scope "${input.scope}"`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `tool "${input.tool}" is not published in scope "${input.scope}"`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         return yield* invokeToolInternal(
           input.scope,
@@ -482,13 +498,11 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         const descriptor = yield* requireDescriptor(input.scope);
         const wfDesc = descriptor.workflows.find((w) => w.name === input.workflow);
         if (!wfDesc) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `workflow "${input.workflow}" is not published in scope "${input.scope}"`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `workflow "${input.workflow}" is not published in scope "${input.scope}"`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         const bindings = input.bindings ?? {};
         return yield* deps.workflows
@@ -510,7 +524,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             Effect.mapError(
               (c) =>
                 new PublishError({
-                  message: c.message,
+                  message: taggedMessage(c),
                   stage: "project",
                   diagnostics: [],
                 }),
@@ -530,20 +544,18 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           Effect.mapError(
             (c) =>
               new PublishError({
-                message: c.message,
+                message: taggedMessage(c),
                 stage: "project",
                 diagnostics: [],
               }),
           ),
         );
         if (!persisted) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `no run ${input.runId}`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `no run ${input.runId}`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         const descriptor = yield* loadDescriptorFromSnapshot(
           deps.artifactStore,
@@ -551,23 +563,19 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
           persisted.snapshotId as never,
         );
         if (!descriptor) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `run ${input.runId} pinned snapshot ${persisted.snapshotId} has no descriptor`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `run ${input.runId} pinned snapshot ${persisted.snapshotId} has no descriptor`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         const wfDesc = descriptor.workflows.find((w) => w.name === persisted.workflow);
         if (!wfDesc) {
-          return yield* Effect.fail(
-            new PublishError({
-              message: `workflow ${persisted.workflow} gone`,
-              stage: "project",
-              diagnostics: [],
-            }),
-          );
+          return yield* new PublishError({
+            message: `workflow ${persisted.workflow} gone`,
+            stage: "project",
+            diagnostics: [],
+          });
         }
         // The bindings the run was started with (persisted as opaque JSON).
         const startBindings = (persisted.persistedBindings as Bindings | undefined) ?? {};
@@ -582,7 +590,7 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             Effect.mapError(
               (c) =>
                 new PublishError({
-                  message: c.message,
+                  message: taggedMessage(c),
                   stage: "project",
                   diagnostics: [],
                 }),

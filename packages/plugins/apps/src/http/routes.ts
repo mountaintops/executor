@@ -45,6 +45,11 @@ const json = (body: unknown, status = 200): Response =>
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect as never);
 
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: HTTP adapter preserves existing error response text
+  return cause instanceof Error ? cause.message : String(cause);
+};
+
 export const makeAppsHttpRoutes = (
   deps: AppsHttpDeps,
 ): { readonly path: string; readonly handler: (request: Request) => Promise<Response> } => {
@@ -59,7 +64,10 @@ export const makeAppsHttpRoutes = (
     // behind the host's identity check. An unauthenticated caller gets a 401
     // BEFORE any route logic runs — including the SSE stream.
     if (deps.authenticate) {
-      const ok = await deps.authenticate(request).catch(() => false);
+      const ok = await deps.authenticate(request).then(
+        (value) => value,
+        () => false,
+      );
       if (!ok) {
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
@@ -74,6 +82,7 @@ export const makeAppsHttpRoutes = (
     const scope = parts[0];
     if (!scope) return json({ error: "scope required" }, 400);
 
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: HTTP handler converts route/runtime failures into JSON 400 responses
     try {
       // POST :scope/publish
       if (parts[1] === "publish" && request.method === "POST") {
@@ -196,8 +205,7 @@ export const makeAppsHttpRoutes = (
 
       return new Response("not found", { status: 404 });
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      return json({ error: message }, 400);
+      return json({ error: unknownMessage(cause) }, 400);
     }
   };
 
@@ -215,6 +223,7 @@ const sseResponse = (scope: string, runtime: AppsRuntime): Response => {
       const enc = new TextEncoder();
       controller.enqueue(enc.encode(`event: ready\ndata: {"scope":"${scope}"}\n\n`));
       unsubscribe = runtime.subscribeLive(scope, (event) => {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: ReadableStream enqueue throws after the client closes
         try {
           controller.enqueue(
             enc.encode(
@@ -226,6 +235,7 @@ const sseResponse = (scope: string, runtime: AppsRuntime): Response => {
         }
       });
       keepalive = setInterval(() => {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: keepalive enqueue is best-effort after disconnect
         try {
           controller.enqueue(enc.encode(`: keepalive\n\n`));
         } catch {

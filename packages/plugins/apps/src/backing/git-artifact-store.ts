@@ -29,6 +29,13 @@ const BRANCH = "refs/heads/main";
 // scope repo). git treats the empty string as "the ref must not already exist".
 const EMPTY_OID = "";
 
+const gitErrorMessage = (
+  command: string,
+  stderr: Buffer,
+  error: { readonly message: string },
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: `error` is the typed Node execFile callback error, narrowed to its `message` field
+): string => `git ${command} failed: ${stderr.toString() || error.message}`;
+
 const run = (
   cwd: string,
   args: readonly string[],
@@ -44,7 +51,7 @@ const run = (
           resume(
             Effect.fail(
               new ArtifactStoreError({
-                message: `git ${args[0]} failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                message: gitErrorMessage(args[0] ?? "command", stderr as Buffer, error),
                 cause: error,
               }),
             ),
@@ -63,6 +70,7 @@ const run = (
 const sanitizeScope = (scope: string): string => {
   if (!/^[a-zA-Z0-9._-]+$/.test(scope)) {
     // Scopes are internal identifiers; refuse anything that could escape a path.
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: scope sanitization feeds the async ArtifactStore open path
     throw new ArtifactStoreError({ message: `invalid scope key: ${scope}` });
   }
   return scope;
@@ -121,7 +129,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
                   resume(
                     Effect.fail(
                       new ArtifactStoreError({
-                        message: `git ${args[0]} failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                        message: gitErrorMessage(args[0] ?? "command", stderr as Buffer, error),
                         cause: error,
                       }),
                     ),
@@ -166,7 +174,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
                 resume(
                   Effect.fail(
                     new ArtifactStoreError({
-                      message: `git commit-tree failed: ${(stderr as Buffer)?.toString() || error.message}`,
+                      message: gitErrorMessage("commit-tree", stderr as Buffer, error),
                       cause: error,
                     }),
                   ),
@@ -279,11 +287,7 @@ export const makeGitArtifactStore = (options: GitArtifactStoreOptions): Artifact
     const safe = sanitizeScope(scope);
     const repoDir = join(options.root, `${safe}.git`);
     await mkdir(repoDir, { recursive: true });
-    await new Promise<void>((resolve, reject) => {
-      execFile("git", ["init", "--bare", "--quiet"], { cwd: repoDir }, (error) =>
-        error ? reject(error) : resolve(),
-      );
-    });
+    await Effect.runPromise(run(repoDir, ["init", "--bare", "--quiet"]).pipe(Effect.asVoid));
     return makeScopeStore(repoDir);
   };
 

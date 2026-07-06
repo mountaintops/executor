@@ -95,6 +95,7 @@ const makeHandle = (
             if (bumped.length > 0) emit({ scope, tables: bumped });
           }
         }
+        // oxlint-disable-next-line executor/no-double-cast -- boundary: libSQL's driver `Row` type does not structurally overlap the caller's generic `Row`; the SQL is the schema contract
         return result.rows as unknown as readonly Row[];
       },
       catch: (cause) =>

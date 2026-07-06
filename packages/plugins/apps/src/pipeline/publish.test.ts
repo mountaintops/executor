@@ -2,8 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { makeGitArtifactStore } from "../backing/git-artifact-store";
 import { makeQuickjsToolSandbox } from "../backing/quickjs-tool-sandbox";
@@ -72,7 +72,7 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
       ["skills/mine/SKILL.md", "---\nname: not-mine\ndescription: x\n---\n# body\n"],
     ]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 
   it("rejects a bare npm import (npm deps out of scope)", async () => {
@@ -84,12 +84,9 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
       ],
     ]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure") {
-      const err = exit.cause;
-      // The failure is a PublishError at the bundle stage.
-      expect(JSON.stringify(err)).toContain("bundle");
-    }
+    expect(Exit.isFailure(exit)).toBe(true);
+    // The failure is a PublishError at the bundle stage.
+    expect(JSON.stringify(exit)).toContain("bundle");
   });
 
   // --- Fix 7: publish payload limits ---------------------------------------
@@ -100,7 +97,7 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
       files.set(`tools/t${i}.ts`, "// noop");
     }
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("exceeding the limit");
     // Nothing committed: the git store never got a commit, and no blobs staged.
     const latest = await run(Effect.flatMap(deps.artifactStore.forScope("s"), (s) => s.latest()));
@@ -113,7 +110,7 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
     const big = "x".repeat(PUBLISH_LIMITS.maxFileBytes + 1);
     const files = new Map([["tools/big.ts", big]]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("per-file limit");
   });
 
@@ -125,7 +122,7 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
     const count = Math.ceil(PUBLISH_LIMITS.maxTotalBytes / PUBLISH_LIMITS.maxFileBytes) + 1;
     for (let i = 0; i < count; i++) files.set(`tools/t${i}.ts`, half);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("total limit");
   });
 
@@ -140,7 +137,7 @@ describe("publish pipeline (discover -> bundle -> collect -> project)", () => {
       ],
     ]);
     const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     expect(JSON.stringify(exit)).toContain("cron step must be >= 1");
     const latest = await run(Effect.flatMap(deps.artifactStore.forScope("s"), (s) => s.latest()));
     expect(latest).toBeNull();

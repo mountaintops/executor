@@ -27,41 +27,94 @@ export class CronError extends Error {
   }
 }
 
-const parseInt10 = (value: string, what: string): number => {
-  if (!/^-?\d+$/.test(value)) throw new CronError(`invalid ${what}: "${value}"`);
-  return Number(value);
+type ParseResult<A> =
+  | { readonly ok: true; readonly value: A }
+  | { readonly ok: false; readonly error: CronError };
+
+const ok = <A>(value: A): ParseResult<A> => ({ ok: true, value });
+const cronError = <A = never>(message: string): ParseResult<A> => ({
+  ok: false,
+  error: new CronError(message),
+});
+
+const parseInt10 = (value: string, what: string): ParseResult<number> => {
+  if (!/^-?\d+$/.test(value)) return cronError(`invalid ${what}: "${value}"`);
+  return ok(Number(value));
 };
 
-const parseField = (field: string, min: number, max: number): Set<number> => {
+const parseField = (field: string, min: number, max: number): ParseResult<Set<number>> => {
   const out = new Set<number>();
-  if (field === "") throw new CronError("empty cron field");
+  if (field === "") return cronError("empty cron field");
   for (const part of field.split(",")) {
     const [rangePart, stepPart, ...extra] = part.split("/");
-    if (extra.length > 0) throw new CronError(`invalid cron step in "${part}"`);
+    if (extra.length > 0) return cronError(`invalid cron step in "${part}"`);
     let step = 1;
     if (stepPart !== undefined) {
-      step = parseInt10(stepPart, "cron step");
+      const parsedStep = parseInt10(stepPart, "cron step");
+      if (!parsedStep.ok) return parsedStep;
+      step = parsedStep.value;
       // A step of 0 or negative would never advance the loop -> infinite loop.
-      if (step < 1) throw new CronError(`cron step must be >= 1 (got ${step})`);
+      if (step < 1) return cronError(`cron step must be >= 1 (got ${step})`);
     }
     let lo = min;
     let hi = max;
     if (rangePart !== "*" && rangePart !== "") {
       const [a, b] = rangePart.split("-");
-      lo = parseInt10(a, "cron range start");
-      hi = b !== undefined ? parseInt10(b, "cron range end") : lo;
+      const parsedLo = parseInt10(a, "cron range start");
+      if (!parsedLo.ok) return parsedLo;
+      lo = parsedLo.value;
+      if (b !== undefined) {
+        const parsedHi = parseInt10(b, "cron range end");
+        if (!parsedHi.ok) return parsedHi;
+        hi = parsedHi.value;
+      } else {
+        hi = lo;
+      }
     } else if (rangePart === "") {
-      throw new CronError("empty cron range");
+      return cronError("empty cron range");
     }
     // Bound the range to the field's valid domain, and reject a reversed range,
     // so the loop is always finite and small.
     if (lo < min || hi > max) {
-      throw new CronError(`cron value out of range [${min}, ${max}]: ${lo}-${hi}`);
+      return cronError(`cron value out of range [${min}, ${max}]: ${lo}-${hi}`);
     }
-    if (lo > hi) throw new CronError(`cron range is reversed: ${lo}-${hi}`);
+    if (lo > hi) return cronError(`cron range is reversed: ${lo}-${hi}`);
     for (let v = lo; v <= hi; v += step) out.add(v);
   }
-  return out;
+  return ok(out);
+};
+
+const parseCron = (
+  cron: string,
+): ParseResult<{
+  readonly minutes: Set<number>;
+  readonly hours: Set<number>;
+  readonly doms: Set<number>;
+  readonly mons: Set<number>;
+  readonly dows: Set<number>;
+}> => {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    return cronError(`cron must have 5 fields, got ${parts.length}: "${cron}"`);
+  }
+  const [min, hour, dom, mon, dow] = parts;
+  const minutes = parseField(min, 0, 59);
+  if (!minutes.ok) return minutes;
+  const hours = parseField(hour, 0, 23);
+  if (!hours.ok) return hours;
+  const doms = parseField(dom, 1, 31);
+  if (!doms.ok) return doms;
+  const mons = parseField(mon, 1, 12);
+  if (!mons.ok) return mons;
+  const dows = parseField(dow, 0, 6);
+  if (!dows.ok) return dows;
+  return ok({
+    minutes: minutes.value,
+    hours: hours.value,
+    doms: doms.value,
+    mons: mons.value,
+    dows: dows.value,
+  });
 };
 
 /** Validate a 5-field cron expression by parsing every field. Throws `CronError`
@@ -69,39 +122,20 @@ const parseField = (field: string, min: number, max: number): Set<number> => {
  *  range). Returns nothing; used at PUBLISH time to reject adversarial crons and
  *  as the shared validator the matcher builds on. */
 export const validateCron = (cron: string): void => {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) {
-    throw new CronError(`cron must have 5 fields, got ${parts.length}: "${cron}"`);
+  const parsed = parseCron(cron);
+  if (!parsed.ok) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: validateCron's public contract throws CronError
+    throw parsed.error;
   }
-  const [min, hour, dom, mon, dow] = parts;
-  parseField(min, 0, 59);
-  parseField(hour, 0, 23);
-  parseField(dom, 1, 31);
-  parseField(mon, 1, 12);
-  parseField(dow, 0, 6);
 };
 
 /** True if `date` (UTC) matches the 5-field cron expression. Defensive: an
  *  invalid cron never matches (and never hangs) rather than throwing into the
  *  tick loop — publish-time validation is the place a bad cron is rejected. */
 export const cronMatches = (cron: string, date: Date): boolean => {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
-  const [min, hour, dom, mon, dow] = parts;
-  let minutes: Set<number>;
-  let hours: Set<number>;
-  let doms: Set<number>;
-  let mons: Set<number>;
-  let dows: Set<number>;
-  try {
-    minutes = parseField(min, 0, 59);
-    hours = parseField(hour, 0, 23);
-    doms = parseField(dom, 1, 31);
-    mons = parseField(mon, 1, 12);
-    dows = parseField(dow, 0, 6);
-  } catch {
-    return false;
-  }
+  const parsed = parseCron(cron);
+  if (!parsed.ok) return false;
+  const { minutes, hours, doms, mons, dows } = parsed.value;
   return (
     minutes.has(date.getUTCMinutes()) &&
     hours.has(date.getUTCHours()) &&

@@ -177,12 +177,12 @@ export const makeQuickjsWorkflowDriver = (deps: QuickjsWorkflowDriverDeps): Work
           invoke: (call: { path: string; args: unknown }) => {
             if (call.path !== "__wf") {
               return Effect.fail(
-                new Error(`unexpected workflow sandbox call: ${call.path}`),
+                new WorkflowError({
+                  message: `unexpected workflow sandbox call: ${call.path}`,
+                }),
               ) as never;
             }
-            return bridge
-              .call(call.args as never)
-              .pipe(Effect.mapError((e) => new Error(e.message))) as never;
+            return bridge.call(call.args as never) as never;
           },
         };
 

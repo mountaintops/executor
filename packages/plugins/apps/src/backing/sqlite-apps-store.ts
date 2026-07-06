@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { createClient, type Client } from "@libsql/client";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import type { StorageFailure } from "@executor-js/sdk";
 
@@ -26,8 +26,11 @@ CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scope_connections (connection_name TEXT PRIMARY KEY, scope TEXT NOT NULL);
 `;
 
+const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
 // Not-really-failing storage errors from libSQL wrapped opaquely.
 const storageFail = (message: string, cause: unknown): StorageFailure =>
+  // oxlint-disable-next-line executor/no-double-cast -- boundary: AppsStore adapts libSQL failures to the SDK storage failure shape without importing its concrete class
   ({ _tag: "StorageError", message, cause }) as unknown as StorageFailure;
 
 export interface SqliteAppsStoreOptions {
@@ -73,7 +76,7 @@ export const makeSqliteAppsStore = (options: SqliteAppsStoreOptions): AppsStore 
             args: [scope],
           });
           const row = res.rows[0];
-          return row ? (JSON.parse(String(row.descriptor)) as AppDescriptor) : null;
+          return row ? (decodeJsonUnknown(String(row.descriptor)) as AppDescriptor) : null;
         },
         catch: (cause) => storageFail("getDescriptor failed", cause),
       }),

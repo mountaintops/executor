@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "@effect/vitest";
 import { Effect } from "effect";
 import { createEmulator } from "@executor-js/emulate";
 
@@ -70,6 +70,7 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
   beforeAll(async () => {
     // --- real-shaped GitHub (emulate) + seed a repo with two issues --------
     github = await createEmulator({ service: "github" });
+    // oxlint-disable-next-line executor/no-double-cast -- test boundary: the emulator credential minter returns an opaque credential; this asserts the api-key shape it produces
     const cred = (await github.credentials.mint({
       type: "api-key",
     })) as unknown as {
@@ -249,6 +250,7 @@ describe("Executor apps e2e (self-host, real GitHub emulator)", () => {
     // The next SSE frame is the invalidation for the issues table.
     const invalidation = await Promise.race([
       reader.read().then((r) => decoder.decode(r.value)),
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test boundary: race the SSE read against a wall-clock timeout so a hung stream fails fast
       new Promise<string>((_, reject) => setTimeout(() => reject(new Error("SSE timeout")), 5000)),
     ]);
     expect(invalidation).toContain("event: invalidate");

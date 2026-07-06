@@ -37,6 +37,13 @@ export const APPS_PLUGIN_ID = "apps";
 /** The scope a single-tenant self-host serves when the caller names none. */
 const DEFAULT_CATALOG_SCOPE = "default";
 
+// oxlint-disable-next-line executor/no-unknown-error-message -- boundary: `cause` is a typed value with a `message` field, not an unknown error
+const taggedMessage = (cause: { readonly message: string }): string => cause.message;
+const pluginBoundaryError = (message: string): Error => {
+  // oxlint-disable-next-line executor/no-error-constructor -- boundary: SDK tool/plugin callbacks surface failures as JavaScript Error values
+  return new Error(message);
+};
+
 export interface AppsPluginOptions {
   /** The shared runtime (seams + store). Built at host boot. */
   readonly runtime: AppsRuntime;
@@ -84,7 +91,10 @@ interface AppsStoreShape {
 
 export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   if (!options?.runtime) {
-    throw new Error("appsPlugin requires a `runtime` (built from the five seams at host boot)");
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: plugin construction must fail loudly when the host omits the runtime
+    throw pluginBoundaryError(
+      "appsPlugin requires a `runtime` (built from the five seams at host boot)",
+    );
   }
   const runtime = options.runtime;
   const resolveBindings = options.resolveBindings;
@@ -219,7 +229,9 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                   runId?: string;
                 };
                 if (!a.workflow) {
-                  return yield* Effect.fail(new Error("start_workflow requires a `workflow` name"));
+                  return yield* Effect.fail(
+                    pluginBoundaryError("start_workflow requires a `workflow` name"),
+                  );
                 }
                 const scope = a.scope ?? DEFAULT_CATALOG_SCOPE;
                 // The per-request resolver (built from the invoking ctx) is what
@@ -238,7 +250,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                     runId: a.runId,
                     resolver,
                   })
-                  .pipe(Effect.mapError((cause) => new Error(cause.message)));
+                  .pipe(Effect.mapError((cause) => pluginBoundaryError(taggedMessage(cause))));
                 return run;
               }),
           }),
@@ -280,7 +292,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         // must fail loudly rather than run with empty connections.
         if (!descriptor) {
           return yield* Effect.fail(
-            new Error(
+            pluginBoundaryError(
               `apps scope "${scope}" has no published app (connection "${toolRow.connection}")`,
             ),
           );
@@ -288,7 +300,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const toolDesc = descriptor.tools.find((t) => t.name === toolRow.name);
         if (!toolDesc) {
           return yield* Effect.fail(
-            new Error(`apps tool "${toolRow.name}" is not published in scope "${scope}"`),
+            pluginBoundaryError(`apps tool "${toolRow.name}" is not published in scope "${scope}"`),
           );
         }
         const declared = toolDesc.connections;
@@ -304,16 +316,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
           : undefined;
         return yield* runtime
           .invokeTool({ scope, tool: toolRow.name, args, bindings, resolver })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new Error(
-                  "message" in cause && typeof cause.message === "string"
-                    ? cause.message
-                    : "apps tool invocation failed",
-                ),
-            ),
-          );
+          .pipe(Effect.mapError((cause) => pluginBoundaryError(taggedMessage(cause))));
       }),
   };
 });

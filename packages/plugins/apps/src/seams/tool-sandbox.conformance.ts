@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import type { HandleBridge, ToolSandbox } from "./tool-sandbox";
 import { bundleEntry } from "../pipeline/bundle";
@@ -34,7 +34,7 @@ import { z } from "zod";
 export default defineTool({ description: "x" + Math.random(), input: z.object({}), async handler(){ return {}; } });`;
       const rngBundle = await bundle("tools/rng.ts", rng);
       const exit = await Effect.runPromiseExit(sandbox.collect(rngBundle));
-      expect(exit._tag).toBe("Failure");
+      expect(Exit.isFailure(exit)).toBe(true);
     });
 
     it("denies network access", async () => {
@@ -47,7 +47,7 @@ export default defineTool({ description: "net", input: z.object({}), async handl
       const exit = await Effect.runPromiseExit(
         sandbox.invoke(b, { artifact: "net", kind: "tool", input: {}, roots: {} }, bridge),
       );
-      expect(exit._tag).toBe("Failure");
+      expect(Exit.isFailure(exit)).toBe(true);
     });
 
     it("kills a runaway handler on timeout", async () => {
@@ -60,7 +60,7 @@ export default defineTool({ description: "loop", input: z.object({}), async hand
       const exit = await Effect.runPromiseExit(
         sandbox.invoke(b, { artifact: "loop", kind: "tool", input: {}, roots: {} }, bridge),
       );
-      expect(exit._tag).toBe("Failure");
+      expect(Exit.isFailure(exit)).toBe(true);
     });
 
     it("round-trips the handle bridge, including fan-out arrays", async () => {

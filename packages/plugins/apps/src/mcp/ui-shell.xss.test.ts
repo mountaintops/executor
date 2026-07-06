@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Schema } from "effect";
 
 import { buildUiDocument, safeJsonForScript } from "./ui-shell";
+
+const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 // ---------------------------------------------------------------------------
 // Finding 2 regression: the ui document's data island inlines rows/title into an
@@ -26,7 +28,7 @@ describe("ui data island XSS (Fix 2)", () => {
     expect(out.includes("\u2028")).toBe(false);
     expect(out.includes("\u2029")).toBe(false);
     // Still valid JSON that parses back to the identical value.
-    expect(JSON.parse(out)).toEqual(value);
+    expect(decodeJsonUnknown(out)).toEqual(value);
   });
 
   it("emits a document whose data island cannot break out of <script>", async () => {

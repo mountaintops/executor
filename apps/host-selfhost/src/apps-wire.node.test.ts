@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createEmulator } from "@executor-js/emulate";
@@ -93,6 +93,7 @@ describe("Executor apps wire e2e (booted self-host, real MCP client + GitHub emu
   beforeAll(async () => {
     // --- real-shaped GitHub (emulate) + seed a repo with two issues ---------
     github = await createEmulator({ service: "github" });
+    // oxlint-disable-next-line executor/no-double-cast -- test boundary: the emulator credential minter returns an opaque credential; this asserts the api-key shape it produces
     const cred = (await github.credentials.mint({
       type: "api-key",
     })) as unknown as {
@@ -188,6 +189,7 @@ describe("Executor apps wire e2e (booted self-host, real MCP client + GitHub emu
     // --- connect a REAL MCP client over StreamableHTTP to /mcp --------------
     client = new Client({ name: "apps-wire-client", version: "1.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+      // oxlint-disable-next-line executor/no-double-cast -- test boundary: the in-process wire handler stands in for the global fetch the MCP transport expects
       fetch: wireFetch as unknown as typeof globalThis.fetch,
       requestInit: { headers: { authorization: `Bearer ${token}` } },
     });
@@ -195,6 +197,7 @@ describe("Executor apps wire e2e (booted self-host, real MCP client + GitHub emu
   }, 90_000);
 
   afterAll(async () => {
+    // oxlint-disable-next-line executor/no-promise-catch -- boundary: best-effort teardown of the raw MCP client; a close failure must not fail the suite
     await client?.close().catch(() => {});
     await dispose();
     await github?.close();
@@ -358,6 +361,7 @@ describe("Executor apps wire e2e (booted self-host, real MCP client + GitHub emu
         }
         return "";
       })(),
+      // oxlint-disable-next-line executor/no-promise-reject, executor/no-error-constructor -- test boundary: race the SSE read against a wall-clock timeout so a hung stream fails fast
       new Promise<string>((_, reject) => setTimeout(() => reject(new Error("SSE timeout")), 8000)),
     ]);
     expect(invalidation).toContain("event: invalidate");

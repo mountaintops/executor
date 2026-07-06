@@ -78,34 +78,28 @@ export const rootsFor = (
       }
       const binding = bindings[role];
       if (!binding) {
-        return yield* Effect.fail(
-          new BindingError({
-            message: `no connection bound for role "${role}" (surface "${decl.integration}")`,
-            role,
-            surface: decl.integration,
-          }),
-        );
+        return yield* new BindingError({
+          message: `no connection bound for role "${role}" (surface "${decl.integration}")`,
+          role,
+          surface: decl.integration,
+        });
       }
       if (decl.kind === "array") {
         if (binding.kind !== "array") {
-          return yield* Effect.fail(
-            new BindingError({
-              message: `role "${role}" is a fan-out (connections("${decl.integration}")) and needs an array binding`,
-              role,
-              surface: decl.integration,
-            }),
-          );
+          return yield* new BindingError({
+            message: `role "${role}" is a fan-out (connections("${decl.integration}")) and needs an array binding`,
+            role,
+            surface: decl.integration,
+          });
         }
         roots[role] = { kind: "array", count: binding.connections.length };
       } else {
         if (binding.kind !== "single") {
-          return yield* Effect.fail(
-            new BindingError({
-              message: `role "${role}" is a single connection and needs a single binding`,
-              role,
-              surface: decl.integration,
-            }),
-          );
+          return yield* new BindingError({
+            message: `role "${role}" is a single connection and needs a single binding`,
+            role,
+            surface: decl.integration,
+          });
         }
         roots[role] = { kind: "single" };
       }
@@ -128,6 +122,9 @@ const RESERVED_ROOTS = new Set(["__proto__", "constructor", "prototype"]);
 
 const invokeErr = (message: string): ToolSandboxError =>
   new ToolSandboxError({ kind: "invoke", message });
+
+// oxlint-disable-next-line executor/no-unknown-error-message -- boundary: `cause` is a typed value with a `message` field, not an unknown error
+const taggedMessage = (cause: { readonly message: string }): string => cause.message;
 
 /**
  * Build the HandleBridge the sandbox calls out through. `db` routes to the
@@ -161,7 +158,8 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
           .sql(strings, ...values)
           .pipe(
             Effect.mapError(
-              (cause) => new ToolSandboxError({ kind: "invoke", message: cause.message, cause }),
+              (cause) =>
+                new ToolSandboxError({ kind: "invoke", message: taggedMessage(cause), cause }),
             ),
           );
       }
@@ -216,7 +214,7 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
       .call({ integration: decl.integration, connection: connectionName, path, args })
       .pipe(
         Effect.mapError(
-          (cause) => new ToolSandboxError({ kind: "invoke", message: cause.message, cause }),
+          (cause) => new ToolSandboxError({ kind: "invoke", message: taggedMessage(cause), cause }),
         ),
       );
   },

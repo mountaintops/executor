@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 // ---------------------------------------------------------------------------
 // The REAL kill test: SIGKILL a child process mid-step, restart over the same

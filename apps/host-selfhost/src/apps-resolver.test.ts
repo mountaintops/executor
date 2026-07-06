@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Effect, Layer } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit, Layer } from "effect";
 import { HttpClient } from "effect/unstable/http";
 
 import { makeCtxResolver } from "./apps-resolver";
@@ -21,6 +21,7 @@ describe("apps ClientResolver missing-binding (Fix 4)", () => {
     let httpCalled = false;
     // A stub HttpClient layer that records any dispatch. If the resolver fell
     // back to conns[0] it would build a request and call `execute`.
+    // oxlint-disable-next-line executor/no-double-cast -- test double: only execute is implemented and the test asserts it is never called
     const httpLayer = Layer.succeed(HttpClient.HttpClient)({
       execute: () => {
         httpCalled = true;
@@ -58,7 +59,7 @@ describe("apps ClientResolver missing-binding (Fix 4)", () => {
       }),
     );
 
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
     // The typed BindingError names the role + surface and explains the refusal.
     const serialized = JSON.stringify(exit);
     expect(serialized).toContain("BindingError");

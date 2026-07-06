@@ -6,6 +6,10 @@ import { ToolSandboxError } from "../seams/tool-sandbox";
 import type { ToolchainRef } from "./descriptor";
 
 const BUNDLE_TARGET = "es2022";
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: esbuild rejects with unknown host errors
+  return cause instanceof Error ? cause.message : String(cause);
+};
 
 /** The toolchain (esbuild version + target) recorded into the descriptor so a
  *  re-collect on a different esbuild is not falsely claimed byte-identical. */
@@ -211,13 +215,14 @@ export const bundleEntry = (input: BundleInput): Effect.Effect<BundleOutput, Too
         plugins: [fileSetPlugin(input.files, input.entry) as never],
       });
       const out = result.outputFiles?.[0]?.text;
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: esbuild adapter reports an impossible missing output through the existing tryPromise path
       if (out === undefined) throw new Error("esbuild produced no output");
       return { code: out };
     },
     catch: (cause) =>
       new ToolSandboxError({
         kind: "bundle",
-        message: `bundle failed for ${input.entry}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: `bundle failed for ${input.entry}: ${unknownMessage(cause)}`,
         cause,
       }),
   });

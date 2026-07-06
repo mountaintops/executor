@@ -84,7 +84,10 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
   // `betterAuthIdentityLayer` so a token that works on `/api` works here too.
   const appsAuthenticate = async (request: Request): Promise<boolean> => {
     const auth = betterAuth.auth;
-    const session = await auth.api.getSession({ headers: request.headers }).catch(() => null);
+    const session = await auth.api.getSession({ headers: request.headers }).then(
+      (value) => value,
+      () => null,
+    );
     if (session) return true;
     const authorization = request.headers.get("authorization");
     const token =
@@ -94,7 +97,10 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     if (!token) return false;
     const apiKeySession = await auth.api
       .getSession({ headers: new Headers({ "x-api-key": token }) })
-      .catch(() => null);
+      .then(
+        (value) => value,
+        () => null,
+      );
     return apiKeySession != null;
   };
   const apps = getSelfHostAppsSubsystem({
@@ -113,6 +119,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     // registrar's structural `McpServerLike` uses a plain-object schema view. The
     // shapes are runtime-compatible (the registrar passes zod raw shapes); the
     // cast bridges the SDK's narrower generic signature.
+    // oxlint-disable-next-line executor/no-double-cast -- boundary: MCP SDK server and apps registrar are structurally compatible but expose incompatible generic signatures
     apps.registerMcp(server as unknown as Parameters<typeof apps.registerMcp>[0]),
   );
 

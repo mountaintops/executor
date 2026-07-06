@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { createClient, type Client } from "@libsql/client";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   WorkflowError,
@@ -46,6 +46,12 @@ import {
 const nowMs = () => Date.now();
 
 const toUrl = (path: string): string => (path === ":memory:" ? path : `file:${resolve(path)}`);
+const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const storedJson = (value: unknown): unknown => decodeJsonUnknown(String(value));
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: preserve workflow bridge rejection text from unknown tool failures
+  return cause instanceof Error ? cause.message : String(cause);
+};
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS wf_run (
@@ -120,7 +126,10 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
         // Idempotent add for DBs created before the `bindings` column existed
         // (a persisted journal file from an earlier version). SQLite has no
         // `ADD COLUMN IF NOT EXISTS`, so tolerate the duplicate-column error.
-        await client.execute("ALTER TABLE wf_run ADD COLUMN bindings TEXT").catch(() => undefined);
+        await client.execute("ALTER TABLE wf_run ADD COLUMN bindings TEXT").then(
+          () => undefined,
+          () => undefined,
+        );
       })();
     }
     return ready;
@@ -141,10 +150,10 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
       snapshotId: String(row.snapshot_id),
       entryPath: String(row.entry_path),
       status: String(row.status) as RunView["status"],
-      input: JSON.parse(String(row.input)),
-      output: row.output != null ? JSON.parse(String(row.output)) : undefined,
+      input: storedJson(row.input),
+      output: row.output != null ? storedJson(row.output) : undefined,
       error: row.error != null ? String(row.error) : undefined,
-      persistedBindings: row.bindings != null ? JSON.parse(String(row.bindings)) : undefined,
+      persistedBindings: row.bindings != null ? storedJson(row.bindings) : undefined,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -159,7 +168,7 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
     for (const r of res.rows) {
       map.set(String(r.name), {
         status: String(r.status) as StepRecord["status"],
-        output: r.output != null ? JSON.parse(String(r.output)) : undefined,
+        output: r.output != null ? storedJson(r.output) : undefined,
         error: r.error != null ? String(r.error) : undefined,
         attempt: Number(r.attempt),
       });
@@ -244,30 +253,30 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
     const suspend = (m: SuspendMarker): WorkflowBridgeResult => m;
 
     const service = async (op: WorkflowBridgeOp): Promise<WorkflowBridgeResult> => {
-      switch (op.kind) {
-        case "step.check": {
-          const existing = journaled.get(op.step);
-          if (existing && existing.status === "completed") {
-            return value({ journaled: true, output: existing.output });
-          }
-          return value({ journaled: false });
+      if (op.kind === "step.check") {
+        const existing = journaled.get(op.step);
+        if (existing && existing.status === "completed") {
+          return value({ journaled: true, output: existing.output });
         }
-        case "step.record": {
-          const record: StepRecord = { status: "completed", output: op.value, attempt: 1 };
-          journaled.set(op.step, record);
-          await recordStep(runId, op.step, record);
-          return value({ ok: true });
-        }
-        case "step.tool": {
-          const existing = journaled.get(op.step);
-          if (existing && existing.status === "completed") return value(existing.output);
-          try {
-            const out = await bindings.runTool(op.address, op.args);
+        return value({ journaled: false });
+      }
+      if (op.kind === "step.record") {
+        const record: StepRecord = { status: "completed", output: op.value, attempt: 1 };
+        journaled.set(op.step, record);
+        await recordStep(runId, op.step, record);
+        return value({ ok: true });
+      }
+      if (op.kind === "step.tool") {
+        const existing = journaled.get(op.step);
+        if (existing && existing.status === "completed") return value(existing.output);
+        return bindings.runTool(op.address, op.args).then(
+          async (out) => {
             const record: StepRecord = { status: "completed", output: out, attempt: 1 };
             journaled.set(op.step, record);
             await recordStep(runId, op.step, record);
             return value(out);
-          } catch (cause) {
+          },
+          (cause) => {
             // A bound-tool failure is NOT journaled (so a retry can re-run it).
             // Report it as a structured step error with a typed retryable flag.
             const retryable = !!(
@@ -276,62 +285,62 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
               ((cause as { retryable?: boolean }).retryable === true ||
                 (cause as { name?: string }).name === "RetryableError")
             );
-            const message = cause instanceof Error ? cause.message : String(cause);
             const retryAfter =
               cause && typeof (cause as { retryAfter?: number }).retryAfter === "number"
                 ? (cause as { retryAfter: number }).retryAfter
                 : undefined;
-            return { error: { message, retryable, retryAfter } };
-          }
-        }
-        case "step.sleep": {
-          const existing = journaled.get(op.step);
-          if (existing && existing.status === "completed") return value(null);
-          const wakeAt = clock() + op.ms;
-          const record: StepRecord = { status: "completed", output: { wakeAt }, attempt: 1 };
+            return { error: { message: unknownMessage(cause), retryable, retryAfter } };
+          },
+        );
+      }
+      if (op.kind === "step.sleep") {
+        const existing = journaled.get(op.step);
+        if (existing && existing.status === "completed") return value(null);
+        const wakeAt = clock() + op.ms;
+        const record: StepRecord = { status: "completed", output: { wakeAt }, attempt: 1 };
+        journaled.set(op.step, record);
+        await recordStep(runId, op.step, record);
+        return suspend({ suspend: "sleep" });
+      }
+      if (op.kind === "step.waitForEvent") {
+        const existing = journaled.get(op.step);
+        if (existing && existing.status === "completed") return value(existing.output);
+        const eventName = op.step.replace(/^wait:/, "");
+        const sig = await client.execute({
+          sql: "SELECT payload FROM wf_signal WHERE run_id = ? AND event_name = ?",
+          args: [runId, eventName],
+        });
+        if (sig.rows[0]) {
+          const payload = sig.rows[0].payload != null ? storedJson(sig.rows[0].payload) : undefined;
+          const record: StepRecord = { status: "completed", output: payload, attempt: 1 };
           journaled.set(op.step, record);
           await recordStep(runId, op.step, record);
-          return suspend({ suspend: "sleep" });
+          return value(payload);
         }
-        case "step.waitForEvent": {
-          const existing = journaled.get(op.step);
-          if (existing && existing.status === "completed") return value(existing.output);
-          const eventName = op.step.replace(/^wait:/, "");
-          const sig = await client.execute({
-            sql: "SELECT payload FROM wf_signal WHERE run_id = ? AND event_name = ?",
-            args: [runId, eventName],
-          });
-          if (sig.rows[0]) {
-            const payload =
-              sig.rows[0].payload != null ? JSON.parse(String(sig.rows[0].payload)) : undefined;
-            const record: StepRecord = { status: "completed", output: payload, attempt: 1 };
-            journaled.set(op.step, record);
-            await recordStep(runId, op.step, record);
-            return value(payload);
-          }
-          return suspend({ suspend: "event", event: eventName });
-        }
-        case "step.notify": {
-          const step = `notify:${op.msg.title}`;
-          const existing = journaled.get(step);
-          if (existing && existing.status === "completed") return value({ notified: true });
-          await bindings.notify(op.msg);
-          const record: StepRecord = {
-            status: "completed",
-            output: { notified: true },
-            attempt: 1,
-          };
-          journaled.set(step, record);
-          await recordStep(runId, step, record);
-          return value({ notified: true });
-        }
-        case "db.sql": {
-          // The workflow's scope-db access between steps. Not memoized (reads);
-          // authors put durable side effects in step.do / step.tool.
-          const out = await bindings.runDb?.(scope, op.sql, op.params);
-          return value(out ?? []);
-        }
+        return suspend({ suspend: "event", event: eventName });
       }
+      if (op.kind === "step.notify") {
+        const step = `notify:${op.msg.title}`;
+        const existing = journaled.get(step);
+        if (existing && existing.status === "completed") return value({ notified: true });
+        await bindings.notify(op.msg);
+        const record: StepRecord = {
+          status: "completed",
+          output: { notified: true },
+          attempt: 1,
+        };
+        journaled.set(step, record);
+        await recordStep(runId, step, record);
+        return value({ notified: true });
+      }
+      if (op.kind === "db.sql") {
+        // The workflow's scope-db access between steps. Not memoized (reads);
+        // authors put durable side effects in step.do / step.tool.
+        const out = await bindings.runDb?.(scope, op.sql, op.params);
+        return value(out ?? []);
+      }
+      const _exhaustive: never = op;
+      return _exhaustive;
     };
 
     return {
@@ -600,7 +609,7 @@ export const makeSqliteWorkflowRunner = (options: SqliteWorkflowRunnerOptions): 
             runId,
             name: String(r.name),
             status: String(r.status) as StepView["status"],
-            output: r.output != null ? JSON.parse(String(r.output)) : undefined,
+            output: r.output != null ? storedJson(r.output) : undefined,
             error: r.error != null ? String(r.error) : undefined,
             attempt: Number(r.attempt),
             completedAt: Number(r.completed_at),

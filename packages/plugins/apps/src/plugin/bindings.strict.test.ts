@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { buildBridge, type ClientResolver } from "./bindings";
 import type { ConnectionDecl } from "../pipeline/descriptor";
@@ -23,7 +23,7 @@ const okResolver: ClientResolver = {
 };
 
 const fails = <A, E>(effect: Effect.Effect<A, E>): Promise<boolean> =>
-  Effect.runPromiseExit(effect).then((exit) => exit._tag === "Failure");
+  Effect.runPromiseExit(effect).then(Exit.isFailure);
 
 describe("HandleBridge strict dispatch", () => {
   const declared: Record<string, ConnectionDecl> = {

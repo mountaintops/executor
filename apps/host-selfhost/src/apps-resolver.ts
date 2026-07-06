@@ -79,6 +79,11 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
   github: "https://api.github.com",
 };
 
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: preserve upstream Effect failure text in BindingError
+  return String(cause);
+};
+
 /** Map a dotted method path to a REST URL path. GitHub-style convention: the
  *  LAST segment is the operation verb (listForAuthenticatedUser, listForRepo)
  *  and the leading segments are the resource. For the daily-brief tool the two
@@ -101,24 +106,22 @@ const methodPathToRequest = (
     if (typeof v === "object") continue;
     query[k] = String(v);
   }
-  switch (key) {
-    case "repos.listForAuthenticatedUser":
-      return { method: "GET", url: "/user/repos", query };
-    case "issues.listForRepo": {
-      const owner = String(args.owner ?? "");
-      const repo = String(args.repo ?? "");
-      const { owner: _o, repo: _r, ...rest } = query as Record<string, string>;
-      void _o;
-      void _r;
-      return {
-        method: "GET",
-        url: `/repos/${owner}/${repo}/issues`,
-        query: rest,
-      };
-    }
-    default:
-      return null;
+  if (key === "repos.listForAuthenticatedUser") {
+    return { method: "GET", url: "/user/repos", query };
   }
+  if (key === "issues.listForRepo") {
+    const owner = String(args.owner ?? "");
+    const repo = String(args.repo ?? "");
+    const { owner: _o, repo: _r, ...rest } = query;
+    void _o;
+    void _r;
+    return {
+      method: "GET",
+      url: `/repos/${owner}/${repo}/issues`,
+      query: rest,
+    };
+  }
+  return null;
 };
 
 export const makeCtxResolver = (
@@ -141,16 +144,14 @@ export const makeCtxResolver = (
         // call is made.
         const conn = conns.find((c) => c.name === connection);
         if (!conn) {
-          return yield* Effect.fail(
-            new BindingError({
-              message:
-                `no "${integrationSlug}" connection named "${connection}" is bound for role ` +
-                `"${integration}"; bind a connection for this role before invoking (refusing to ` +
-                `fall back to another connection's credential)`,
-              role: integration,
-              surface: integrationSlug,
-            }),
-          );
+          return yield* new BindingError({
+            message:
+              `no "${integrationSlug}" connection named "${connection}" is bound for role ` +
+              `"${integration}"; bind a connection for this role before invoking (refusing to ` +
+              `fall back to another connection's credential)`,
+            role: integration,
+            surface: integrationSlug,
+          });
         }
         const token = yield* ctx.connections
           .resolveValue({
@@ -162,13 +163,11 @@ export const makeCtxResolver = (
 
         const req = methodPathToRequest(path, (args[0] ?? {}) as Record<string, unknown>);
         if (!req) {
-          return yield* Effect.fail(
-            new BindingError({
-              message: `apps resolver has no REST mapping for "${integrationSlug}.${path.join(".")}" (the general per-integration operation mapping is the remaining gap)`,
-              role: integration,
-              surface: integrationSlug,
-            }),
-          );
+          return yield* new BindingError({
+            message: `apps resolver has no REST mapping for "${integrationSlug}.${path.join(".")}" (the general per-integration operation mapping is the remaining gap)`,
+            role: integration,
+            surface: integrationSlug,
+          });
         }
         // Base URL precedence: the connection's own config override (rare), then
         // the registered integration record's non-secret displayUrl (an operator
@@ -187,13 +186,11 @@ export const makeCtxResolver = (
         const baseUrl =
           conn.config?.baseUrl ?? integrationBaseUrl ?? DEFAULT_BASE_URLS[integrationSlug];
         if (!baseUrl) {
-          return yield* Effect.fail(
-            new BindingError({
-              message: `apps resolver has no base URL for integration "${integrationSlug}"`,
-              role: integration,
-              surface: integrationSlug,
-            }),
-          );
+          return yield* new BindingError({
+            message: `apps resolver has no base URL for integration "${integrationSlug}"`,
+            role: integration,
+            surface: integrationSlug,
+          });
         }
 
         const result = yield* Effect.gen(function* () {
@@ -214,7 +211,7 @@ export const makeCtxResolver = (
           Effect.mapError(
             (cause) =>
               new BindingError({
-                message: `upstream call ${integrationSlug}.${path.join(".")} failed: ${String(cause)}`,
+                message: `upstream call ${integrationSlug}.${path.join(".")} failed: ${unknownMessage(cause)}`,
                 role: integration,
                 surface: integrationSlug,
               }),

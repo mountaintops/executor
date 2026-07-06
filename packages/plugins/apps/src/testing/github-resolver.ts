@@ -2,6 +2,11 @@ import { Effect } from "effect";
 
 import { BindingError, type ClientResolver } from "../plugin/bindings";
 
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: test resolver preserves promise rejection text as BindingError message
+  return cause instanceof Error ? cause.message : String(cause);
+};
+
 // ---------------------------------------------------------------------------
 // A ClientResolver that maps the daily-brief github client methods to real
 // GitHub REST calls against a base URL (the emulate GitHub emulator in the
@@ -63,6 +68,7 @@ export const makeGithubRestResolver = (options: GithubResolverOptions): ClientRe
         pull_request: i.pull_request,
       }));
     }
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: Promise-shaped test resolver rejects unsupported methods like fetch failures
     throw new Error(`unsupported github method: ${method}`);
   };
 
@@ -72,7 +78,7 @@ export const makeGithubRestResolver = (options: GithubResolverOptions): ClientRe
         try: () => call(connection, path, args),
         catch: (cause) =>
           new BindingError({
-            message: cause instanceof Error ? cause.message : String(cause),
+            message: unknownMessage(cause),
             role: "github",
             surface: "github",
           }),

@@ -105,6 +105,11 @@ const text = (value: unknown): McpToolResult => ({
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect as never);
 
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: MCP SDK handler returns unknown failures as tool error text
+  return cause instanceof Error ? cause.message : String(cause);
+};
+
 export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void => {
   const { runtime, scope } = deps;
 
@@ -123,6 +128,7 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
       },
     },
     async ({ files, message }) => {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: MCP SDK tool handler converts publish failures into MCP tool errors
       try {
         const out = await run(
           runtime.publish({
@@ -140,7 +146,7 @@ export const registerAppsMcp = (server: McpServerLike, deps: AppsMcpDeps): void 
         });
       } catch (cause) {
         return {
-          ...text(cause instanceof Error ? cause.message : String(cause)),
+          ...text(unknownMessage(cause)),
           isError: true,
         };
       }

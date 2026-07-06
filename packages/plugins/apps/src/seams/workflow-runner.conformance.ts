@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import type { WorkflowBindings, WorkflowRunner } from "./workflow-runner";
@@ -146,8 +146,10 @@ export default defineWorkflow({
           if (address === "attempt") {
             attempts++;
             if (attempts < 2) {
+              // oxlint-disable-next-line executor/no-error-constructor -- test boundary: retryable failure fixture must be an Error-like rejected value
               const e = new Error("flaky") as Error & { retryable?: boolean };
               e.retryable = true;
+              // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: Promise-shaped workflow binding rejects to exercise retry behavior
               throw e;
             }
             return attempts;

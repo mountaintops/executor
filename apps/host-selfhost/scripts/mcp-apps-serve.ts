@@ -35,6 +35,7 @@ process.env.EXECUTOR_ALLOW_LOCAL_NETWORK = "true";
 
 // --- real-shaped GitHub emulator + a seeded repo with issues ----------------
 const github = await createEmulator({ service: "github" });
+// oxlint-disable-next-line executor/no-double-cast -- test boundary: the emulator credential minter returns an opaque credential; this asserts the api-key shape it produces
 const cred = (await github.credentials.mint({
   type: "api-key",
 })) as unknown as { token: string };
@@ -136,6 +137,7 @@ const wireFetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Respon
 const client = new Client({ name: "mcp-apps-setup", version: "1.0.0" });
 await client.connect(
   new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+    // oxlint-disable-next-line executor/no-double-cast -- test boundary: the in-process wire handler stands in for the global fetch the MCP transport expects
     fetch: wireFetch as unknown as typeof globalThis.fetch,
     requestInit: { headers: { authorization: `Bearer ${token}` } },
   }),

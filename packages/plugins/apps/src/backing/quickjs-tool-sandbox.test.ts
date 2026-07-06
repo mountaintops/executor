@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { describe, expect, it } from "@effect/vitest";
+import { Effect, Exit } from "effect";
 
 import { bundleEntry } from "../pipeline/bundle";
 import { makeQuickjsToolSandbox } from "./quickjs-tool-sandbox";
@@ -103,7 +103,7 @@ export default defineTool({
     const files = new Map([["tools/rng.ts", nondeterministic]]);
     const { code } = await run(bundleEntry({ files, entry: "tools/rng.ts" }));
     const exit = await Effect.runPromiseExit(sandbox.collect(code));
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 
   it("denies network (fetch throws in the sandbox)", async () => {
@@ -120,6 +120,6 @@ export default defineTool({
     const exit = await Effect.runPromiseExit(
       sandbox.invoke(code, { artifact: "net", kind: "tool", input: {}, roots: {} }, bridge),
     );
-    expect(exit._tag).toBe("Failure");
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 });

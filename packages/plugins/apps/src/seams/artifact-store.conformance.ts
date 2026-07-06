@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import type { ArtifactStore, FileSet } from "./artifact-store";

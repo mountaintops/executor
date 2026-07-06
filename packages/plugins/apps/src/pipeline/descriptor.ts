@@ -108,6 +108,7 @@ export const stableStringify = (value: unknown): string => {
   const seen = new WeakSet<object>();
   const walk = (v: unknown): unknown => {
     if (v === null || typeof v !== "object") return v;
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: stable JSON serialization must fail loudly on cyclic internal values
     if (seen.has(v)) throw new Error("cyclic value cannot be serialized deterministically");
     seen.add(v);
     if (Array.isArray(v)) return v.map(walk);

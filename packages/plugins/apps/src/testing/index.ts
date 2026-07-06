@@ -2,7 +2,7 @@ import { Effect } from "effect";
 
 import type { AppDescriptor } from "../pipeline/descriptor";
 import type { AppsStore } from "../plugin/store";
-import type { ClientResolver, BindingError } from "../plugin/bindings";
+import { BindingError, type ClientResolver } from "../plugin/bindings";
 import {
   ArtifactStoreError,
   asSnapshotId,
@@ -103,12 +103,13 @@ export const makeTestResolver = (
       calls.push({ integration, connection, method });
       const handler = handlers[integration]?.[method];
       if (!handler) {
-        return Effect.fail({
-          _tag: "BindingError",
-          message: `no test handler for ${integration}.${method}`,
-          role: integration,
-          surface: integration,
-        } as unknown as BindingError);
+        return Effect.fail(
+          new BindingError({
+            message: `no test handler for ${integration}.${method}`,
+            role: integration,
+            surface: integration,
+          }),
+        );
       }
       return Effect.sync(() => handler(args));
     },

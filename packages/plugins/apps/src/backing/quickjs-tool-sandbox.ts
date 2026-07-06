@@ -158,7 +158,10 @@ const buildInvokeCode = (bundle: string, request: InvokeRequest): string =>
 // A no-op invoker for collect: no handle calls should happen; if they do
 // (misbehaving describe path), fail loudly.
 const collectInvoker: SandboxToolInvoker = {
-  invoke: () => Effect.fail(new Error("collect must not make handle calls")) as never,
+  invoke: () =>
+    Effect.fail(
+      new ToolSandboxError({ kind: "collect", message: "collect must not make handle calls" }),
+    ) as never,
 };
 
 export interface QuickjsToolSandboxOptions {
@@ -198,13 +201,11 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
         const a = stableStringify(first);
         const b = stableStringify(second);
         if (a !== b) {
-          return yield* Effect.fail(
-            new ToolSandboxError({
-              kind: "nondeterministic",
-              message:
-                "descriptor collection is non-deterministic (an artifact read Math.random/Date.now or otherwise diverged between runs)",
-            }),
-          );
+          return yield* new ToolSandboxError({
+            kind: "nondeterministic",
+            message:
+              "descriptor collection is non-deterministic (an artifact read Math.random/Date.now or otherwise diverged between runs)",
+          });
         }
         const descriptor = first as { kind?: string };
         const kind = descriptor?.kind === "workflow" ? "workflow" : "tool";
@@ -231,7 +232,10 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
             // through an unexpected channel.
             if (input.path !== "__handle__") {
               return Effect.fail(
-                new Error(`unexpected sandbox bridge path: ${input.path}`),
+                new ToolSandboxError({
+                  kind: "invoke",
+                  message: `unexpected sandbox bridge path: ${input.path}`,
+                }),
               ) as never;
             }
             const call = input.args as {
@@ -240,7 +244,9 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
               args: readonly unknown[];
             };
             if (!call || typeof call.root !== "string" || !Array.isArray(call.path)) {
-              return Effect.fail(new Error("malformed sandbox bridge call")) as never;
+              return Effect.fail(
+                new ToolSandboxError({ kind: "invoke", message: "malformed sandbox bridge call" }),
+              ) as never;
             }
             return bridge.call({ root: call.root, path: call.path, args: call.args }) as never;
           },
@@ -254,9 +260,7 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
             ),
           );
         if (result.error) {
-          return yield* Effect.fail(
-            new ToolSandboxError({ kind: "invoke", message: result.error }),
-          );
+          return yield* new ToolSandboxError({ kind: "invoke", message: result.error });
         }
         return { output: result.result, logs: result.logs ?? [] } satisfies InvokeResult;
       }),

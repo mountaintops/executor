@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 import type { ArtifactStore, FileSet, SnapshotId } from "../seams/artifact-store";
 import type { ToolSandbox } from "../seams/tool-sandbox";
@@ -53,6 +53,17 @@ export const PUBLISH_LIMITS = {
 } as const;
 
 const byteLength = (value: string): number => Buffer.byteLength(value, "utf8");
+
+const decodeJsonUnknown = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const isPublishError = Predicate.isTagged("PublishError") as (
+  value: unknown,
+) => value is PublishError;
+// oxlint-disable-next-line executor/no-unknown-error-message -- boundary: `cause` is a typed value with a `message` field, not an unknown error
+const taggedMessage = (cause: { readonly message: string }): string => cause.message;
+const unknownMessage = (cause: unknown): string => {
+  // oxlint-disable-next-line executor/no-instanceof-error, executor/no-unknown-error-message -- boundary: preserve existing diagnostic text from thrown validator values
+  return cause instanceof Error ? cause.message : String(cause);
+};
 
 /** Reject an oversized publish set with a typed diagnostic before any work. */
 export const enforcePublishLimits = (files: FileSet): PublishError | null => {
@@ -183,7 +194,7 @@ export interface PublishDeps {
 const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp, PublishError> =>
   Effect.gen(function* () {
     const discovered = discover(files);
-    if (discovered instanceof PublishError) return yield* Effect.fail(discovered);
+    if (isPublishError(discovered)) return yield* Effect.fail(discovered);
 
     const tools: ToolDescriptor[] = [];
     const workflows: WorkflowDescriptor[] = [];
@@ -201,9 +212,9 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         Effect.mapError(
           (cause) =>
             new PublishError({
-              message: cause.message,
+              message: taggedMessage(cause),
               stage: "bundle",
-              diagnostics: [{ path: artifact.entry, message: cause.message }],
+              diagnostics: [{ path: artifact.entry, message: taggedMessage(cause) }],
             }),
         ),
       );
@@ -211,21 +222,19 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         Effect.mapError(
           (cause) =>
             new PublishError({
-              message: cause.message,
+              message: taggedMessage(cause),
               stage: "collect",
-              diagnostics: [{ path: artifact.entry, message: cause.message }],
+              diagnostics: [{ path: artifact.entry, message: taggedMessage(cause) }],
             }),
         ),
       );
       const raw = collected.artifacts.default?.descriptor as CollectedDescriptor | undefined;
       if (!raw) {
-        return yield* Effect.fail(
-          new PublishError({
-            message: `no descriptor collected from ${artifact.entry}`,
-            stage: "collect",
-            diagnostics: [{ path: artifact.entry, message: "define* did not run" }],
-          }),
-        );
+        return yield* new PublishError({
+          message: `no descriptor collected from ${artifact.entry}`,
+          stage: "collect",
+          diagnostics: [{ path: artifact.entry, message: "define* did not run" }],
+        });
       }
       const connections = toConnectionDecls(raw.connections);
       const source = yield* sourceRef(artifact.entry, files.get(artifact.entry) ?? "");
@@ -245,22 +254,15 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         // cron (`*/0`, negative step, out-of-range) is rejected here with a
         // typed diagnostic rather than reaching the scheduler.
         if (raw.schedule?.cron !== undefined) {
-          try {
-            validateCron(raw.schedule.cron);
-          } catch (cause) {
-            return yield* Effect.fail(
+          yield* Effect.try({
+            try: () => validateCron(raw.schedule!.cron),
+            catch: (cause) =>
               new PublishError({
                 message: `workflow "${artifact.name}" has an invalid cron`,
                 stage: "collect",
-                diagnostics: [
-                  {
-                    path: artifact.entry,
-                    message: cause instanceof Error ? cause.message : String(cause),
-                  },
-                ],
+                diagnostics: [{ path: artifact.entry, message: unknownMessage(cause) }],
               }),
-            );
-          }
+          });
         }
         workflows.push({
           name: artifact.name,
@@ -279,9 +281,9 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
         Effect.mapError(
           (cause) =>
             new PublishError({
-              message: cause.message,
+              message: taggedMessage(cause),
               stage: "bundle",
-              diagnostics: [{ path: artifact.entry, message: cause.message }],
+              diagnostics: [{ path: artifact.entry, message: taggedMessage(cause) }],
             }),
         ),
       );
@@ -358,7 +360,7 @@ export const publish = (
       .pipe(
         Effect.mapError(
           (cause) =>
-            new PublishError({ message: cause.message, stage: "project", diagnostics: [] }),
+            new PublishError({ message: taggedMessage(cause), stage: "project", diagnostics: [] }),
         ),
       );
 
@@ -373,7 +375,7 @@ export const publish = (
       .pipe(
         Effect.mapError(
           (cause) =>
-            new PublishError({ message: cause.message, stage: "project", diagnostics: [] }),
+            new PublishError({ message: taggedMessage(cause), stage: "project", diagnostics: [] }),
         ),
       );
 
@@ -415,18 +417,18 @@ export const loadDescriptorFromSnapshot = (
       .forScope(scope)
       .pipe(
         Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          (c) => new PublishError({ message: taggedMessage(c), stage: "project", diagnostics: [] }),
         ),
       );
     const raw = yield* scopeStore
       .readFile(snapshotId, DESCRIPTOR_SNAPSHOT_PATH)
       .pipe(
         Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          (c) => new PublishError({ message: taggedMessage(c), stage: "project", diagnostics: [] }),
         ),
       );
     if (raw == null) return null;
-    const body = JSON.parse(raw) as Omit<AppDescriptor, "snapshotId">;
+    const body = decodeJsonUnknown(raw) as Omit<AppDescriptor, "snapshotId">;
     return { ...body, snapshotId };
   });
 
@@ -442,14 +444,14 @@ export const restageBlobs = (
       .forScope(descriptor.scope)
       .pipe(
         Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          (c) => new PublishError({ message: taggedMessage(c), stage: "project", diagnostics: [] }),
         ),
       );
     const files = yield* scopeStore
       .read(descriptor.snapshotId as SnapshotId)
       .pipe(
         Effect.mapError(
-          (c) => new PublishError({ message: c.message, stage: "project", diagnostics: [] }),
+          (c) => new PublishError({ message: taggedMessage(c), stage: "project", diagnostics: [] }),
         ),
       );
     const blobs: StagedBlob[] = [];
@@ -458,9 +460,9 @@ export const restageBlobs = (
         Effect.mapError(
           (c) =>
             new PublishError({
-              message: c.message,
+              message: taggedMessage(c),
               stage: "bundle",
-              diagnostics: [{ path: uiDesc.sourcePath, message: c.message }],
+              diagnostics: [{ path: uiDesc.sourcePath, message: taggedMessage(c) }],
             }),
         ),
       );
