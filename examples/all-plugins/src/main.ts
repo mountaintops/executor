@@ -418,7 +418,6 @@ const program = Effect.gen(function* () {
   console.log("  executor.fileSecrets.filePath:   ", executor.fileSecrets.filePath);
 
   // executor.mcp.addServer({ transport: "remote", name: "...", endpoint: "...", slug: "..." });
-  // executor.google.addBundle({ urls: ["..."], slug: "google" });
   // executor.onepassword.configure({ auth: { kind: "desktop-app", accountName: "..." }, vaultId: "..." });
 
   // -------------------------------------------------------------------------

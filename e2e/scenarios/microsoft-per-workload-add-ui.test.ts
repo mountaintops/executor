@@ -26,7 +26,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
-import { setPresetChecked } from "./support/picker";
+import { clearCheckedPresets, setPresetChecked } from "./support/picker";
 
 scenario(
   "Microsoft · the per-workload picker fans out to separate integrations and skips existing ones",
@@ -46,11 +46,8 @@ scenario(
       });
 
       await step("Clear defaults, check Mail + Calendar, and add a custom scope", async () => {
-        // The featured defaults (profile, mail, calendar, contacts, tasks, files)
-        // start checked; clear them, then select only the two under test.
-        for (const presetId of ["profile", "mail", "calendar", "contacts", "tasks", "files"]) {
-          await setPresetChecked(page, presetId, false);
-        }
+        // Clear every checked default, then select only the two under test.
+        await clearCheckedPresets(page);
         for (const presetId of ["mail", "calendar"]) {
           await setPresetChecked(page, presetId, true);
         }
@@ -66,7 +63,12 @@ scenario(
         await page.getByTestId("microsoft-add-submit").click();
         // Each workload fetches + stream-compiles the 37MB Graph spec; allow a
         // wide window for the result panel to populate.
-        await page.getByTestId("microsoft-add-results").waitFor({ timeout: 300_000 });
+        const results = page.getByTestId("microsoft-add-results");
+        await results.waitFor({ timeout: 300_000 });
+        expect(
+          await results.locator('[data-testid^="add-result-row-"]').count(),
+          "only Mail, Calendar, and the custom scope are created",
+        ).toBe(3);
 
         for (const presetId of ["mail", "calendar"]) {
           const row = page.getByTestId(`add-result-row-${presetId}`);
@@ -118,9 +120,7 @@ scenario(
         await page.goto("/integrations/add/microsoft", { waitUntil: "domcontentloaded" });
         await page.getByText("Customize Microsoft Graph").waitFor();
 
-        for (const presetId of ["profile", "mail", "calendar", "contacts", "tasks", "files"]) {
-          await setPresetChecked(page, presetId, false);
-        }
+        await clearCheckedPresets(page);
         await setPresetChecked(page, "mail", true);
 
         await page.getByTestId("microsoft-add-submit").click();

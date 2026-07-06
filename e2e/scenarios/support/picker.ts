@@ -27,3 +27,24 @@ export const setPresetChecked = async (
     )
     .toBe(String(checked));
 };
+
+export const clearCheckedPresets = async (page: Page): Promise<void> => {
+  const boxes = page.locator('[data-testid^="preset-checkbox-"]');
+  await boxes.first().waitFor();
+
+  const checkedPresetIds: string[] = [];
+  const count = await boxes.count();
+  for (let index = 0; index < count; index += 1) {
+    const box = boxes.nth(index);
+    if ((await box.getAttribute("aria-checked")) !== "true") continue;
+
+    const testId = await box.getAttribute("data-testid");
+    if (testId?.startsWith("preset-checkbox-")) {
+      checkedPresetIds.push(testId.slice("preset-checkbox-".length));
+    }
+  }
+
+  for (const presetId of checkedPresetIds) {
+    await setPresetChecked(page, presetId, false);
+  }
+};

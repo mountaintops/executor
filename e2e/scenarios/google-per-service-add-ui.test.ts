@@ -34,7 +34,7 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
-import { setPresetChecked } from "./support/picker";
+import { clearCheckedPresets, setPresetChecked } from "./support/picker";
 
 scenario(
   "Google · the per-service picker fans out to separate integrations and skips existing ones",
@@ -59,17 +59,7 @@ scenario(
         async () => {
           // Clear every featured default, then select only the three preset
           // products under test.
-          const featuredDefaults = [
-            "google-calendar",
-            "google-gmail",
-            "google-sheets",
-            "google-drive",
-            "google-docs",
-          ];
-          for (const presetId of featuredDefaults) {
-            await setPresetChecked(page, presetId, false);
-          }
-
+          await clearCheckedPresets(page);
           for (const presetId of ["google-calendar", "google-gmail", "google-drive"]) {
             await setPresetChecked(page, presetId, true);
           }
@@ -152,9 +142,7 @@ scenario(
         await page.getByText("Customize your Google connection").waitFor();
 
         // Clear the featured defaults so only Calendar (already added) is checked.
-        for (const presetId of ["google-gmail", "google-sheets", "google-drive", "google-docs"]) {
-          await setPresetChecked(page, presetId, false);
-        }
+        await clearCheckedPresets(page);
         await setPresetChecked(page, "google-calendar", true);
 
         await page.getByTestId("google-add-submit").click();
