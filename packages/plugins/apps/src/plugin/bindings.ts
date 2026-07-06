@@ -100,31 +100,45 @@ const resolveRequestedConnection = (
   requested: string,
   resolver: ClientResolver,
 ): Effect.Effect<string, BindingError> =>
-  resolver.resolveConnection({ connection: requested }).pipe(
-    Effect.flatMap((connection) => {
-      if (!connection) {
-        return Effect.fail(
-          new BindingError({
-            role,
-            integration: decl.integration,
-            message: `unknown connection "${requested}" for role "${role}" (${decl.integration})`,
-            requestedConnection: requested,
-          }),
-        );
-      }
+  Effect.gen(function* () {
+    const connection = yield* resolver.resolveConnection({ connection: requested });
+    if (connection) {
       if (connection.integration !== decl.integration) {
-        return Effect.fail(
-          new BindingError({
-            role,
-            integration: decl.integration,
-            message: `connection "${requested}" belongs to integration "${connection.integration}", not "${decl.integration}" for role "${role}"`,
-            requestedConnection: requested,
-          }),
-        );
+        return yield* new BindingError({
+          role,
+          integration: decl.integration,
+          message: `connection "${requested}" belongs to integration "${connection.integration}", not "${decl.integration}" for role "${role}"`,
+          requestedConnection: requested,
+        });
       }
-      return Effect.succeed(connection.address);
-    }),
-  );
+      return connection.address;
+    }
+
+    const connections = yield* resolver.listConnections({ integration: decl.integration });
+    const matches = requested.startsWith("tools.")
+      ? []
+      : connections.filter(
+          (candidate) => (candidate.name ?? candidate.address.split(".").at(-1)) === requested,
+        );
+    if (matches.length === 1) return matches[0]!.address;
+    if (matches.length > 1) {
+      return yield* new BindingError({
+        role,
+        integration: decl.integration,
+        message: `ambiguous connection name "${requested}" for role "${role}" (${decl.integration}); choose one of ${matches
+          .map((candidate) => candidate.address)
+          .join(", ")}`,
+        requestedConnection: requested,
+      });
+    }
+
+    return yield* new BindingError({
+      role,
+      integration: decl.integration,
+      message: `unknown connection "${requested}" for role "${role}" (${decl.integration}); use a full connection address or an unambiguous connection name${connections.length > 0 ? ` (available: ${connections.map((candidate) => `${candidate.address} or ${candidate.name ?? candidate.address.split(".").at(-1)}`).join(", ")})` : ""}`,
+      requestedConnection: requested,
+    });
+  });
 
 export interface ResolvedIntegrationBindings {
   readonly input: unknown;

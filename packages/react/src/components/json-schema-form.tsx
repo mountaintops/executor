@@ -105,9 +105,10 @@ const DEFAULT_BY_TYPE: Record<string, () => unknown> = {
 };
 
 /** Seed used when the user clicks "Add" for an optional property or array item.
- *  Never auto-injected on load — only on explicit add. */
+ *  Schema defaults can also be displayed without being injected into JSON. */
 export const defaultForSchema = (schema: JsonSchema, root: JsonSchema): unknown => {
   const s = deepResolve(schema, root);
+  if (s.default !== undefined) return s.default;
   if (s.const !== undefined) return s.const;
   if (Array.isArray(s.enum) && s.enum.length > 0) return s.enum[0];
   const t = primaryType(s);
@@ -223,8 +224,8 @@ export function JsonSchemaForm(props: {
 }
 
 // ---------------------------------------------------------------------------
-// ObjectFields — renders an object's properties (required first, then present
-// optionals, then "Add" rows for absent optionals)
+// ObjectFields — renders an object's properties (required/default-backed first,
+// then present optionals, then "Add" rows for absent optionals)
 // ---------------------------------------------------------------------------
 
 function ObjectFields(props: {
@@ -242,11 +243,15 @@ function ObjectFields(props: {
   const requiredSet = new Set(schema.required ?? []);
   const entries = Object.entries(properties);
 
-  const present = entries.filter(
-    ([key]: [string, JsonSchema]) => key in value || requiredSet.has(key),
-  );
+  const present = entries.filter(([key, propSchema]: [string, JsonSchema]) => {
+    const resolved = deepResolve(propSchema, root);
+    return key in value || requiredSet.has(key) || resolved.default !== undefined;
+  });
   const addable = entries.filter(
-    ([key]: [string, JsonSchema]) => !requiredSet.has(key) && !(key in value),
+    ([key, propSchema]: [string, JsonSchema]) =>
+      !requiredSet.has(key) &&
+      !(key in value) &&
+      deepResolve(propSchema, root).default === undefined,
   );
 
   // No properties → render nothing (no "takes no arguments" noise); a zero-arg
@@ -316,6 +321,7 @@ function JsonSchemaField(props: {
   const { root, name, fieldId, required, value, present, onChange, depth, disabled } = props;
   const schema = deepResolve(props.schema, root);
   const description = schemaDescription(schema);
+  const fieldValue = value === undefined && schema.default !== undefined ? schema.default : value;
 
   const header = (
     <div className="flex items-center justify-between gap-2">
@@ -353,7 +359,7 @@ function JsonSchemaField(props: {
         schema={schema}
         root={root}
         fieldId={fieldId}
-        value={value}
+        value={fieldValue}
         onChange={onChange}
         depth={depth}
         disabled={disabled}

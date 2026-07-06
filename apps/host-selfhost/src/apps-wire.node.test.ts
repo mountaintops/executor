@@ -569,14 +569,37 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   );
   expect(JSON.stringify(searchResult)).toContain("deal-pipeline-sync");
 
-  const schema = await requestJson<{ inputSchema: { properties?: Record<string, unknown> } }>(
+  const schema = await requestJson<{
+    inputSchema: { properties?: Record<string, unknown>; required?: readonly string[] };
+  }>(
     `/api/tools/schema?address=${encodeURIComponent(listed.find((tool) => tool.name === "deal-pipeline-sync")!.address)}`,
     { headers: jsonHeaders },
   );
   expect(schema.inputSchema.properties?.github).toMatchObject({
     type: "string",
     enum: [GITHUB_CONNECTION],
+    default: GITHUB_CONNECTION,
   });
+  expect(schema.inputSchema.required ?? []).not.toContain("github");
+
+  const defaultInvoke = (await executeResult(
+    callAppToolCode("deal-pipeline-sync", {
+      owner: OWNER,
+      repo: REPO,
+    }),
+  )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
+  expect(defaultInvoke.result?.ok).toBe(true);
+  expect(defaultInvoke.result?.data?.synced).toBe(2);
+
+  const bareNameInvoke = (await executeResult(
+    callAppToolCode("deal-pipeline-sync", {
+      github: "main",
+      owner: OWNER,
+      repo: REPO,
+    }),
+  )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
+  expect(bareNameInvoke.result?.ok).toBe(true);
+  expect(bareNameInvoke.result?.data?.synced).toBe(2);
 
   const invoke = (await executeResult(
     callAppToolCode("deal-pipeline-sync", {
@@ -587,6 +610,23 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
   expect(invoke.result?.ok).toBe(true);
   expect(invoke.result?.data?.synced).toBe(2);
+
+  const bogusConnection = await execute(
+    callAppToolCode("deal-pipeline-sync", {
+      github: "garbage",
+      owner: OWNER,
+      repo: REPO,
+    }),
+  );
+  const bogusBody = JSON.stringify(bogusConnection);
+  const bogusStructured = bogusConnection.structured.result as {
+    readonly result?: { readonly error?: { readonly message?: string } };
+  };
+  expect(bogusConnection.status).toBe("completed");
+  expect(bogusStructured.result?.error?.message).toContain(
+    'unknown connection "garbage" for role "github" (github)',
+  );
+  expect(bogusBody).not.toContain("Internal tool error");
 
   const ledger = await github.ledger.list();
   const sourceFetches = ledger.filter((entry) => entry.path === `/repos/${OWNER}/${REPO}`);

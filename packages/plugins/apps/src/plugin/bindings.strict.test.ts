@@ -30,7 +30,7 @@ const okResolver: ClientResolver = {
     ]),
   resolveConnection: ({ connection }) =>
     Effect.succeed(
-      connection === "tools.github.user.main" || connection === "main"
+      connection === "tools.github.user.main"
         ? {
             address: "tools.github.user.main",
             integration: "github",
@@ -44,6 +44,9 @@ const okResolver: ClientResolver = {
 
 const fails = <A, E>(effect: Effect.Effect<A, E>): Promise<boolean> =>
   Effect.runPromiseExit(effect).then((exit) => Exit.isFailure(exit));
+
+const failureText = <A, E>(effect: Effect.Effect<A, E>): Promise<string> =>
+  Effect.runPromiseExit(effect).then((exit) => JSON.stringify(exit));
 
 describe("HandleBridge strict dispatch", () => {
   const declared: Record<string, IntegrationDecl> = {
@@ -118,5 +121,40 @@ describe("HandleBridge strict dispatch", () => {
         resolveIntegrationBindings(declared, { gh: "tools.github.user.missing" }, okResolver),
       ),
     ).toBe(true);
+  });
+
+  it("accepts an unambiguous bare connection name", async () => {
+    const resolved = await Effect.runPromise(
+      resolveIntegrationBindings(declared, { gh: "main", q: "docs" }, okResolver),
+    );
+    expect(resolved.bindings).toEqual({ gh: "tools.github.user.main" });
+    expect(resolved.input).toEqual({ q: "docs" });
+  });
+
+  it("fails when a bare connection name is ambiguous", async () => {
+    const resolver: ClientResolver = {
+      ...okResolver,
+      listConnections: () =>
+        Effect.succeed([
+          {
+            address: "tools.github.user.personal",
+            integration: "github",
+            name: "personal",
+            owner: "user",
+          },
+          {
+            address: "tools.github.org.personal",
+            integration: "github",
+            name: "personal",
+            owner: "org",
+          },
+        ]),
+    };
+    const text = await failureText(
+      resolveIntegrationBindings(declared, { gh: "personal" }, resolver),
+    );
+    expect(text).toContain("ambiguous connection name");
+    expect(text).toContain("tools.github.user.personal");
+    expect(text).toContain("tools.github.org.personal");
   });
 });

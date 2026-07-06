@@ -101,6 +101,9 @@ describe("json-schema-form value transforms", () => {
     expect(defaultForSchema({ type: "boolean" }, root)).toBe(false);
     expect(defaultForSchema({ type: "object" }, root)).toEqual({});
     expect(defaultForSchema({ type: "array" }, root)).toEqual([]);
+    expect(defaultForSchema({ type: "string", default: "tools.github.user.main" }, root)).toBe(
+      "tools.github.user.main",
+    );
     expect(defaultForSchema({ enum: ["a", "b"] }, root)).toBe("a");
     expect(defaultForSchema({ const: 7 }, root)).toBe(7);
   });
