@@ -7,7 +7,7 @@
 
 /** Descriptor schema version. Bumped on any breaking shape change. A reader
  *  refuses a descriptor from a version it does not understand. */
-export const DESCRIPTOR_VERSION = 2 as const;
+export const DESCRIPTOR_VERSION = 3 as const;
 
 /** Where an entry came from: path + content hash. Lets a projection point back
  *  at the exact source bytes without re-reading the snapshot, and makes the
@@ -30,6 +30,15 @@ export interface ToolchainRef {
 export interface IntegrationDecl {
   readonly integration: string;
 }
+
+export interface GitHubSourceRef {
+  readonly kind: "github";
+  readonly repo: string;
+  readonly ref: string;
+  readonly upstreamSha: string;
+}
+
+export type AppSourceRef = GitHubSourceRef;
 
 export interface ToolDescriptor {
   /** Path identity, e.g. `issues-sync` (from `tools/issues-sync.ts`). */
@@ -62,6 +71,8 @@ export const GUIDE_ENTRIES_KEY = "skills";
 export interface AppDescriptor {
   readonly version: typeof DESCRIPTOR_VERSION;
   readonly scope: string;
+  readonly description?: string;
+  readonly source?: AppSourceRef;
   /** The snapshot (commit hash) this descriptor was extracted from. */
   readonly snapshotId: string;
   /** The toolchain that produced the compiled bundles. */
@@ -70,6 +81,10 @@ export interface AppDescriptor {
   readonly [FLOW_ENTRIES_KEY]: readonly DeferredDescriptor[];
   readonly ui: readonly DeferredDescriptor[];
   readonly [GUIDE_ENTRIES_KEY]: readonly DeferredDescriptor[];
+  readonly skipped: readonly {
+    readonly path: string;
+    readonly reason: "not supported yet";
+  }[];
   /** Shared JSON-schema `$defs` reachable from tool schemas. */
   readonly definitions?: Record<string, unknown>;
 }

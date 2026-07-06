@@ -13,7 +13,7 @@ import {
   type PublishOutput,
 } from "../pipeline/publish";
 import { PublishError } from "../pipeline/discover";
-import type { AppDescriptor, ToolDescriptor } from "../pipeline/descriptor";
+import type { AppDescriptor, AppSourceRef, ToolDescriptor } from "../pipeline/descriptor";
 import { bundleEntry } from "../pipeline/bundle";
 import {
   buildBridge,
@@ -42,6 +42,8 @@ export interface AppsRuntime {
     readonly scope: string;
     readonly files: ReadonlyMap<string, string>;
     readonly message?: string;
+    readonly description?: string;
+    readonly source?: AppSourceRef;
   }) => Effect.Effect<PublishOutput, PublishError>;
   readonly getDescriptor: (scope: string) => Effect.Effect<AppDescriptor | null>;
   /** Re-derive the published-descriptor pointer from the latest committed
@@ -264,6 +266,8 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
                       scope: input.scope,
                       files: input.files,
                       commitMessage: input.message,
+                      description: input.description,
+                      source: input.source,
                     },
                   );
                   yield* putDescriptorPointer(out.descriptor);

@@ -13,6 +13,7 @@ export {
   type SelfHostAppsRuntime,
   type SelfHostAppsRuntimeOptions,
 } from "./plugin/self-host-runtime";
+export { type AppsRuntime } from "./plugin/runtime";
 export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
 export {
   BindingError,
@@ -20,3 +21,13 @@ export {
   type ConnectionCandidate,
   type RoleBindings,
 } from "./plugin/bindings";
+export {
+  fetchGitHubSource,
+  syncGitHubSource,
+  GitHubSourceError,
+  type GitHubSourceInput,
+  type GitHubSourceSnapshot,
+  type GitHubSyncResult,
+  type SyncErrorData,
+  type SyncGitHubSourceInput,
+} from "./source/github-source";

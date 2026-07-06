@@ -16,6 +16,16 @@ export {
   type PublishOutput,
   type PublishDeps,
 } from "./pipeline/publish";
+export {
+  fetchGitHubSource,
+  syncGitHubSource,
+  GitHubSourceError,
+  type GitHubSourceInput,
+  type GitHubSourceSnapshot,
+  type GitHubSyncResult,
+  type SyncErrorData,
+  type SyncGitHubSourceInput,
+} from "./source/github-source";
 
 export { makeAppsRuntime, type AppsRuntime, type AppsRuntimeDeps } from "./plugin/runtime";
 export {

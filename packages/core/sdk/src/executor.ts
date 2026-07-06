@@ -2071,6 +2071,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         const result: ResolveToolsResult = yield* runtime.plugin
           .resolveTools({
+            ctx: runtime.ctx,
             integration: rowToIntegration(integrationRow),
             config: decodeJsonColumn(integrationRow.config),
             httpClientLayer: runtime.ctx.httpClientLayer,
@@ -3732,6 +3733,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           items: (key) => providersItems(key),
         },
         oauth,
+        execute: (address, args) => execute(address, args),
         transaction: <A, E>(effect: Effect.Effect<A, E>) => transaction(effect),
       };
 

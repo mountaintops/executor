@@ -8,6 +8,7 @@ import { encryptedSecretsPlugin } from "@executor-js/plugin-encrypted-secrets";
 import { toolkitsPlugin } from "@executor-js/plugin-toolkits/server";
 
 import { resolveSecretKey } from "./src/config";
+import { getSelfHostAppsSubsystem } from "./src/apps";
 
 // ---------------------------------------------------------------------------
 // Single source of truth for the self-hosted app's plugin list.
@@ -36,6 +37,7 @@ export default defineExecutorConfig({
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
+      getSelfHostAppsSubsystem().plugin,
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),
     ] as const,

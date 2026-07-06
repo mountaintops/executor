@@ -10,6 +10,7 @@ import {
   GUIDE_ENTRIES_KEY,
   stableStringify,
   type AppDescriptor,
+  type AppSourceRef,
   type IntegrationDecl,
   type ModuleSourceRef,
   type ToolDescriptor,
@@ -73,6 +74,8 @@ export interface PublishInput {
   readonly scope: string;
   readonly files: FileSet;
   readonly commitMessage?: string;
+  readonly description?: string;
+  readonly source?: AppSourceRef;
 }
 
 export interface PublishOutput {
@@ -219,14 +222,18 @@ const assemble = (deps: PublishDeps, files: FileSet): Effect.Effect<AssembledApp
 const descriptorBody = (
   scope: string,
   assembled: AssembledApp,
+  input: Pick<PublishInput, "description" | "source">,
 ): Omit<AppDescriptor, "snapshotId"> => ({
   version: DESCRIPTOR_VERSION,
   scope,
+  ...(input.description !== undefined ? { description: input.description } : {}),
+  ...(input.source !== undefined ? { source: input.source } : {}),
   toolchain: toolchainRef(),
   tools: assembled.tools,
   [FLOW_ENTRIES_KEY]: [],
   ui: [],
   [GUIDE_ENTRIES_KEY]: [],
+  skipped: assembled.skipped,
 });
 
 export const publish = (
@@ -238,7 +245,7 @@ export const publish = (
     if (overLimit) return yield* Effect.fail(overLimit);
 
     const assembled = yield* assemble(deps, input.files);
-    const body = descriptorBody(input.scope, assembled);
+    const body = descriptorBody(input.scope, assembled, input);
 
     const scopeStore = yield* deps.artifactStore
       .forScope(input.scope)

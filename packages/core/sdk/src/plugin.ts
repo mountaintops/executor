@@ -29,6 +29,7 @@ import type {
   ProviderKey,
   Subject,
   Tenant,
+  ToolAddress,
 } from "./ids";
 import type { IntegrationDetectionResult } from "./types";
 import type {
@@ -38,6 +39,7 @@ import type {
   ElicitationResponse,
 } from "./elicitation";
 import type {
+  ExecuteError,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
   IntegrationNotFoundError,
@@ -249,6 +251,12 @@ export interface PluginCtx<TStore = unknown> {
   /** Shared OAuth service. */
   readonly oauth: OAuthService;
 
+  /** Invoke another catalog tool through the same executor request context:
+   *  policy, approval, credential resolution, and plugin dispatch all stay in
+   *  the core path. Intended for plugin sandboxes that expose higher-level
+   *  virtual tools over existing integration tools. */
+  readonly execute: (address: ToolAddress, args: unknown) => Effect.Effect<unknown, ExecuteError>;
+
   /** Run `effect` inside a FumaDB transaction (atomic across plugin storage +
    *  core integration/tool writes). */
   readonly transaction: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E | StorageFailure>;
@@ -261,6 +269,7 @@ export interface PluginCtx<TStore = unknown> {
 // ---------------------------------------------------------------------------
 
 export interface ResolveToolsInput<TStore = unknown> {
+  readonly ctx?: PluginCtx<TStore>;
   /** The catalog record (public projection) whose connection is being resolved. */
   readonly integration: Integration;
   /** The plugin's stored opaque config for that integration. */
