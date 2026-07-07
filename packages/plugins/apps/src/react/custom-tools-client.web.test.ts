@@ -16,6 +16,8 @@ import appsClientPlugin, {
   syncStatusLabel,
   validateGitHubSourceUrl,
 } from "./plugin-client";
+import { asSnapshotId } from "../seams/artifact-store";
+import { sourcePanelModel, syncNoticeFromResult } from "./source-panel-model";
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(body), {
@@ -25,6 +27,21 @@ const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
   });
 
 describe("custom tools console client", () => {
+  const demoSource = {
+    slug: "demo-tools",
+    name: "Demo tools",
+    scope: "demo-tools",
+    url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
+    repo: "RhysSullivan/executor-custom-tools-demo",
+    ref: "main",
+    hasToken: true,
+    upstreamSha: "abc123",
+    snapshotId: "snap1",
+    publishedAt: "2026-07-06T12:00:00.000Z",
+    tools: ["repo-summary", "stale-issues"],
+    skipped: [{ path: "README.md", reason: "ignored" as const }],
+  };
+
   it("registers the manual Custom tools tile", () => {
     const manualTiles = [appsIntegrationPlugin].map((plugin) => ({
       href: `/integrations/add/${plugin.key}`,
@@ -88,6 +105,45 @@ describe("custom tools console client", () => {
         "https://github.com/RhysSullivan/executor-custom-tools-demo/blob/main/openapi.json",
       ).ok,
     ).toBe(false);
+  });
+
+  it("models the custom-tools detail panel without default debug fields", () => {
+    const panel = sourcePanelModel(demoSource, {
+      now: Date.parse("2026-07-06T12:05:00.000Z"),
+    });
+
+    expect(panel.title).toBe("Demo tools");
+    expect(panel.repository).toEqual({
+      href: "https://github.com/RhysSullivan/executor-custom-tools-demo",
+      label: "github.com/RhysSullivan/executor-custom-tools-demo",
+    });
+    expect(panel.lastSynced).toBe("Last synced 5m ago");
+    expect(panel.publishedTools).toEqual({
+      href: "/integrations/demo-tools?tab=tools",
+      label: "2 tools",
+    });
+    expect(panel).not.toHaveProperty("toolNames");
+    expect(panel).not.toHaveProperty("skipped");
+    expect(panel).not.toHaveProperty("upstreamSha");
+    expect(panel).not.toHaveProperty("hasToken");
+  });
+
+  it("keeps skipped files and upstream SHA in the post-sync result details", () => {
+    const notice = syncNoticeFromResult(
+      {
+        status: "published",
+        snapshotId: asSnapshotId("snap2"),
+        upstreamSha: "def456",
+        tools: ["repo-summary", "stale-issues", "third-tool"],
+        skipped: [{ path: "workflows/x.ts", reason: "not supported yet" }],
+      },
+      demoSource.tools,
+    );
+
+    expect(notice.message).toBe("Published 3 tools.");
+    expect(notice.added).toEqual(["third-tool"]);
+    expect(notice.skipped).toEqual([{ path: "workflows/x.ts", reason: "not supported yet" }]);
+    expect(notice.upstreamSha).toBe("def456");
   });
 
   it("surfaces successful sync and source detail data", async () => {

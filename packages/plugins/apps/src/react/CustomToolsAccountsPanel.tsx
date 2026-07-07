@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Effect, Exit } from "effect";
 
 import {
@@ -13,38 +13,22 @@ import {
   AlertDialogTrigger,
 } from "@executor-js/react/components/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@executor-js/react/components/alert";
-import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
 
-import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
+import type { GitHubCustomToolsSourceSummary } from "../api";
 import {
   consoleIntegrationHref,
-  formatSyncErrors,
   getCustomToolSourceEffect,
   removeCustomToolSourceEffect,
   syncCustomToolSourceEffect,
-  syncStatusLabel,
-  toolDiff,
 } from "./custom-tools-client";
+import { sourcePanelModel, syncNoticeFromResult, type SyncNoticeModel } from "./source-panel-model";
 
 type LoadState =
   | { readonly status: "loading" }
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "missing" }
   | { readonly status: "ready"; readonly source: GitHubCustomToolsSourceSummary };
-
-interface SyncNotice {
-  readonly status: GitHubSyncResult["status"];
-  readonly message: string;
-  readonly added: readonly string[];
-  readonly removed: readonly string[];
-  readonly errors: readonly string[];
-}
-
-const formatDate = (value: string): string => {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-};
 
 export default function CustomToolsAccountsPanel(props: {
   readonly sourceId: string;
@@ -53,7 +37,7 @@ export default function CustomToolsAccountsPanel(props: {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [syncing, setSyncing] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [notice, setNotice] = useState<SyncNotice | null>(null);
+  const [notice, setNotice] = useState<SyncNoticeModel | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
   const loadSource = async () => {
@@ -96,20 +80,13 @@ export default function CustomToolsAccountsPanel(props: {
         added: [],
         removed: [],
         errors: ["Failed to sync custom tools."],
+        skipped: [],
       });
       setSyncing(false);
       return;
     }
     const result = exit.value;
-    const diff =
-      result.status === "failed" ? { added: [], removed: [] } : toolDiff(beforeTools, result.tools);
-    setNotice({
-      status: result.status,
-      message: syncStatusLabel(result),
-      added: diff.added,
-      removed: diff.removed,
-      errors: formatSyncErrors(result),
-    });
+    setNotice(syncNoticeFromResult(result, beforeTools));
     if (result.status !== "failed") await loadSource();
     setSyncing(false);
   };
@@ -180,7 +157,7 @@ function ErrorWithRetry(props: { readonly message: string; readonly onRetry: () 
 
 function SourceDetail(props: {
   readonly source: GitHubCustomToolsSourceSummary;
-  readonly notice: SyncNotice | null;
+  readonly notice: SyncNoticeModel | null;
   readonly removeError: string | null;
   readonly syncing: boolean;
   readonly removing: boolean;
@@ -188,12 +165,29 @@ function SourceDetail(props: {
   readonly onRemove: () => void;
 }) {
   const { source, notice } = props;
+  const model = sourcePanelModel(source);
+  const noticeHasDetails =
+    notice !== null &&
+    (notice.added.length > 0 ||
+      notice.removed.length > 0 ||
+      notice.errors.length > 0 ||
+      notice.skipped.length > 0 ||
+      notice.upstreamSha !== undefined);
   return (
     <div className="min-w-0 rounded-lg border border-border bg-card">
       <div className="flex items-start justify-between gap-4 border-b border-border p-4">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-medium text-foreground">{source.name}</h3>
-          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{source.slug}</p>
+          <h3 className="truncate text-sm font-medium text-foreground">{model.title}</h3>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            <a
+              className="underline underline-offset-2"
+              href={model.repository.href}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {model.repository.label}
+            </a>
+          </p>
         </div>
         <div className="flex shrink-0 gap-2">
           <Button type="button" size="sm" onClick={props.onSync} loading={props.syncing}>
@@ -230,19 +224,24 @@ function SourceDetail(props: {
         </div>
       </div>
 
-      <div className="space-y-6 p-4">
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
-          <LinkField label="GitHub URL" value={source.url} />
-          <Field label="Ref" value={source.ref} />
-          <Field label="Upstream SHA" value={source.upstreamSha} mono />
-          <Field label="Last synced" value={formatDate(source.publishedAt)} />
-          <Field label="Access token" value={source.hasToken ? "Stored" : "Not set"} />
-        </dl>
+      <div className="space-y-5 p-4">
+        <div className="flex flex-col gap-1 text-sm">
+          <p className="text-muted-foreground">{model.lastSynced}</p>
+          <p>
+            <a
+              className="font-medium underline underline-offset-2"
+              href={model.publishedTools.href}
+            >
+              {model.publishedTools.label}
+            </a>{" "}
+            <span className="text-muted-foreground">published</span>
+          </p>
+        </div>
 
         {notice && (
           <Alert variant={notice.status === "failed" ? "destructive" : "default"}>
             <AlertTitle>{notice.message}</AlertTitle>
-            {(notice.added.length > 0 || notice.removed.length > 0 || notice.errors.length > 0) && (
+            {noticeHasDetails && (
               <AlertDescription>
                 <div className="space-y-1">
                   {notice.added.length > 0 && <p>Added: {notice.added.join(", ")}</p>}
@@ -250,6 +249,28 @@ function SourceDetail(props: {
                   {notice.errors.map((error) => (
                     <p key={error}>{error}</p>
                   ))}
+                  {notice.skipped.length > 0 && (
+                    <div className="space-y-1">
+                      <p>Skipped:</p>
+                      <ul className="space-y-1">
+                        {notice.skipped.map((entry) => (
+                          <li key={`${entry.path}:${entry.reason}`} className="flex gap-2">
+                            <span className="min-w-0 flex-1 truncate font-mono text-xs">
+                              {entry.path}
+                            </span>
+                            <span className="shrink-0 text-xs text-muted-foreground">
+                              {entry.reason}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {notice.upstreamSha && (
+                    <p className="font-mono text-xs text-muted-foreground">
+                      Commit {notice.upstreamSha}
+                    </p>
+                  )}
                 </div>
               </AlertDescription>
             )}
@@ -257,64 +278,7 @@ function SourceDetail(props: {
         )}
 
         {props.removeError && <FormErrorMessage message={props.removeError} />}
-
-        <Section title="Published tools">
-          {source.tools.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {source.tools.map((tool) => (
-                <Badge key={tool} variant="secondary">
-                  {tool}
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No tools published.</p>
-          )}
-        </Section>
-
-        <Section title="Skipped entries">
-          {source.skipped.length > 0 ? (
-            <div className="divide-y divide-border rounded-md border border-border">
-              {source.skipped.map((entry) => (
-                <div key={`${entry.path}:${entry.reason}`} className="flex gap-3 px-3 py-2 text-sm">
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                    {entry.path}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{entry.reason}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">Nothing skipped.</p>
-          )}
-        </Section>
       </div>
-    </div>
-  );
-}
-
-function LinkField(props: { readonly label: string; readonly value: string }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium text-muted-foreground">{props.label}</dt>
-      <dd className="mt-1 truncate text-sm text-foreground">
-        <a className="underline underline-offset-2" href={props.value}>
-          {props.value}
-        </a>
-      </dd>
-    </div>
-  );
-}
-
-function Field(props: { readonly label: string; readonly value: string; readonly mono?: boolean }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-xs font-medium text-muted-foreground">{props.label}</dt>
-      <dd
-        className={`mt-1 truncate text-sm text-foreground ${props.mono ? "font-mono text-xs" : ""}`}
-      >
-        {props.value}
-      </dd>
     </div>
   );
 }
@@ -324,14 +288,5 @@ function FormErrorMessage(props: { readonly message: string }) {
     <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
       <p className="text-[12px] text-destructive">{props.message}</p>
     </div>
-  );
-}
-
-function Section(props: { readonly title: string; readonly children: ReactNode }) {
-  return (
-    <section className="space-y-2">
-      <h4 className="text-xs font-medium text-muted-foreground">{props.title}</h4>
-      {props.children}
-    </section>
   );
 }
