@@ -11,6 +11,11 @@ import {
 } from "@executor-js/sdk";
 import { BindingError, type ClientResolver, type ConnectionCandidate } from "./bindings";
 
+export interface AppsResolverPluginCtx {
+  readonly connections: Pick<PluginCtx["connections"], "list" | "get">;
+  readonly execute: PluginCtx["execute"];
+}
+
 const parseConnectionAddress = (address: string): ConnectionRef | null => {
   const parts = address.split(".");
   if (parts.length !== 4 || parts[0] !== "tools") return null;
@@ -36,7 +41,9 @@ const toCandidate = (connection: {
   ...(connection.owner !== undefined ? { owner: String(connection.owner) } : {}),
 });
 
-export const makePluginCtxAppsResolver = (input: { readonly ctx: PluginCtx }): ClientResolver => ({
+export const makePluginCtxAppsResolver = (input: {
+  readonly ctx: AppsResolverPluginCtx;
+}): ClientResolver => ({
   listConnections: ({ integration }) =>
     input.ctx.connections.list({ integration: IntegrationSlug.make(integration) }).pipe(
       Effect.map((connections) => connections.map(toCandidate)),
