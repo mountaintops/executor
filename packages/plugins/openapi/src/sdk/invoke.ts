@@ -1055,6 +1055,7 @@ export const invoke = Effect.fn("OpenApi.invoke")(function* (
     return yield* new OpenApiInvocationError({
       message: responseHeadersTimeoutMessage(responseHeadersTimeoutMs),
       statusCode: Option.none(),
+      reason: "response_headers_timeout",
     });
   }
   const responseExit = responseExitOption.value;

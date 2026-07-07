@@ -154,7 +154,7 @@ describe("OpenAPI response headers timeout", () => {
       expect(result).toMatchObject({
         ok: false,
         error: {
-          code: "upstream_http_error",
+          code: "upstream_response_headers_timeout",
           message: expect.stringContaining("Upstream returned no response headers within 100ms"),
         },
       });

@@ -689,11 +689,11 @@ export const invokeOpenApiBackedTool = (input: {
     ).pipe(
       Effect.map((result) => ({ ok: true as const, result })),
       Effect.catchTag("OpenApiInvocationError", (error: OpenApiInvocationError) =>
-        error.message.startsWith("Upstream returned no response headers within ")
+        error.reason === "response_headers_timeout"
           ? Effect.succeed({
               ok: false as const,
               failure: ToolResult.fail({
-                code: "upstream_http_error",
+                code: "upstream_response_headers_timeout",
                 message: error.message,
                 details: error.cause ?? error,
               }),
