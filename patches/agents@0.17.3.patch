@@ -19,7 +19,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a62be2e41 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5f6d71fb3 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -577,7 +577,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	}
  	/**
  	* Writes an event to the SSE stream with proper formatting
-@@ -689,6 +977,8 @@ var StreamableHTTPServerTransport = class {
+@@ -689,10 +977,65 @@ var StreamableHTTPServerTransport = class {
  		return connection.send(JSON.stringify({
  			type: "cf_mcp_agent_event",
  			event: eventData,
@@ -586,7 +586,82 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  			close
  		}));
  	}
-@@ -777,9 +1067,11 @@ var StreamableHTTPServerTransport = class {
+ 	/**
++	* Persist and write the priming SSE event for a freshly opened POST
++	* stream. The stored message is a benign JSON-RPC notification so that
++	* if a plain recovery GET ever replays this stream via
++	* {@link writeSSEEvent} (which forces `event: message`), a compliant
++	* client parses and ignores it rather than erroring. The live priming
++	* frame, however, uses a non-`message` SSE event type so the SDK
++	* records the id (setting hasPrimingEvent / lastEventId) WITHOUT
++	* dispatching it as a JSON-RPC message: its SSE loop skips any event
++	* whose type is not `message`. A data line is required because the
++	* SDK's SSE parser drops events with empty data before recording the
++	* id, so an id-only frame would not prime.
++	*/
++	async emitPrimingEvent(agent, connection, streamId) {
++		if (!this._eventStore) return;
++		const primingMessage = {
++			jsonrpc: "2.0",
++			method: "notifications/message",
++			params: {
++				level: "debug",
++				data: "mcp-stream-priming"
++			}
++		};
++		let eventId;
++		try {
++			eventId = await this._eventStore.storeEvent(streamId, primingMessage);
++		} catch (error) {
++			this.onerror?.(error);
++			return;
++		}
++		if (!eventId) return;
++		try {
++			this.writePrimingSSEEvent(connection, primingMessage, eventId);
++		} catch (error) {
++			this.onerror?.(error);
++		}
++	}
++	/**
++	* Write a priming SSE frame: `event: mcp-priming`, an `id:` carrying a
++	* real replayable event-store id, and a data line the SDK ignores
++	* because the event type is not `message`. Never sets `close`.
++	*/
++	writePrimingSSEEvent(connection, message, eventId) {
++		let eventData = "event: mcp-priming\n";
++		eventData += `id: ${eventId}\n`;
++		eventData += `data: ${JSON.stringify(message)}\n\n`;
++		return connection.send(JSON.stringify({
++			type: "cf_mcp_agent_event",
++			event: eventData,
++			eventId,
++			streamId: eventId.slice(0, eventId.lastIndexOf(":"))
++		}));
++	}
++	/**
+ 	* Handles POST requests containing JSON-RPC messages
+ 	*/
+ 	async handlePostRequest(req, parsedBody) {
+@@ -733,6 +1076,17 @@ var StreamableHTTPServerTransport = class {
+ 			};
+ 			connection.setState(postState);
+ 			if (this._eventStore) await agent.setStreamRequestIds(streamId, requestIds);
++			// Emit a priming SSE event as the very first frame on this POST
++			// response stream, before dispatching the request(s). The MCP TS SDK
++			// only auto-reconnects a dropped POST SSE stream when it saw an event
++			// `id:` before the drop (hasPrimingEvent). Without this, a network
++			// blip or edge close mid-call leaves the SDK with hasPrimingEvent
++			// false, so it never issues the recovery GET that replays the
++			// persisted result, and callTool hangs forever. The priming event is
++			// a real event-store entry so its id sorts BEFORE the eventual
++			// response; a reconnect with `last-event-id: <primingId>` replays
++			// everything after it (i.e. the result). See patches/agents patch.
++			await this.emitPrimingEvent(agent, connection, streamId);
+ 			for (const message of messages) {
+ 				if (this.messageInterceptor) {
+ 					if (await this.messageInterceptor(message, {
+@@ -777,9 +1131,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -600,7 +675,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1153,10 @@ var StreamableHTTPServerTransport = class {
+@@ -861,12 +1217,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -617,7 +692,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -899,6 +1189,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -899,6 +1253,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  		const eventId = `${streamId}:${seq.toString(16).padStart(DurableObjectEventStore.SEQ_PAD, "0")}`;
  		const eventKey = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${eventId}`;
  		await this.storage.put(eventKey, message);
@@ -625,7 +700,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1206,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1270,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -686,7 +761,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1314,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1378,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -696,7 +771,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1725,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1789,47 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -744,7 +819,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..b0d1c55eda79324b6d76a1177519d26a
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2082,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2146,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
