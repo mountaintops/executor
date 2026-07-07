@@ -42,6 +42,8 @@ export interface AppsRuntimeDeps {
 }
 
 export interface GitHubCustomToolsSourceSummary {
+  readonly slug: string;
+  readonly name: string;
   readonly scope: string;
   readonly url: string;
   readonly repo: string;
@@ -71,6 +73,10 @@ export interface AppsRuntime {
   readonly listGitHubSources: (
     tenant?: string,
   ) => Effect.Effect<readonly GitHubCustomToolsSourceSummary[]>;
+  readonly removeSource: (input: {
+    readonly tenant?: string;
+    readonly scope: string;
+  }) => Effect.Effect<void, PublishError>;
   /** Re-derive the published-descriptor pointer from the latest committed
    *  snapshot. */
   readonly repair: (
@@ -382,30 +388,27 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
             const source = record.descriptor.source;
             return source?.kind === "github" ? [{ record, source }] : [];
           });
-          return Effect.forEach(githubRecords, ({ record, source }) =>
-            Effect.gen(function* () {
-              const { descriptor, publishedAt } = record;
-              const tokenRef = yield* deps.store
-                .getGitHubSourceTokenRef(tenant, descriptor.scope)
-                .pipe(Effect.orElseSucceed(() => null));
-              return {
-                scope: descriptor.scope,
-                url: source.url,
-                repo: source.repo,
-                ref: source.ref,
-                hasToken: tokenRef !== null,
-                upstreamSha: source.upstreamSha,
-                snapshotId: descriptor.snapshotId,
-                ...(descriptor.description ? { description: descriptor.description } : {}),
-                publishedAt: new Date(publishedAt).toISOString(),
-                tools: descriptor.tools.map((tool) => tool.name),
-                skipped: [
-                  ...(source.skipped ?? []),
-                  ...(descriptor.skipped as readonly GitHubSkippedArtifact[]),
-                ],
-              } satisfies GitHubCustomToolsSourceSummary;
-            }),
-          );
+          return Effect.forEach(githubRecords, ({ record, source }) => {
+            const { descriptor, publishedAt } = record;
+            return Effect.succeed({
+              slug: descriptor.scope,
+              name: source.repo.split("/").at(-1) ?? descriptor.scope,
+              scope: descriptor.scope,
+              url: source.url,
+              repo: source.repo,
+              ref: source.ref,
+              hasToken: false,
+              upstreamSha: source.upstreamSha,
+              snapshotId: descriptor.snapshotId,
+              ...(descriptor.description ? { description: descriptor.description } : {}),
+              publishedAt: new Date(publishedAt).toISOString(),
+              tools: descriptor.tools.map((tool) => tool.name),
+              skipped: [
+                ...(source.skipped ?? []),
+                ...(descriptor.skipped as readonly GitHubSkippedArtifact[]),
+              ],
+            } satisfies GitHubCustomToolsSourceSummary);
+          });
         }),
       );
     },
@@ -413,6 +416,28 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
     repair: (tenantOrScope, maybeScope) => {
       const { tenant, scope } = resolveTenantScope(tenantOrScope, maybeScope);
       return repairScope(tenant, scope);
+    },
+
+    removeSource: (input) => {
+      const tenant = resolveTenant(input.tenant);
+      const address = scopeAddress(tenant, input.scope);
+      const toPublishError = (message: string) => (_cause: unknown) =>
+        new PublishError({
+          message,
+          stage: "project",
+          diagnostics: [],
+        });
+      return Effect.gen(function* () {
+        yield* deps.store
+          .removeDescriptor(tenant, input.scope)
+          .pipe(Effect.mapError(toPublishError("removeDescriptor failed")));
+        yield* deps.artifactStore
+          .removeScope(address)
+          .pipe(Effect.mapError(toPublishError("remove artifact scope failed")));
+        yield* deps.scopeDb
+          .removeScope(address)
+          .pipe(Effect.mapError(toPublishError("remove scope db failed")));
+      });
     },
 
     invokeTool: (input) =>

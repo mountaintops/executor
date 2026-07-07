@@ -39,5 +39,6 @@ export interface ScopeDbHandle {
 
 export interface ScopeDb {
   readonly forScope: (address: ScopeAddress) => Effect.Effect<ScopeDbHandle, ScopeDbError>;
+  readonly removeScope: (address: ScopeAddress) => Effect.Effect<void, ScopeDbError>;
   readonly close: () => Effect.Effect<void, ScopeDbError>;
 }

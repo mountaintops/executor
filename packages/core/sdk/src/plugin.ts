@@ -523,6 +523,11 @@ export interface ConnectionLifecycleInput<TStore = unknown> {
   readonly connection: ConnectionRef;
 }
 
+export interface IntegrationLifecycleInput<TStore = unknown> {
+  readonly ctx: PluginCtx<TStore>;
+  readonly integration: IntegrationRecord;
+}
+
 export interface ConfigureIntegrationHandlerInput<TStore = unknown> {
   readonly ctx: PluginCtx<TStore>;
   readonly integration: IntegrationSlug;
@@ -666,6 +671,12 @@ export interface PluginSpec<
   /** Plugin-side cleanup when a connection is removed. */
   readonly removeConnection?: (
     input: ConnectionLifecycleInput<TStore>,
+  ) => Effect.Effect<void, unknown>;
+
+  /** Plugin-side cleanup when a removable integration is removed. Core still
+   *  owns deleting the integration, connection, tool, and definition rows. */
+  readonly removeIntegration?: (
+    input: IntegrationLifecycleInput<TStore>,
   ) => Effect.Effect<void, unknown>;
 
   /** Core-dispatched integration configuration (beyond auth). */

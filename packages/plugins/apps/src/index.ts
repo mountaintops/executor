@@ -34,9 +34,12 @@ export {
   type AppsStoreDeps,
   type GitHubSourceTokenRef,
   descriptorCollection,
-  githubSourceTokenCollection,
-  scopeConnectionCollection,
 } from "./plugin/store";
+export {
+  slugifyCustomToolsAppName,
+  validateCustomToolsAppSlug,
+  CUSTOM_TOOLS_APP_SLUG_PATTERN,
+} from "./source/app-slug";
 export {
   buildBridge,
   rootsFor,

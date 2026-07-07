@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { createClient, type Client } from "@libsql/client";
@@ -157,6 +157,24 @@ export const makeLibsqlScopeDb = (options: LibsqlScopeDbOptions): ScopeDb => {
         catch: (cause) =>
           new ScopeDbError({
             message: `failed to open scope db ${address.tenant}/${address.scope}`,
+            cause,
+          }),
+      }),
+    removeScope: (address) =>
+      Effect.try({
+        try: () => {
+          const key = scopeAddressStorageKey(address);
+          clients.get(key)?.close();
+          clients.delete(key);
+          if (options.root === ":memory:") return;
+          const dbPath = join(options.root, `${key}.db`);
+          for (const path of [dbPath, `${dbPath}-shm`, `${dbPath}-wal`]) {
+            rmSync(path, { force: true });
+          }
+        },
+        catch: (cause) =>
+          new ScopeDbError({
+            message: `failed to remove scope db ${address.tenant}/${address.scope}`,
             cause,
           }),
       }),

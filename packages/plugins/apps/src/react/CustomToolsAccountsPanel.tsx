@@ -1,24 +1,27 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Effect, Exit } from "effect";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@executor-js/react/components/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@executor-js/react/components/alert";
 import { Badge } from "@executor-js/react/components/badge";
 import { Button } from "@executor-js/react/components/button";
-import {
-  CardStack,
-  CardStackContent,
-  CardStackEntry,
-  CardStackEntryActions,
-  CardStackEntryContent,
-  CardStackEntryDescription,
-  CardStackEntryTitle,
-} from "@executor-js/react/components/card-stack";
 
 import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
 import {
   consoleIntegrationHref,
   formatSyncErrors,
-  listCustomToolSourcesEffect,
+  getCustomToolSourceEffect,
+  removeCustomToolSourceEffect,
   syncCustomToolSourceEffect,
   syncStatusLabel,
   toolDiff,
@@ -27,7 +30,8 @@ import {
 type LoadState =
   | { readonly status: "loading" }
   | { readonly status: "error"; readonly message: string }
-  | { readonly status: "ready"; readonly sources: readonly GitHubCustomToolsSourceSummary[] };
+  | { readonly status: "missing" }
+  | { readonly status: "ready"; readonly source: GitHubCustomToolsSourceSummary };
 
 interface SyncNotice {
   readonly status: GitHubSyncResult["status"];
@@ -42,61 +46,49 @@ const formatDate = (value: string): string => {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 };
 
-export default function CustomToolsAccountsPanel() {
+export default function CustomToolsAccountsPanel(props: {
+  readonly sourceId: string;
+  readonly integrationName: string;
+}) {
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
-  const [selectedScope, setSelectedScope] = useState<string | null>(null);
-  const [syncingScope, setSyncingScope] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [notice, setNotice] = useState<SyncNotice | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
-  const loadSources = async () => {
+  const loadSource = async () => {
     setLoadState({ status: "loading" });
-    const exit = await Effect.runPromiseExit(listCustomToolSourcesEffect());
+    const exit = await Effect.runPromiseExit(getCustomToolSourceEffect(props.sourceId));
     if (Exit.isFailure(exit)) {
-      setLoadState({
-        status: "error",
-        message: "Failed to load custom tool sources.",
-      });
+      setLoadState({ status: "error", message: "Failed to load custom tools source." });
       return;
     }
-    const result = exit.value;
-    setLoadState({ status: "ready", sources: result.sources });
-    setSelectedScope((current) => current ?? result.sources[0]?.scope ?? null);
+    const source = exit.value.source;
+    setLoadState(source ? { status: "ready", source } : { status: "missing" });
   };
 
   useEffect(() => {
     let active = true;
     void (async () => {
-      const exit = await Effect.runPromiseExit(listCustomToolSourcesEffect());
-      if (Exit.isSuccess(exit)) {
-        if (!active) return;
-        const result = exit.value;
-        setLoadState({ status: "ready", sources: result.sources });
-        setSelectedScope(result.sources[0]?.scope ?? null);
-      } else {
-        if (!active) return;
-        setLoadState({
-          status: "error",
-          message: "Failed to load custom tool sources.",
-        });
+      const exit = await Effect.runPromiseExit(getCustomToolSourceEffect(props.sourceId));
+      if (!active) return;
+      if (Exit.isFailure(exit)) {
+        setLoadState({ status: "error", message: "Failed to load custom tools source." });
+        return;
       }
+      const source = exit.value.source;
+      setLoadState(source ? { status: "ready", source } : { status: "missing" });
     })();
     return () => {
       active = false;
     };
-  }, []);
+  }, [props.sourceId]);
 
-  const sources = loadState.status === "ready" ? loadState.sources : [];
-  const selected = sources.find((source) => source.scope === selectedScope) ?? sources[0] ?? null;
-
-  const syncSelected = async (source: GitHubCustomToolsSourceSummary) => {
-    setSyncingScope(source.scope);
+  const syncSource = async (source: GitHubCustomToolsSourceSummary) => {
+    setSyncing(true);
     setNotice(null);
     const beforeTools = source.tools;
-    const exit = await Effect.runPromiseExit(
-      syncCustomToolSourceEffect({
-        url: source.url,
-      }),
-    );
+    const exit = await Effect.runPromiseExit(syncCustomToolSourceEffect({ slug: source.slug }));
     if (Exit.isFailure(exit)) {
       setNotice({
         status: "failed",
@@ -105,7 +97,7 @@ export default function CustomToolsAccountsPanel() {
         removed: [],
         errors: ["Failed to sync custom tools."],
       });
-      setSyncingScope(null);
+      setSyncing(false);
       return;
     }
     const result = exit.value;
@@ -118,94 +110,53 @@ export default function CustomToolsAccountsPanel() {
       removed: diff.removed,
       errors: formatSyncErrors(result),
     });
-    if (result.status !== "failed") {
-      await loadSources();
-      setSelectedScope(source.scope);
+    if (result.status !== "failed") await loadSource();
+    setSyncing(false);
+  };
+
+  const removeSource = async (source: GitHubCustomToolsSourceSummary) => {
+    setRemoving(true);
+    setRemoveError(null);
+    const exit = await Effect.runPromiseExit(removeCustomToolSourceEffect(source.slug));
+    if (Exit.isFailure(exit)) {
+      setRemoveError("Failed to remove custom tools source.");
+      setRemoving(false);
+      return;
     }
-    setSyncingScope(null);
+    window.location.assign(consoleIntegrationHref("/integrations"));
   };
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-medium text-foreground">Custom tools sources</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            GitHub repositories synced into the executor tool catalog.
-          </p>
-        </div>
-        <Button asChild size="sm" variant="outline">
-          <a href={consoleIntegrationHref("/integrations/add/apps")}>Add source</a>
-        </Button>
-      </div>
-
+    <div className="mx-auto max-w-3xl space-y-6 px-6 py-8">
       {loadState.status === "loading" && (
         <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
-          Loading sources...
+          Loading source...
         </div>
       )}
 
       {loadState.status === "error" && (
-        <ErrorWithRetry message={loadState.message} onRetry={() => void loadSources()} />
+        <ErrorWithRetry message={loadState.message} onRetry={() => void loadSource()} />
       )}
 
-      {loadState.status === "ready" && sources.length === 0 && (
-        <div className="rounded-lg border border-dashed border-border p-8 text-center">
-          <p className="text-sm font-medium text-foreground">No custom tools sources</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Add a GitHub repo to publish its tools.
-          </p>
-          <Button asChild size="sm" className="mt-4">
-            <a href={consoleIntegrationHref("/integrations/add/apps")}>Add source</a>
-          </Button>
-        </div>
+      {loadState.status === "missing" && (
+        <Alert variant="destructive">
+          <AlertTitle>Source not found</AlertTitle>
+          <AlertDescription>
+            The custom tools source for {props.integrationName} is no longer available.
+          </AlertDescription>
+        </Alert>
       )}
 
-      {loadState.status === "ready" && sources.length > 0 && (
-        <div className="grid min-h-[28rem] gap-4 lg:grid-cols-[18rem_1fr]">
-          <CardStack searchable>
-            <CardStackContent>
-              {sources.map((source) => (
-                <CardStackEntry
-                  key={source.scope}
-                  asChild
-                  searchText={`${source.repo} ${source.ref} ${source.url}`}
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => {
-                      setSelectedScope(source.scope);
-                      setNotice(null);
-                    }}
-                    className={
-                      selected?.scope === source.scope
-                        ? "h-auto w-full justify-start bg-muted/70 p-0 text-left"
-                        : "h-auto w-full justify-start bg-transparent p-0 text-left"
-                    }
-                  >
-                    <CardStackEntryContent>
-                      <CardStackEntryTitle>{source.repo}</CardStackEntryTitle>
-                      <CardStackEntryDescription>{source.ref}</CardStackEntryDescription>
-                    </CardStackEntryContent>
-                    <CardStackEntryActions>
-                      <Badge variant="secondary">{source.tools.length}</Badge>
-                    </CardStackEntryActions>
-                  </Button>
-                </CardStackEntry>
-              ))}
-            </CardStackContent>
-          </CardStack>
-
-          {selected && (
-            <SourceDetail
-              source={selected}
-              notice={notice}
-              syncing={syncingScope === selected.scope}
-              onSync={() => void syncSelected(selected)}
-            />
-          )}
-        </div>
+      {loadState.status === "ready" && (
+        <SourceDetail
+          source={loadState.source}
+          notice={notice}
+          removeError={removeError}
+          syncing={syncing}
+          removing={removing}
+          onSync={() => void syncSource(loadState.source)}
+          onRemove={() => void removeSource(loadState.source)}
+        />
       )}
     </div>
   );
@@ -214,7 +165,7 @@ export default function CustomToolsAccountsPanel() {
 function ErrorWithRetry(props: { readonly message: string; readonly onRetry: () => void }) {
   return (
     <Alert variant="destructive">
-      <AlertTitle>Failed to load sources</AlertTitle>
+      <AlertTitle>Failed to load source</AlertTitle>
       <AlertDescription>
         <div className="space-y-3">
           <p>{props.message}</p>
@@ -230,20 +181,53 @@ function ErrorWithRetry(props: { readonly message: string; readonly onRetry: () 
 function SourceDetail(props: {
   readonly source: GitHubCustomToolsSourceSummary;
   readonly notice: SyncNotice | null;
+  readonly removeError: string | null;
   readonly syncing: boolean;
+  readonly removing: boolean;
   readonly onSync: () => void;
+  readonly onRemove: () => void;
 }) {
   const { source, notice } = props;
   return (
     <div className="min-w-0 rounded-lg border border-border bg-card">
       <div className="flex items-start justify-between gap-4 border-b border-border p-4">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-medium text-foreground">{source.repo}</h3>
-          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{source.scope}</p>
+          <h3 className="truncate text-sm font-medium text-foreground">{source.name}</h3>
+          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{source.slug}</p>
         </div>
-        <Button type="button" size="sm" onClick={props.onSync} loading={props.syncing}>
-          Sync
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button type="button" size="sm" onClick={props.onSync} loading={props.syncing}>
+            Sync
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                disabled={props.removing}
+              >
+                Remove
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent size="sm">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove {source.name}?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes {source.tools.length} {source.tools.length === 1 ? "tool" : "tools"}{" "}
+                  from the catalog. The GitHub repository is untouched; re-add it to sync again.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={props.onRemove}>
+                  {props.removing ? "Removing..." : "Remove source"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
       </div>
 
       <div className="space-y-6 p-4">
@@ -271,6 +255,8 @@ function SourceDetail(props: {
             )}
           </Alert>
         )}
+
+        {props.removeError && <FormErrorMessage message={props.removeError} />}
 
         <Section title="Published tools">
           {source.tools.length > 0 ? (
@@ -329,6 +315,14 @@ function Field(props: { readonly label: string; readonly value: string; readonly
       >
         {props.value}
       </dd>
+    </div>
+  );
+}
+
+function FormErrorMessage(props: { readonly message: string }) {
+  return (
+    <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2">
+      <p className="text-[12px] text-destructive">{props.message}</p>
     </div>
   );
 }

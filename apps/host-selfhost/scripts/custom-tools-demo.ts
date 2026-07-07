@@ -7,6 +7,7 @@ const HOST = "127.0.0.1";
 const BASE_URL = `http://${HOST}:${PORT}`;
 const ORIGIN = "http://custom-tools-demo.local";
 const DEMO_REPO = "RhysSullivan/executor-custom-tools-demo";
+const DEMO_APP = "demo-tools";
 const ADMIN_EMAIL = "admin@custom-tools-demo.local";
 const ADMIN_PASSWORD = "admin-pass-123456";
 const USER_EMAIL = "rhys@custom-tools-demo.local";
@@ -232,7 +233,7 @@ const htmlEscape = (value: string): string =>
     .replaceAll('"', "&quot;");
 
 const toolInvokeCode = (toolName: string, args: unknown): string => `
-const found = await tools.search({ namespace: "apps", query: ${JSON.stringify(toolName)}, limit: 20 });
+const found = await tools.search({ namespace: ${JSON.stringify(DEMO_APP)}, query: ${JSON.stringify(toolName)}, limit: 20 });
 const item = found.items.find((candidate) => candidate.path.endsWith(${JSON.stringify(toolName)}));
 if (!item) return { ok: false, missing: ${JSON.stringify(toolName)}, found };
 let fn = tools;
@@ -251,10 +252,11 @@ const buildBanner = (input: {
   readonly consoleUi: string;
 }): string => {
   const sync = curlJson("/api/apps/sources/github/sync", {
+    name: DEMO_APP,
     url: input.repoUrl,
     token: input.githubToken,
   });
-  const list = `curl -sS '${BASE_URL}/api/tools?integration=apps' | jq`;
+  const list = `curl -sS '${BASE_URL}/api/tools?integration=${DEMO_APP}' | jq`;
   const repoSummary = curlJson("/api/executions", {
     code: toolInvokeCode("repo-summary", {
       github: input.connectionAddress,
@@ -289,6 +291,9 @@ Auth:
 
 GitHub invocation connection:
   ${input.connectionAddress}
+
+Custom tools app:
+  ${DEMO_APP}
 
 Sync the repo:
   ${sync}

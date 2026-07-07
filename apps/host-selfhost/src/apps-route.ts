@@ -8,7 +8,7 @@ import {
   makeScopedExecutor,
   type Principal,
 } from "@executor-js/api/server";
-import { ToolAddress } from "@executor-js/sdk";
+import { IntegrationSlug, ToolAddress } from "@executor-js/sdk";
 
 import { SelfHostScopedExecutorSeams } from "./execution";
 import { SelfHostDb, type SelfHostDbHandle } from "./db/self-host-db";
@@ -42,6 +42,21 @@ const buildExecutor = (principal: Principal, request: Request) => {
     ? withOrigin.pipe(Effect.provideService(RequestOrgSlug, { slug: principal.organizationSlug }))
     : withOrigin;
 };
+
+const sourceSlugFromRoute = () =>
+  HttpRouter.params.pipe(
+    Effect.map((params) => params.slug ?? ""),
+    Effect.flatMap((slug) =>
+      slug.length > 0
+        ? Effect.succeed(slug)
+        : Effect.fail(
+            new AppsSyncRouteError({
+              status: 400,
+              message: "Missing custom tools source slug",
+            }),
+          ),
+    ),
+  );
 
 export interface SelfHostAppsSyncRouteDeps {
   readonly identity: Layer.Layer<IdentityProvider>;
@@ -115,6 +130,35 @@ export const makeSelfHostAppsSyncRoute = ({ identity, db }: SelfHostAppsSyncRout
             ToolAddress.make("executor.apps.sync_github_source"),
             payload,
           );
+        }),
+      ),
+    ),
+    HttpRouter.add(
+      "GET",
+      "/api/apps/sources/github/:slug",
+      routeHandler((request) =>
+        Effect.gen(function* () {
+          const identityProvider = yield* IdentityProvider;
+          const principal = yield* identityProvider.authenticate(request);
+          const slug = yield* sourceSlugFromRoute();
+          const executor = yield* buildExecutor(principal, request);
+          return yield* executor.execute(ToolAddress.make("executor.apps.get_github_source"), {
+            slug,
+          });
+        }),
+      ),
+    ),
+    HttpRouter.add(
+      "DELETE",
+      "/api/apps/sources/github/:slug",
+      routeHandler((request) =>
+        Effect.gen(function* () {
+          const identityProvider = yield* IdentityProvider;
+          const principal = yield* identityProvider.authenticate(request);
+          const slug = yield* sourceSlugFromRoute();
+          const executor = yield* buildExecutor(principal, request);
+          yield* executor.integrations.remove(IntegrationSlug.make(slug));
+          return { removed: true };
         }),
       ),
     ),

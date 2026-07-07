@@ -7,6 +7,7 @@ import { Effect } from "effect";
 
 import { makeLibsqlScopeDb } from "./libsql-scope-db";
 import { makeSqliteAppsStore } from "./sqlite-apps-store";
+import { DESCRIPTOR_VERSION, type AppDescriptor } from "../pipeline/descriptor";
 import { scopeAddress } from "../seams/scope-address";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
@@ -46,18 +47,26 @@ describe("scope collision (Fix 9)", () => {
     await run(db.close());
   });
 
-  it("routes distinct scopes through the explicit connection->scope mapping", async () => {
+  it("stores distinct descriptor scopes independently", async () => {
     const store = makeSqliteAppsStore({ path: ":memory:" });
-    // Both scopes' connection names normalize to the SAME identifier
-    // ("appsMyScope"), but the explicit mapping keys by the ACTUAL stored name,
-    // so each scope's connection maps to the right scope. Simulate two DISTINCT
-    // connection names being recorded for two distinct scopes.
-    await run(store.putScopeForConnection("org", "appsMyScopeDash", "my-scope"));
-    await run(store.putScopeForConnection("org", "appsMyScopeUnderscore", "my_scope"));
+    const descriptor = (scope: string): AppDescriptor => ({
+      version: DESCRIPTOR_VERSION,
+      tenant: "org",
+      scope,
+      description: "test",
+      snapshotId: `${scope}-snapshot`,
+      toolchain: { bundler: "esbuild", bundlerVersion: "test", target: "test" },
+      tools: [],
+      workflows: [],
+      ui: [],
+      skills: [],
+      skipped: [],
+    });
 
-    expect(await run(store.getScopeForConnection("org", "appsMyScopeDash"))).toBe("my-scope");
-    expect(await run(store.getScopeForConnection("org", "appsMyScopeUnderscore"))).toBe("my_scope");
-    // An unmapped name returns null (caller falls back to legacy parse).
-    expect(await run(store.getScopeForConnection("org", "unknown"))).toBeNull();
+    await run(store.putDescriptor("org", "org", descriptor("my-scope")));
+    await run(store.putDescriptor("org", "org", descriptor("my_scope")));
+
+    expect((await run(store.getDescriptor("org", "my-scope")))?.scope).toBe("my-scope");
+    expect((await run(store.getDescriptor("org", "my_scope")))?.scope).toBe("my_scope");
   });
 });

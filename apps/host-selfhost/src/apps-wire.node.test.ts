@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, expect, test } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { createEmulator, type Emulator } from "@executor-js/emulate";
+import { createClient } from "@libsql/client";
 
 const dataDir = mkdtempSync(join(tmpdir(), "eh-apps-wire-"));
 const dbPath = join(dataDir, "data.db");
@@ -21,6 +22,9 @@ const OWNER = "syncer";
 const REPO = "custom-tools";
 const REPO_FULL_NAME = `${OWNER}/${REPO}`;
 const GITHUB_CONNECTION = "tools.github.user.main";
+const APP_SLUG = "custom-tools-app";
+const SCHEMA_APP_SLUG = "schema-tools-app";
+const APPROVAL_APP_SLUG = "approval-tools-app";
 
 interface TestHttpServer {
   readonly baseUrl: string;
@@ -33,7 +37,7 @@ interface SyncResult {
   readonly upstreamSha?: string;
   readonly tools: readonly string[];
   readonly skipped: readonly { readonly path: string; readonly reason: string }[];
-  readonly errors?: readonly unknown[];
+  readonly errors?: readonly { readonly message?: string }[];
 }
 
 interface ToolRow {
@@ -44,6 +48,14 @@ interface ToolRow {
 
 interface ConnectionRow {
   readonly address: string;
+}
+
+interface IntegrationRow {
+  readonly slug: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly canRemove: boolean;
+  readonly displayUrl?: string;
 }
 
 interface ExecuteResponse {
@@ -194,6 +206,48 @@ const postJson = <T>(path: string, body: unknown, expectedStatus = 200): Promise
     expectedStatus,
   );
 
+const deleteJson = <T>(path: string, expectedStatus = 200): Promise<T> =>
+  requestJson<T>(
+    path,
+    {
+      method: "DELETE",
+      headers: jsonHeaders,
+    },
+    expectedStatus,
+  );
+
+const querySqliteRows = async (
+  path: string,
+  sql: string,
+  args: readonly unknown[] = [],
+): Promise<readonly Record<string, unknown>[]> => {
+  const client = createClient({ url: `file:${path}` });
+  const result = await client.execute({ sql, args: [...args] as never });
+  client.close();
+  return result.rows.map((row) => ({ ...row }));
+};
+
+const sourceStorageKey = (scope: string): string =>
+  `v2-${Buffer.from(JSON.stringify([TEST_ORG, scope]), "utf8").toString("hex")}`;
+
+const sourceTokenItemId = (scope: string): string =>
+  `apps:github-source:${TEST_ORG}:${scope}:token`;
+
+const DbJsonObject = Schema.Record(Schema.String, Schema.Unknown);
+const DbJsonObjectFromString = Schema.fromJsonString(DbJsonObject);
+const decodeDbJsonObject = Schema.decodeUnknownOption(DbJsonObject);
+const decodeDbJsonObjectFromString = Schema.decodeUnknownOption(DbJsonObjectFromString);
+
+const decodeDbJson = (value: unknown): Record<string, unknown> => {
+  if (value instanceof ArrayBuffer) {
+    return decodeDbJson(Buffer.from(value).toString("utf8"));
+  }
+  if (typeof value === "string") {
+    return Option.getOrElse(decodeDbJsonObjectFromString(value), () => ({}));
+  }
+  return Option.getOrElse(decodeDbJsonObject(value), () => ({}));
+};
+
 const githubFetch = async <T>(
   emulator: Emulator,
   token: string,
@@ -236,7 +290,7 @@ const putRepoFiles = async (
   const tree = await githubFetch<{ sha: string }>(
     emulator,
     token,
-    `/repos/${OWNER}/${REPO}/git/trees`,
+    `/repos/${OWNER}/${repo}/git/trees`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -252,7 +306,7 @@ const putRepoFiles = async (
   const commit = await githubFetch<{ sha: string }>(
     emulator,
     token,
-    `/repos/${OWNER}/${REPO}/git/commits`,
+    `/repos/${OWNER}/${repo}/git/commits`,
     {
       method: "POST",
       body: JSON.stringify({
@@ -469,18 +523,35 @@ const registerGitHubIntegration = async (emulator: Emulator, token: string): Pro
 
 const sourceUrl = (repo = REPO_FULL_NAME): string => `https://github.com/${repo}`;
 
-const syncSource = (
-  input: { readonly repo?: string; readonly token?: string } = {},
+const addSource = (
+  input: { readonly name?: string; readonly repo?: string; readonly token?: string } = {},
 ): Promise<SyncResult> =>
   postJson<SyncResult>("/api/apps/sources/github/sync", {
+    name: input.name ?? APP_SLUG,
     url: sourceUrl(input.repo),
     ...(input.token ? { token: input.token } : {}),
   });
 
-const listAppTools = (): Promise<readonly ToolRow[]> =>
-  requestJson<readonly ToolRow[]>("/api/tools?integration=apps", {
+const syncSource = (
+  input: { readonly name?: string; readonly token?: string } = {},
+): Promise<SyncResult> =>
+  postJson<SyncResult>("/api/apps/sources/github/sync", {
+    slug: input.name ?? APP_SLUG,
+    ...(input.token ? { token: input.token } : {}),
+  });
+
+const listAppTools = (app = APP_SLUG): Promise<readonly ToolRow[]> =>
+  requestJson<readonly ToolRow[]>(`/api/tools?integration=${encodeURIComponent(app)}`, {
     headers: jsonHeaders,
   });
+
+const getSource = (
+  app: string,
+): Promise<{ readonly source: { readonly slug: string; readonly name: string } | null }> =>
+  requestJson(`/api/apps/sources/github/${encodeURIComponent(app)}`, { headers: jsonHeaders });
+
+const removeSource = (app: string): Promise<{ readonly removed: boolean }> =>
+  deleteJson(`/api/apps/sources/github/${encodeURIComponent(app)}`);
 
 const execute = (code: string): Promise<ExecuteResponse> =>
   postJson<ExecuteResponse>("/api/executions", { code, autoApprove: true });
@@ -495,8 +566,8 @@ const executeResult = async (code: string): Promise<unknown> => {
   return response.structured.result;
 };
 
-const callAppToolCode = (toolName: string, args: unknown): string => `
-const found = await tools.search({ namespace: "apps", query: ${JSON.stringify(toolName)}, limit: 20 });
+const callAppToolCode = (toolName: string, args: unknown, namespace = APP_SLUG): string => `
+const found = await tools.search({ namespace: ${JSON.stringify(namespace)}, query: ${JSON.stringify(toolName)}, limit: 20 });
 const item = found.items.find((candidate) => candidate.path.endsWith(${JSON.stringify(toolName)}));
 if (!item) return { ok: false, missing: ${JSON.stringify(toolName)}, found };
 let fn = tools;
@@ -549,10 +620,10 @@ test("custom tool connection schema updates when connections change after sync",
   expect(initialConnections).toEqual([]);
   await putRepoFiles(github, token!, initialFiles());
 
-  const published = await syncSource();
+  const published = await addSource({ name: SCHEMA_APP_SLUG });
   expect(published.status).toBe("published");
 
-  const listed = await listAppTools();
+  const listed = await listAppTools(SCHEMA_APP_SLUG);
   const dealSync = listed.find((tool) => tool.name === "deal-pipeline-sync");
   expect(dealSync).toBeTruthy();
   const beforeConnection = await requestJson<{
@@ -580,10 +651,14 @@ test("custom tool connection schema updates when connections change after sync",
   expect(afterConnection.inputSchema.required ?? []).not.toContain("github");
 
   const defaultInvoke = (await executeResult(
-    callAppToolCode("deal-pipeline-sync", {
-      owner: OWNER,
-      repo: REPO,
-    }),
+    callAppToolCode(
+      "deal-pipeline-sync",
+      {
+        owner: OWNER,
+        repo: REPO,
+      },
+      SCHEMA_APP_SLUG,
+    ),
   )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
   expect(defaultInvoke.result?.ok).toBe(true);
   expect(defaultInvoke.result?.data?.synced).toBe(0);
@@ -609,7 +684,7 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   });
   expect(unauthorized.status).toBe(401);
 
-  const published = await syncSource();
+  const published = await addSource({ name: APP_SLUG, token: token! });
   expect(published.status).toBe("published");
   expect(JSON.stringify(published)).not.toContain(token!);
   expect(published.tools).toEqual(["deal-pipeline-sync", "find-deal-docs"]);
@@ -621,18 +696,17 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   expect(tokenUpToDate.status).toBe("up-to-date");
   expect(JSON.stringify(tokenUpToDate)).not.toContain(token!);
 
-  const sourcesList = await requestJson<{ sources: readonly { hasToken: boolean }[] }>(
-    "/api/apps/sources/github",
-    { headers: jsonHeaders },
-  );
-  expect(sourcesList.sources[0]?.hasToken).toBe(true);
+  const sourcesList = await requestJson<{
+    sources: readonly { readonly slug: string; readonly hasToken: boolean }[];
+  }>("/api/apps/sources/github", { headers: jsonHeaders });
+  expect(sourcesList.sources.find((source) => source.slug === APP_SLUG)?.hasToken).toBe(true);
   expect(JSON.stringify(sourcesList)).not.toContain(token!);
 
   const listed = await listAppTools();
   expect(listed.map((tool) => tool.name).sort()).toEqual(["deal-pipeline-sync", "find-deal-docs"]);
 
   const searchResult = await executeResult(
-    'const found = await tools.search({ namespace: "apps", query: "pipeline", limit: 10 }); return found.items.map((item) => item.path);',
+    `const found = await tools.search({ namespace: ${JSON.stringify(APP_SLUG)}, query: "pipeline", limit: 10 }); return found.items.map((item) => item.path);`,
   );
   expect(JSON.stringify(searchResult)).toContain("deal-pipeline-sync");
 
@@ -760,6 +834,139 @@ test("GitHub source sync publishes and invokes custom tools through self-host HT
   expect(afterSkipped.some((tool) => tool.address.includes("workflow"))).toBe(false);
 });
 
+test("custom tools sources are per-integration and remove tears down owned state", async () => {
+  const credential = await github.credentials.mint({
+    type: "api-key",
+    login: OWNER,
+    scopes: ["repo", "user"],
+  });
+  const token = credential.token;
+  expect(token).toBeTruthy();
+  await registerGitHubIntegration(github, token!);
+  await putRepoFiles(github, token!, initialFiles());
+
+  const firstApp = "side-tools-a";
+  const secondApp = "side-tools-b";
+  const first = await addSource({ name: firstApp, token: token! });
+  const second = await addSource({ name: secondApp, token: token! });
+  expect(first.status).toBe("published");
+  expect(second.status).toBe("published");
+
+  const collision = await addSource({ name: firstApp, token: token! });
+  expect(collision.status).toBe("failed");
+  expect(collision.errors?.[0]?.message).toContain(
+    `Integration "${firstApp}" already exists. Choose another name.`,
+  );
+
+  const integrations = await requestJson<readonly IntegrationRow[]>("/api/integrations", {
+    headers: jsonHeaders,
+  });
+  expect(integrations).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        slug: firstApp,
+        name: firstApp,
+        kind: "apps",
+        canRemove: true,
+        displayUrl: sourceUrl(),
+      }),
+      expect.objectContaining({
+        slug: secondApp,
+        name: secondApp,
+        kind: "apps",
+        canRemove: true,
+        displayUrl: sourceUrl(),
+      }),
+    ]),
+  );
+
+  const configRows = await querySqliteRows(
+    dbPath,
+    "SELECT slug, plugin_id, config FROM integration WHERE slug IN (?, ?) ORDER BY slug",
+    [firstApp, secondApp],
+  );
+  expect(configRows).toHaveLength(2);
+  for (const row of configRows) {
+    expect(row.plugin_id).toBe("apps");
+    const config = decodeDbJson(row.config);
+    expect(config).toMatchObject({
+      kind: "github",
+      repoUrl: sourceUrl(),
+      repo: REPO_FULL_NAME,
+      scope: row.slug,
+    });
+    expect(JSON.stringify(config)).not.toContain(token!);
+  }
+
+  expect((await listAppTools(firstApp)).map((tool) => tool.address).sort()).toEqual([
+    `tools.${firstApp}.user.main.deal-pipeline-sync`,
+    `tools.${firstApp}.user.main.find-deal-docs`,
+  ]);
+  expect((await listAppTools(secondApp)).map((tool) => tool.address).sort()).toEqual([
+    `tools.${secondApp}.user.main.deal-pipeline-sync`,
+    `tools.${secondApp}.user.main.find-deal-docs`,
+  ]);
+
+  const secondInvoke = (await executeResult(
+    callAppToolCode(
+      "deal-pipeline-sync",
+      {
+        owner: OWNER,
+        repo: REPO,
+      },
+      secondApp,
+    ),
+  )) as { result?: { ok?: boolean; data?: { synced?: number }; error?: unknown } };
+  expect(secondInvoke.result?.ok).toBe(true);
+
+  const secondKey = sourceStorageKey(secondApp);
+  const secondArtifactDir = join(dataDir, "apps", "artifacts", `${secondKey}.git`);
+  const secondScopeDb = join(dataDir, "apps", "scope-db", `${secondKey}.db`);
+  expect(existsSync(secondArtifactDir)).toBe(true);
+  expect(existsSync(secondScopeDb)).toBe(true);
+
+  const tokenRowsBefore = await querySqliteRows(
+    dbPath,
+    "SELECT key FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
+    ["encryptedSecrets", "secrets", sourceTokenItemId(secondApp)],
+  );
+  expect(tokenRowsBefore).toHaveLength(1);
+
+  expect(await getSource(secondApp)).toMatchObject({
+    source: { slug: secondApp, name: secondApp },
+  });
+  expect(await removeSource(secondApp)).toEqual({ removed: true });
+  expect(await getSource(secondApp)).toEqual({ source: null });
+
+  const secondIntegration = await fetch(
+    `${server.baseUrl}/api/integrations/${encodeURIComponent(secondApp)}`,
+    { headers: jsonHeaders },
+  );
+  expect(secondIntegration.status).toBe(404);
+  await secondIntegration.text();
+
+  expect(await listAppTools(secondApp)).toEqual([]);
+  expect((await listAppTools(firstApp)).map((tool) => tool.address).sort()).toEqual([
+    `tools.${firstApp}.user.main.deal-pipeline-sync`,
+    `tools.${firstApp}.user.main.find-deal-docs`,
+  ]);
+
+  const descriptorRows = await querySqliteRows(
+    join(dataDir, "apps", "store.sqlite"),
+    "SELECT scope FROM descriptors WHERE tenant = ? AND scope = ?",
+    [TEST_ORG, secondApp],
+  );
+  expect(descriptorRows).toEqual([]);
+  const tokenRowsAfter = await querySqliteRows(
+    dbPath,
+    "SELECT key FROM plugin_storage WHERE plugin_id = ? AND collection = ? AND key = ?",
+    ["encryptedSecrets", "secrets", sourceTokenItemId(secondApp)],
+  );
+  expect(tokenRowsAfter).toEqual([]);
+  expect(existsSync(secondArtifactDir)).toBe(false);
+  expect(existsSync(secondScopeDb)).toBe(false);
+});
+
 test("bridged integration calls inherit the caller approval handler", async () => {
   const credential = await github.credentials.mint({
     type: "api-key",
@@ -771,7 +978,7 @@ test("bridged integration calls inherit the caller approval handler", async () =
   await registerGitHubIntegration(github, token!);
   await createIssue(github, token!, "Approval-gated issue");
   await putRepoFiles(github, token!, approvalFiles());
-  const published = await syncSource({ token: token! });
+  const published = await addSource({ name: APPROVAL_APP_SLUG, token: token! });
   expect(published.status).toBe("published");
 
   const githubTools = await requestJson<readonly ToolRow[]>("/api/tools?integration=github", {
@@ -792,11 +999,15 @@ test("bridged integration calls inherit the caller approval handler", async () =
   ).length;
 
   const response = await executeWithApprovalPause(
-    callAppToolCode("approval-bridge", {
-      github: GITHUB_CONNECTION,
-      owner: OWNER,
-      repo: REPO,
-    }),
+    callAppToolCode(
+      "approval-bridge",
+      {
+        github: GITHUB_CONNECTION,
+        owner: OWNER,
+        repo: REPO,
+      },
+      APPROVAL_APP_SLUG,
+    ),
   );
   expect(response.status).toBe("paused");
 

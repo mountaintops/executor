@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
+import { IntegrationSlug } from "@executor-js/sdk";
 
-import { appsPlugin, connectionNameForScope } from "./apps-plugin";
+import { appsPlugin } from "./apps-plugin";
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
 
@@ -62,13 +63,43 @@ describe("appsPlugin custom-tools contract", () => {
     });
     const runtime = host.runtime;
     const plugin = appsPlugin({ runtime });
-    const appConnection = connectionNameForScope("rhys");
+    const appIntegration = IntegrationSlug.make("rhys-tools");
+    const appConfig = {
+      kind: "github",
+      repoUrl: "https://github.com/rhys/tools",
+      repo: "rhys/tools",
+      scope: "rhys",
+    };
+    const ctx = {
+      owner: { tenant: "org" },
+      core: {
+        integrations: {
+          get: (slug: IntegrationSlug) =>
+            Effect.succeed(
+              String(slug) === String(appIntegration)
+                ? {
+                    slug: appIntegration,
+                    name: "Rhys tools",
+                    description: "Rhys tools",
+                    kind: "apps",
+                    canRemove: true,
+                    canRefresh: false,
+                    authMethods: [],
+                    config: appConfig,
+                  }
+                : null,
+            ),
+        },
+      },
+    };
 
     await run(runtime.publish({ scope: "rhys", files: prototypeFileSet() }));
 
     const resolved = await run(
       plugin.resolveTools!({
-        connection: { name: appConnection },
+        ctx,
+        config: appConfig,
+        connection: { name: "main" },
       } as never),
     );
     const syncTool = resolved.tools.find((tool) => String(tool.name) === "deal-pipeline-sync");
@@ -80,10 +111,11 @@ describe("appsPlugin custom-tools contract", () => {
 
     const projected = await run(
       plugin.projectToolSchema!({
-        ctx: { owner: { tenant: "org" } },
+        ctx,
         toolRow: {
           name: "deal-pipeline-sync",
-          connection: appConnection,
+          integration: appIntegration,
+          connection: "main",
         },
         inputSchema: syncTool!.inputSchema,
         outputSchema: syncTool!.outputSchema,
@@ -100,10 +132,11 @@ describe("appsPlugin custom-tools contract", () => {
 
     const output = await run(
       plugin.invokeTool!({
-        ctx: {},
+        ctx,
         toolRow: {
           name: "deal-pipeline-sync",
-          connection: appConnection,
+          integration: appIntegration,
+          connection: "main",
         },
         args: {
           crm: "tools.dealcloud.user.crm-main",

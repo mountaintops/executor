@@ -20,11 +20,6 @@ export const makeInMemoryAppsStore = (): AppsStore & {
 } => {
   const descriptors = new Map<string, AppDescriptor>();
   const publishedAt = new Map<string, number>();
-  const scopeConnections = new Map<string, string>();
-  const githubSourceTokens = new Map<
-    string,
-    { provider: string; itemId: string; updatedAt: number }
-  >();
   const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
     descriptors,
@@ -36,6 +31,12 @@ export const makeInMemoryAppsStore = (): AppsStore & {
       }),
     getDescriptor: (tenant, scope) =>
       Effect.sync(() => descriptors.get(keyFor(tenant, scope)) ?? null),
+    removeDescriptor: (tenant, scope) =>
+      Effect.sync(() => {
+        const key = keyFor(tenant, scope);
+        descriptors.delete(key);
+        publishedAt.delete(key);
+      }),
     listDescriptors: (tenant) =>
       Effect.sync(() =>
         [...descriptors.entries()]
@@ -45,14 +46,6 @@ export const makeInMemoryAppsStore = (): AppsStore & {
             publishedAt: publishedAt.get(key) ?? 0,
           })),
       ),
-    putScopeForConnection: (tenant, connectionName, scope) =>
-      Effect.sync(() => void scopeConnections.set(keyFor(tenant, connectionName), scope)),
-    getScopeForConnection: (tenant, connectionName) =>
-      Effect.sync(() => scopeConnections.get(keyFor(tenant, connectionName)) ?? null),
-    putGitHubSourceTokenRef: (tenant, scope, ref) =>
-      Effect.sync(() => void githubSourceTokens.set(keyFor(tenant, scope), ref)),
-    getGitHubSourceTokenRef: (tenant, scope) =>
-      Effect.sync(() => githubSourceTokens.get(keyFor(tenant, scope)) ?? null),
   };
 };
 
@@ -94,7 +87,15 @@ export const makeInMemoryArtifactStore = (): ArtifactStore => {
         ),
     };
   };
-  return { forScope: (address) => Effect.succeed(forScope(scopeAddressStorageKey(address))) };
+  return {
+    forScope: (address) => Effect.succeed(forScope(scopeAddressStorageKey(address))),
+    removeScope: (address) =>
+      Effect.sync(() => {
+        const key = scopeAddressStorageKey(address);
+        scopes.delete(key);
+        order.delete(key);
+      }),
+  };
 };
 
 export type { SnapshotId };

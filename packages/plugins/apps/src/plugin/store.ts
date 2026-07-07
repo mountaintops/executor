@@ -9,7 +9,7 @@ import {
 import type { AppDescriptor } from "../pipeline/descriptor";
 
 // ---------------------------------------------------------------------------
-// AppsStore: descriptor pointer persistence and connection-to-scope mapping.
+// AppsStore: descriptor pointer persistence.
 // ---------------------------------------------------------------------------
 
 export const descriptorCollection = definePluginStorageCollection("published_descriptor", {
@@ -21,27 +21,6 @@ export const descriptorCollection = definePluginStorageCollection("published_des
     readonly publishedAt: number;
   },
 });
-
-export const scopeConnectionCollection = definePluginStorageCollection("apps_scope_connection", {
-  Type: {} as {
-    readonly tenant: string;
-    readonly connectionName: string;
-    readonly scope: string;
-  },
-});
-
-export const githubSourceTokenCollection = definePluginStorageCollection(
-  "apps_github_source_token",
-  {
-    Type: {} as {
-      readonly tenant: string;
-      readonly scope: string;
-      readonly provider: string;
-      readonly itemId: string;
-      readonly updatedAt: number;
-    },
-  },
-);
 
 export interface AppDescriptorRecord {
   readonly descriptor: AppDescriptor;
@@ -64,27 +43,10 @@ export interface AppsStore {
     tenant: string,
     scope: string,
   ) => Effect.Effect<AppDescriptor | null, StorageFailure>;
+  readonly removeDescriptor: (tenant: string, scope: string) => Effect.Effect<void, StorageFailure>;
   readonly listDescriptors: (
     tenant: string,
   ) => Effect.Effect<readonly AppDescriptorRecord[], StorageFailure>;
-  readonly putScopeForConnection: (
-    tenant: string,
-    connectionName: string,
-    scope: string,
-  ) => Effect.Effect<void, StorageFailure>;
-  readonly getScopeForConnection: (
-    tenant: string,
-    connectionName: string,
-  ) => Effect.Effect<string | null, StorageFailure>;
-  readonly putGitHubSourceTokenRef: (
-    tenant: string,
-    scope: string,
-    ref: GitHubSourceTokenRef,
-  ) => Effect.Effect<void, StorageFailure>;
-  readonly getGitHubSourceTokenRef: (
-    tenant: string,
-    scope: string,
-  ) => Effect.Effect<GitHubSourceTokenRef | null, StorageFailure>;
 }
 
 export interface AppsStoreDeps {
@@ -93,36 +55,10 @@ export interface AppsStoreDeps {
 
 export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
   const descriptors = deps.pluginStorage.collection(descriptorCollection);
-  const scopeConnections = deps.pluginStorage.collection(scopeConnectionCollection);
-  const githubSourceTokens = deps.pluginStorage.collection(githubSourceTokenCollection);
   // Tenant is now part of apps storage keys. The apps subsystem had not shipped
   // before this key shape, so no migration from the old scope-only keys is needed.
   const keyFor = (tenant: string, key: string): string => `${tenant}:${key}`;
   return {
-    putScopeForConnection: (tenant, connectionName, scope) =>
-      scopeConnections
-        .put({
-          owner: "org",
-          key: keyFor(tenant, connectionName),
-          data: { tenant, connectionName, scope },
-        })
-        .pipe(Effect.asVoid),
-    getScopeForConnection: (tenant, connectionName) =>
-      scopeConnections
-        .get({ key: keyFor(tenant, connectionName) })
-        .pipe(Effect.map((entry) => entry?.data.scope ?? null)),
-    putGitHubSourceTokenRef: (tenant, scope, ref) =>
-      githubSourceTokens
-        .put({
-          owner: "org",
-          key: keyFor(tenant, scope),
-          data: { tenant, scope, ...ref },
-        })
-        .pipe(Effect.asVoid),
-    getGitHubSourceTokenRef: (tenant, scope) =>
-      githubSourceTokens
-        .get({ key: keyFor(tenant, scope) })
-        .pipe(Effect.map((entry) => entry?.data ?? null)),
     putDescriptor: (tenant, owner, descriptor) =>
       descriptors
         .put({
@@ -141,6 +77,8 @@ export const makeAppsStore = (deps: AppsStoreDeps): AppsStore => {
       descriptors
         .get({ key: keyFor(tenant, scope) })
         .pipe(Effect.map((entry) => entry?.data.descriptor ?? null)),
+    removeDescriptor: (tenant, scope) =>
+      descriptors.remove({ owner: "org", key: keyFor(tenant, scope) }),
     listDescriptors: (tenant) =>
       descriptors.list({ keyPrefix: `${tenant}:` }).pipe(
         Effect.map((entries) =>

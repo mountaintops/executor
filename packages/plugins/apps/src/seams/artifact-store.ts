@@ -64,4 +64,5 @@ export interface ArtifactStore {
   readonly forScope: (
     address: ScopeAddress,
   ) => Effect.Effect<ScopeArtifactStore, ArtifactStoreError>;
+  readonly removeScope: (address: ScopeAddress) => Effect.Effect<void, ArtifactStoreError>;
 }

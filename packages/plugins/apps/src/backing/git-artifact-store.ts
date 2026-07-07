@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Effect } from "effect";
@@ -298,6 +298,19 @@ export const makeGitArtifactStore = (options: GitArtifactStoreOptions): Artifact
         catch: (cause) =>
           new ArtifactStoreError({
             message: `failed to open scope repo: ${address.tenant}/${address.scope}`,
+            cause,
+          }),
+      }),
+    removeScope: (address) =>
+      Effect.tryPromise({
+        try: async () => {
+          const key = scopeAddressStorageKey(address);
+          initialized.delete(key);
+          await rm(join(options.root, `${key}.git`), { recursive: true, force: true });
+        },
+        catch: (cause) =>
+          new ArtifactStoreError({
+            message: `failed to remove scope repo: ${address.tenant}/${address.scope}`,
             cause,
           }),
       }),

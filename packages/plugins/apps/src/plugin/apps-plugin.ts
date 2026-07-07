@@ -1,36 +1,48 @@
 import { Effect, Result } from "effect";
 
 import {
-  definePlugin,
-  tool,
-  ToolName,
-  IntegrationSlug,
   AuthTemplateSlug,
-  connectionIdentifier,
+  definePlugin,
+  IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  ToolName,
+  connectionIdentifier,
+  tool,
+  type IntegrationRecord,
+  type InvokeToolInput,
   type PluginCtx,
   type ResolveToolsInput,
   type ResolveToolsResult,
-  type InvokeToolInput,
   type ToolDef,
 } from "@executor-js/sdk";
 
-import type { AppsRuntime } from "./runtime";
-import { makeAppsStore } from "./store";
-import type { ClientResolver, ConnectionCandidate } from "./bindings";
 import type { IntegrationDecl, ToolDescriptor } from "../pipeline/descriptor";
 import { PublishError } from "../pipeline/discover";
 import {
   parseGitHubSourceUrl,
   syncGitHubSource,
+  type GitHubSkippedArtifact,
   type GitHubSyncResult,
 } from "../source/github-source";
+import { slugifyCustomToolsAppName, validateCustomToolsAppSlug } from "../source/app-slug";
+import type { AppsRuntime, GitHubCustomToolsSourceSummary } from "./runtime";
+import { makeAppsStore, type AppDescriptorRecord, type GitHubSourceTokenRef } from "./store";
+import type { ClientResolver, ConnectionCandidate } from "./bindings";
 
 export const APPS_INTEGRATION_SLUG = "apps";
 export const APPS_PLUGIN_ID = "apps";
 
-const DEFAULT_CATALOG_SCOPE = "default";
+const APP_CONNECTION_NAME = connectionIdentifier("main");
+
+interface AppsGitHubSourceConfig {
+  readonly kind: "github";
+  readonly repoUrl: string;
+  readonly repo: string;
+  readonly scope: string;
+  readonly ref?: string;
+  readonly token?: GitHubSourceTokenRef;
+}
 
 export interface AppsPluginOptions {
   readonly runtime: AppsRuntime;
@@ -48,6 +60,9 @@ interface AppsStoreShape {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+const asString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
 const unique = (values: readonly string[]): readonly string[] => [...new Set(values)];
 
 const syncFailure = (message: string, path?: string): GitHubSyncResult => ({
@@ -63,9 +78,6 @@ const syncFailure = (message: string, path?: string): GitHubSyncResult => ({
   ],
 });
 
-const sourceScopeFor = (repo: string): string =>
-  String(connectionIdentifier(`github ${repo}`, "githubSource"));
-
 const sourceTokenItemId = (tenant: string, scope: string): ProviderItemId =>
   ProviderItemId.make(`apps:github-source:${tenant}:${scope}:token`);
 
@@ -73,6 +85,30 @@ const configBaseUrl = (config: unknown): string | undefined =>
   isRecord(config) && typeof config.baseUrl === "string" && config.baseUrl.length > 0
     ? config.baseUrl
     : undefined;
+
+const decodeSourceConfig = (config: unknown): AppsGitHubSourceConfig | null => {
+  if (!isRecord(config) || config.kind !== "github") return null;
+  const repoUrl = asString(config.repoUrl);
+  const repo = asString(config.repo);
+  const scope = asString(config.scope);
+  if (!repoUrl || !repo || !scope) return null;
+  const ref = asString(config.ref);
+  const token = isRecord(config.token)
+    ? {
+        provider: asString(config.token.provider) ?? "",
+        itemId: asString(config.token.itemId) ?? "",
+        updatedAt: typeof config.token.updatedAt === "number" ? config.token.updatedAt : 0,
+      }
+    : undefined;
+  return {
+    kind: "github",
+    repoUrl,
+    repo,
+    scope,
+    ...(ref ? { ref } : {}),
+    ...(token && token.provider && token.itemId ? { token } : {}),
+  };
+};
 
 const projectInputSchema = (
   schema: unknown,
@@ -113,6 +149,16 @@ const projectInputSchema = (
   return projected;
 };
 
+const projectTool = (descriptor: ToolDescriptor): ToolDef => ({
+  name: ToolName.make(descriptor.name),
+  description: descriptor.description,
+  inputSchema: descriptor.inputSchema,
+  outputSchema: descriptor.outputSchema,
+  annotations: {
+    requiresApproval: descriptor.annotations?.destructive === true,
+  },
+});
+
 export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
   const runtime = options?.runtime as AppsRuntime;
   const makeResolver = options?.makeResolver;
@@ -122,90 +168,273 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
     return tenant === undefined ? "org" : String(tenant);
   };
 
-  const scopeFor = (tenant: string, connectionName: string): Effect.Effect<string> =>
-    runtime.deps.store.getScopeForConnection(tenant, connectionName).pipe(
-      Effect.orElseSucceed(() => null),
-      Effect.map((mapped) => mapped ?? scopeFromConnection(connectionName)),
-    );
-
   const storeSourceToken = (
     ctx: PluginCtx<AppsStoreShape>,
     tenant: string,
     scope: string,
     token: string,
-  ): Effect.Effect<boolean> =>
+  ): Effect.Effect<GitHubSourceTokenRef | null> =>
     Effect.gen(function* () {
       const itemId = sourceTokenItemId(tenant, scope);
       const provider = yield* ctx.providers.setDefault(itemId, token).pipe(Effect.result);
-      if (Result.isFailure(provider)) return false;
-      const stored = yield* runtime.deps.store
-        .putGitHubSourceTokenRef(tenant, scope, {
-          provider: String(provider.success),
-          itemId: String(itemId),
-          updatedAt: Date.now(),
-        })
-        .pipe(Effect.result);
-      return Result.isSuccess(stored);
+      if (Result.isFailure(provider)) return null;
+      return {
+        provider: String(provider.success),
+        itemId: String(itemId),
+        updatedAt: Date.now(),
+      };
     });
 
   const storedSourceToken = (
     ctx: PluginCtx<AppsStoreShape>,
-    tenant: string,
-    scope: string,
-  ): Effect.Effect<string | null> =>
-    Effect.gen(function* () {
-      const ref = yield* runtime.deps.store
-        .getGitHubSourceTokenRef(tenant, scope)
-        .pipe(Effect.orElseSucceed(() => null));
-      if (!ref) return null;
-      return yield* ctx.providers
-        .get(ProviderKey.make(ref.provider), ProviderItemId.make(ref.itemId))
-        .pipe(Effect.orElseSucceed(() => null));
-    });
+    ref: GitHubSourceTokenRef | undefined,
+  ): Effect.Effect<string | null> => {
+    if (!ref) return Effect.succeed(null);
+    return ctx.providers
+      .get(ProviderKey.make(ref.provider), ProviderItemId.make(ref.itemId))
+      .pipe(Effect.orElseSucceed(() => null));
+  };
 
-  const ensureCatalogConnection = (scope: string, ctx: PluginCtx<AppsStoreShape>) =>
+  const removeStoredSourceToken = (
+    ctx: PluginCtx<AppsStoreShape>,
+    ref: GitHubSourceTokenRef | undefined,
+  ): Effect.Effect<void, unknown> =>
+    ref
+      ? ctx.providers.remove(ProviderKey.make(ref.provider), ProviderItemId.make(ref.itemId))
+      : Effect.void;
+
+  const ensureAppConnection = (slug: IntegrationSlug, ctx: PluginCtx<AppsStoreShape>) =>
     Effect.gen(function* () {
-      const tenant = tenantFor(ctx);
-      const slug = IntegrationSlug.make(APPS_INTEGRATION_SLUG);
-      const existing = yield* ctx.core.integrations
-        .get(slug)
-        .pipe(Effect.orElseSucceed(() => null));
-      if (!existing) {
-        yield* ctx.core.integrations.register({
-          slug,
-          name: "Apps",
-          description: "User-authored, published custom tools.",
-          config: {},
-          canRemove: false,
-          canRefresh: true,
-        });
-      }
-      const rawName = connectionNameForScope(scope);
-      const connName = connectionIdentifier(rawName);
       const conns = yield* ctx.connections
         .list({ integration: slug })
         .pipe(Effect.orElseSucceed(() => []));
-      if (!conns.some((c) => String(c.name) === String(connName))) {
+      if (!conns.some((connection) => String(connection.name) === String(APP_CONNECTION_NAME))) {
         yield* ctx.connections.create({
           owner: "user",
-          name: connName,
+          name: APP_CONNECTION_NAME,
           integration: slug,
           template: AuthTemplateSlug.make("none"),
           value: "",
         });
       }
-      yield* runtime.deps.store
-        .putScopeForConnection(tenant, String(rawName), scope)
-        .pipe(Effect.orElseSucceed(() => undefined));
-      yield* runtime.deps.store
-        .putScopeForConnection(tenant, String(connName), scope)
-        .pipe(Effect.orElseSucceed(() => undefined));
-      return {
-        scope,
-        connection: String(connName),
-        ref: { owner: "user" as const, integration: slug, name: connName },
-      };
+      return { owner: "user" as const, integration: slug, name: APP_CONNECTION_NAME };
     });
+
+  const refreshAppConnection = (slug: IntegrationSlug, ctx: PluginCtx<AppsStoreShape>) =>
+    Effect.gen(function* () {
+      const ref = yield* ensureAppConnection(slug, ctx);
+      yield* ctx.connections.refresh(ref).pipe(Effect.orElseSucceed(() => []));
+      return ref;
+    });
+
+  const descriptorRecordByScope = (tenant: string) =>
+    runtime.deps.store.listDescriptors(tenant).pipe(
+      Effect.orElseSucceed(() => []),
+      Effect.map((records) => new Map(records.map((record) => [record.descriptor.scope, record]))),
+    );
+
+  const sourceSummaryFor = (
+    integration: IntegrationRecord,
+    recordsByScope: ReadonlyMap<string, AppDescriptorRecord>,
+  ): GitHubCustomToolsSourceSummary | null => {
+    const config = decodeSourceConfig(integration.config);
+    if (!config) return null;
+    const record = recordsByScope.get(config.scope);
+    if (!record) return null;
+    const descriptor = record.descriptor;
+    const source = descriptor?.source;
+    if (source?.kind !== "github") return null;
+    return {
+      slug: String(integration.slug),
+      name: integration.name,
+      scope: descriptor.scope,
+      url: source.url,
+      repo: source.repo,
+      ref: source.ref,
+      hasToken: config.token !== undefined,
+      upstreamSha: source.upstreamSha,
+      snapshotId: descriptor.snapshotId,
+      ...(descriptor.description ? { description: descriptor.description } : {}),
+      publishedAt: new Date(record.publishedAt).toISOString(),
+      tools: descriptor.tools.map((toolDesc) => toolDesc.name),
+      skipped: [
+        ...(source.skipped ?? []),
+        ...(descriptor.skipped as readonly GitHubSkippedArtifact[]),
+      ],
+    };
+  };
+
+  const listSources = (ctx: PluginCtx<AppsStoreShape>) =>
+    Effect.gen(function* () {
+      const tenant = tenantFor(ctx);
+      const recordsByScope = yield* descriptorRecordByScope(tenant);
+      const integrations = yield* ctx.core.integrations.list().pipe(Effect.orElseSucceed(() => []));
+      const sources: GitHubCustomToolsSourceSummary[] = [];
+      for (const integration of integrations) {
+        if (integration.kind !== APPS_PLUGIN_ID) continue;
+        const record = yield* ctx.core.integrations
+          .get(integration.slug)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (!record) continue;
+        const summary = sourceSummaryFor(record, recordsByScope);
+        if (summary) sources.push(summary);
+      }
+      return sources.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+    });
+
+  const getSource = (ctx: PluginCtx<AppsStoreShape>, slug: string) =>
+    Effect.gen(function* () {
+      const tenant = tenantFor(ctx);
+      const recordsByScope = yield* descriptorRecordByScope(tenant);
+      const record = yield* ctx.core.integrations
+        .get(IntegrationSlug.make(slug))
+        .pipe(Effect.orElseSucceed(() => null));
+      return record && record.kind === APPS_PLUGIN_ID
+        ? sourceSummaryFor(record, recordsByScope)
+        : null;
+    });
+
+  const syncExistingSource = (
+    ctx: PluginCtx<AppsStoreShape>,
+    slugValue: string,
+    providedToken: string | null,
+  ) =>
+    Effect.gen(function* () {
+      const slug = IntegrationSlug.make(slugValue);
+      const record = yield* ctx.core.integrations.get(slug).pipe(Effect.orElseSucceed(() => null));
+      const config = record?.kind === APPS_PLUGIN_ID ? decodeSourceConfig(record.config) : null;
+      if (!record || !config) {
+        return syncFailure(`Custom tools source "${slugValue}" does not exist.`);
+      }
+      const github = yield* ctx.core.integrations
+        .get(IntegrationSlug.make("github"))
+        .pipe(Effect.orElseSucceed(() => null));
+      const tenant = tenantFor(ctx);
+      const token = providedToken ?? (yield* storedSourceToken(ctx, config.token));
+      const result = yield* syncGitHubSource({
+        runtime,
+        tenant,
+        scope: config.scope,
+        url: config.repoUrl,
+        ...(config.ref ? { ref: config.ref } : {}),
+        token,
+        baseUrl: configBaseUrl(github?.config),
+      });
+      if (result.status === "failed") return result;
+
+      const tokenRef = providedToken
+        ? yield* storeSourceToken(ctx, tenant, config.scope, providedToken)
+        : config.token;
+      if (providedToken && !tokenRef) {
+        return syncFailure(
+          "No writable credential provider is available to store the GitHub source token.",
+        );
+      }
+      const descriptor = yield* runtime.getDescriptor(tenant, config.scope);
+      const source = descriptor?.source?.kind === "github" ? descriptor.source : null;
+      const nextConfig: AppsGitHubSourceConfig = {
+        ...config,
+        ...(source
+          ? {
+              repoUrl: source.url,
+              repo: source.repo,
+              ref: source.ref,
+            }
+          : {}),
+        ...(tokenRef ? { token: tokenRef } : {}),
+      };
+      yield* ctx.core.integrations.update(slug, {
+        ...(descriptor?.description ? { description: descriptor.description } : {}),
+        config: nextConfig,
+      });
+      yield* refreshAppConnection(slug, ctx);
+      return result;
+    });
+
+  const addSource = (
+    ctx: PluginCtx<AppsStoreShape>,
+    input: {
+      readonly url: string;
+      readonly ref?: string;
+      readonly name?: string;
+      readonly token: string | null;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const parsed = parseGitHubSourceUrl(input.url, { ref: input.ref });
+      if (!parsed.ok) return syncFailure(parsed.message, input.url);
+      const rawName = input.name && input.name.trim().length > 0 ? input.name : parsed.value.name;
+      const slugValue = slugifyCustomToolsAppName(rawName);
+      const slugError = validateCustomToolsAppSlug(slugValue);
+      if (slugError) return syncFailure(slugError);
+      const slug = IntegrationSlug.make(slugValue);
+      const existing = yield* ctx.core.integrations
+        .get(slug)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (existing) {
+        return syncFailure(`Integration "${slugValue}" already exists. Choose another name.`);
+      }
+
+      const github = yield* ctx.core.integrations
+        .get(IntegrationSlug.make("github"))
+        .pipe(Effect.orElseSucceed(() => null));
+      const tenant = tenantFor(ctx);
+      const scope = slugValue;
+      const result = yield* syncGitHubSource({
+        runtime,
+        tenant,
+        scope,
+        url: input.url,
+        ...(input.ref ? { ref: input.ref } : {}),
+        token: input.token,
+        baseUrl: configBaseUrl(github?.config),
+      });
+      if (result.status === "failed") return result;
+
+      const tokenRef = input.token
+        ? yield* storeSourceToken(ctx, tenant, scope, input.token)
+        : undefined;
+      if (input.token && !tokenRef) {
+        yield* runtime.removeSource({ tenant, scope }).pipe(Effect.orElseSucceed(() => undefined));
+        return syncFailure(
+          "No writable credential provider is available to store the GitHub source token.",
+        );
+      }
+
+      const descriptor = yield* runtime.getDescriptor(tenant, scope);
+      const source = descriptor?.source?.kind === "github" ? descriptor.source : null;
+      const config: AppsGitHubSourceConfig = {
+        kind: "github",
+        repoUrl: source?.url ?? input.url.trim(),
+        repo: source?.repo ?? parsed.value.repo,
+        scope,
+        ...(source?.ref ? { ref: source.ref } : input.ref ? { ref: input.ref } : {}),
+        ...(tokenRef ? { token: tokenRef } : {}),
+      };
+      yield* ctx.core.integrations.register({
+        slug,
+        name: slugValue,
+        description:
+          descriptor?.description ??
+          `Custom tools synced from ${source?.repo ?? parsed.value.repo}.`,
+        config,
+        canRemove: true,
+        canRefresh: false,
+      });
+      yield* refreshAppConnection(slug, ctx);
+      return result;
+    });
+
+  const configForToolRow = (
+    ctx: PluginCtx<AppsStoreShape>,
+    integration: IntegrationSlug,
+  ): Effect.Effect<AppsGitHubSourceConfig | null> =>
+    ctx.core.integrations.get(integration).pipe(
+      Effect.map((record) =>
+        record && record.kind === APPS_PLUGIN_ID ? decodeSourceConfig(record.config) : null,
+      ),
+      Effect.orElseSucceed(() => null),
+    );
 
   return {
     id: APPS_PLUGIN_ID as "apps",
@@ -224,16 +453,6 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         schema: { Type: {} as Record<string, unknown> },
         indexes: [],
       },
-      apps_scope_connection: {
-        name: "apps_scope_connection",
-        schema: { Type: {} as Record<string, unknown> },
-        indexes: [],
-      },
-      apps_github_source_token: {
-        name: "apps_github_source_token",
-        schema: { Type: {} as Record<string, unknown> },
-        indexes: [],
-      },
     },
 
     extension: () => ({ runtime }),
@@ -245,19 +464,6 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         name: "Apps",
         tools: [
           tool<AppsStoreShape>({
-            name: "connect_catalog",
-            description:
-              "Wire this scope's published custom tools into the tool catalog. " +
-              "Idempotent; call once per scope after publishing.",
-            execute: (args, { ctx }) =>
-              Effect.gen(function* () {
-                const scope =
-                  (args as { scope?: string } | undefined)?.scope ?? DEFAULT_CATALOG_SCOPE;
-                const connected = yield* ensureCatalogConnection(scope, ctx);
-                return { scope, connection: connected.connection };
-              }),
-          }),
-          tool<AppsStoreShape>({
             name: "sync_github_source",
             description: "Sync a GitHub repository containing custom tool source files.",
             execute: (args, { ctx }) =>
@@ -265,51 +471,21 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
                 const payload = isRecord(args) ? args : {};
                 const url =
                   typeof payload.url === "string"
-                    ? payload.url
+                    ? payload.url.trim()
                     : typeof payload.repo === "string"
-                      ? payload.repo
+                      ? payload.repo.trim()
                       : "";
-                const ref =
-                  typeof payload.ref === "string" && payload.ref.trim().length > 0
-                    ? payload.ref.trim()
-                    : undefined;
-                const providedToken =
-                  typeof payload.token === "string" && payload.token.trim().length > 0
-                    ? payload.token.trim()
-                    : null;
-                const explicitScope = typeof payload.scope === "string" ? payload.scope : undefined;
+                const ref = asString(payload.ref);
+                const providedToken = asString(payload.token) ?? null;
+                const slug = asString(payload.slug);
+                if (slug && !url) return yield* syncExistingSource(ctx, slug, providedToken);
                 if (!url) return syncFailure('sync_github_source requires "url"');
-
-                const parsed = parseGitHubSourceUrl(url, { ref });
-                if (!parsed.ok) return syncFailure(parsed.message, url);
-                const integration = yield* ctx.core.integrations
-                  .get(IntegrationSlug.make("github"))
-                  .pipe(Effect.orElseSucceed(() => null));
-                const tenant = tenantFor(ctx);
-                const scope = explicitScope ?? sourceScopeFor(parsed.value.repo);
-                if (providedToken) {
-                  const stored = yield* storeSourceToken(ctx, tenant, scope, providedToken);
-                  if (!stored) {
-                    return syncFailure(
-                      "No writable credential provider is available to store the GitHub source token.",
-                    );
-                  }
-                }
-                const token = providedToken ?? (yield* storedSourceToken(ctx, tenant, scope));
-                const result = yield* syncGitHubSource({
-                  runtime,
-                  tenant,
-                  scope,
+                return yield* addSource(ctx, {
                   url,
-                  ref,
-                  token,
-                  baseUrl: configBaseUrl(integration?.config),
+                  ...(ref ? { ref } : {}),
+                  ...(asString(payload.name) ? { name: asString(payload.name) } : {}),
+                  token: providedToken,
                 });
-                if (result.status === "published") {
-                  const catalog = yield* ensureCatalogConnection(scope, ctx);
-                  yield* ctx.connections.refresh(catalog.ref).pipe(Effect.orElseSucceed(() => []));
-                }
-                return result;
               }),
           }),
           tool<AppsStoreShape>({
@@ -317,20 +493,44 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
             description: "List synced GitHub repositories that publish custom tools.",
             execute: (_args, { ctx }) =>
               Effect.gen(function* () {
-                const tenant = tenantFor(ctx);
-                const sources = yield* runtime.listGitHubSources(tenant);
+                const sources = yield* listSources(ctx);
                 return { sources };
+              }),
+          }),
+          tool<AppsStoreShape>({
+            name: "get_github_source",
+            description: "Read one synced GitHub custom-tools source.",
+            execute: (args, { ctx }) =>
+              Effect.gen(function* () {
+                const slug = isRecord(args) ? asString(args.slug) : undefined;
+                if (!slug) return { source: null };
+                const source = yield* getSource(ctx, slug);
+                return { source };
               }),
           }),
         ],
       },
     ],
 
-    resolveTools: ({ ctx, connection }: ResolveToolsInput<AppsStoreShape>) =>
+    removeIntegration: ({ ctx, integration }) =>
       Effect.gen(function* () {
+        const config = decodeSourceConfig(integration.config);
+        if (!config) return;
+        yield* removeStoredSourceToken(ctx, config.token);
+        yield* runtime.removeSource({ tenant: tenantFor(ctx), scope: config.scope });
+      }),
+
+    describeIntegrationDisplay: (integration) => {
+      const config = decodeSourceConfig(integration.config);
+      return config ? { url: config.repoUrl } : {};
+    },
+
+    resolveTools: ({ ctx, config }: ResolveToolsInput<AppsStoreShape>) =>
+      Effect.gen(function* () {
+        const source = decodeSourceConfig(config);
+        if (!source) return { tools: [] } satisfies ResolveToolsResult;
         const tenant = ctx ? tenantFor(ctx) : "org";
-        const scope = yield* scopeFor(tenant, String(connection.name));
-        const descriptor = yield* runtime.getDescriptor(tenant, scope);
+        const descriptor = yield* runtime.getDescriptor(tenant, source.scope);
         if (!descriptor) return { tools: [] } satisfies ResolveToolsResult;
         const tools: ToolDef[] = [];
         for (const t of descriptor.tools) {
@@ -342,12 +542,13 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
     projectToolSchema: ({ ctx, toolRow, inputSchema, outputSchema }) =>
       Effect.gen(function* () {
         const tenant = tenantFor(ctx);
-        const scope = yield* scopeFor(tenant, String(toolRow.connection));
-        const descriptor = yield* runtime.getDescriptor(tenant, scope);
+        const source = yield* configForToolRow(ctx, IntegrationSlug.make(toolRow.integration));
+        if (!source) return { inputSchema, outputSchema };
+        const descriptor = yield* runtime.getDescriptor(tenant, source.scope);
         const toolDesc = descriptor?.tools.find((t) => t.name === toolRow.name);
         if (!toolDesc) return { inputSchema, outputSchema };
         const resolver = makeResolver
-          ? makeResolver({ ctx, scope, tool: toolRow.name })
+          ? makeResolver({ ctx, scope: source.scope, tool: toolRow.name })
           : runtime.deps.resolver;
         const byRole: Record<string, readonly ConnectionCandidate[]> = {};
         for (const [role, decl] of Object.entries(toolDesc.integrations)) {
@@ -364,11 +565,18 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
     invokeTool: ({ ctx, toolRow, args, invokeOptions }: InvokeToolInput<AppsStoreShape>) =>
       Effect.gen(function* () {
         const tenant = tenantFor(ctx);
-        const scope = yield* scopeFor(tenant, String(toolRow.connection));
-        const descriptor = yield* runtime.getDescriptor(tenant, scope);
+        const source = yield* configForToolRow(ctx, IntegrationSlug.make(toolRow.integration));
+        if (!source) {
+          return yield* new PublishError({
+            message: `apps integration "${toolRow.integration}" has no custom-tools source config`,
+            stage: "project",
+            diagnostics: [],
+          });
+        }
+        const descriptor = yield* runtime.getDescriptor(tenant, source.scope);
         if (!descriptor) {
           return yield* new PublishError({
-            message: `apps scope "${scope}" has no published app (connection "${toolRow.connection}")`,
+            message: `apps scope "${source.scope}" has no published app`,
             stage: "project",
             diagnostics: [],
           });
@@ -376,17 +584,17 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
         const toolDesc = descriptor.tools.find((t) => t.name === toolRow.name);
         if (!toolDesc) {
           return yield* new PublishError({
-            message: `apps tool "${toolRow.name}" is not published in scope "${scope}"`,
+            message: `apps tool "${toolRow.name}" is not published in scope "${source.scope}"`,
             stage: "project",
             diagnostics: [],
           });
         }
         const resolver = makeResolver
-          ? makeResolver({ ctx, scope, tool: toolRow.name })
+          ? makeResolver({ ctx, scope: source.scope, tool: toolRow.name })
           : undefined;
         return yield* runtime.invokeTool({
           tenant,
-          scope,
+          scope: source.scope,
           tool: toolRow.name,
           args,
           resolver,
@@ -395,36 +603,3 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       }),
   };
 });
-
-const projectTool = (descriptor: ToolDescriptor): ToolDef => ({
-  name: ToolName.make(descriptor.name),
-  description: descriptor.description,
-  inputSchema: descriptor.inputSchema,
-  outputSchema: descriptor.outputSchema,
-  annotations: {
-    requiresApproval: descriptor.annotations?.destructive === true,
-  },
-});
-
-export const APPS_CONNECTION_PREFIX = APPS_INTEGRATION_SLUG;
-
-const pascal = (value: string): string =>
-  value.length === 0 ? value : `${value[0]!.toUpperCase()}${value.slice(1)}`;
-
-export const connectionNameForScope = (scope: string): string =>
-  `${APPS_CONNECTION_PREFIX}${pascal(scope)}`;
-
-export const scopeFromConnection = (connectionName: string): string => {
-  if (connectionName.startsWith(`${APPS_INTEGRATION_SLUG}/`)) {
-    return connectionName.slice(APPS_INTEGRATION_SLUG.length + 1);
-  }
-  if (
-    connectionName.startsWith(APPS_CONNECTION_PREFIX) &&
-    connectionName.length > APPS_CONNECTION_PREFIX.length
-  ) {
-    const rest = connectionName.slice(APPS_CONNECTION_PREFIX.length);
-    return `${rest[0]!.toLowerCase()}${rest.slice(1)}`;
-  }
-  const slash = connectionName.indexOf("/");
-  return slash === -1 ? connectionName : connectionName.slice(slash + 1);
-};

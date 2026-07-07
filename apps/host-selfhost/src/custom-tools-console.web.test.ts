@@ -6,7 +6,9 @@ import appsClientPlugin, {
   type CustomToolsFetch,
   appsIntegrationPlugin,
   formatSyncErrors,
+  getCustomToolSource,
   listCustomToolSources,
+  removeCustomToolSource,
   syncCustomToolSource,
   syncStatusLabel,
   validateGitHubSourceUrl,
@@ -48,6 +50,7 @@ describe("custom tools console client", () => {
 
   it("surfaces successful sync and source detail data", async () => {
     let syncBody = "";
+    let removed = false;
     const fetchImpl: CustomToolsFetch = async (input, init) => {
       const url = String(input);
       if (url.endsWith("/sync")) {
@@ -60,10 +63,34 @@ describe("custom tools console client", () => {
           skipped: [],
         });
       }
+      if (url.endsWith("/demo-tools")) {
+        if (init?.method === "DELETE") {
+          removed = true;
+          return jsonResponse({ removed: true });
+        }
+        return jsonResponse({
+          source: {
+            slug: "demo-tools",
+            name: "demo-tools",
+            scope: "demo-tools",
+            url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
+            repo: "RhysSullivan/executor-custom-tools-demo",
+            ref: "main",
+            hasToken: true,
+            upstreamSha: "abc123",
+            snapshotId: "snap1",
+            publishedAt: "2026-07-06T12:00:00.000Z",
+            tools: ["repo-summary", "stale-issues"],
+            skipped: [],
+          },
+        });
+      }
       return jsonResponse({
         sources: [
           {
-            scope: "github:RhysSullivan/executor-custom-tools-demo",
+            slug: "demo-tools",
+            name: "demo-tools",
+            scope: "demo-tools",
             url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
             repo: "RhysSullivan/executor-custom-tools-demo",
             ref: "main",
@@ -80,18 +107,25 @@ describe("custom tools console client", () => {
 
     const syncResult = await syncCustomToolSource(
       {
+        name: "demo-tools",
         url: "https://github.com/RhysSullivan/executor-custom-tools-demo",
         token: "ghp_demo",
       },
       fetchImpl,
     );
     const listed = await listCustomToolSources(fetchImpl);
+    const detail = await getCustomToolSource("demo-tools", fetchImpl);
+    const remove = await removeCustomToolSource("demo-tools", fetchImpl);
 
     expect(syncStatusLabel(syncResult)).toBe("Published 2 tools.");
     expect(syncBody).toContain("ghp_demo");
+    expect(syncBody).toContain("demo-tools");
     expect(syncResult.tools).toEqual(["repo-summary", "stale-issues"]);
+    expect(detail.source?.slug).toBe("demo-tools");
     expect(listed.sources[0]?.hasToken).toBe(true);
     expect(listed.sources[0]?.tools).toEqual(["repo-summary", "stale-issues"]);
+    expect(remove).toEqual({ removed: true });
+    expect(removed).toBe(true);
   });
 
   it("renders failed sync errors readably", async () => {

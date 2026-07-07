@@ -2,6 +2,7 @@ import { Data, Effect, Schema } from "effect";
 
 import type { GitHubCustomToolsSourceSummary, GitHubSyncResult } from "../api";
 import { parseGitHubSourceUrl } from "../source/github-url";
+import { slugifyCustomToolsAppName, validateCustomToolsAppSlug } from "../source/app-slug";
 
 export const CUSTOM_TOOLS_PLUGIN_KEY = "apps";
 export const CUSTOM_TOOLS_LABEL = "Custom tools";
@@ -10,8 +11,14 @@ export interface GitHubSourcesListResponse {
   readonly sources: readonly GitHubCustomToolsSourceSummary[];
 }
 
+export interface GitHubSourceDetailResponse {
+  readonly source: GitHubCustomToolsSourceSummary | null;
+}
+
 export interface SyncGitHubSourceRequest {
-  readonly url: string;
+  readonly url?: string;
+  readonly name?: string;
+  readonly slug?: string;
   readonly ref?: string;
   readonly token?: string;
 }
@@ -23,6 +30,12 @@ export class CustomToolsClientError extends Data.TaggedError("CustomToolsClientE
 }> {}
 
 export { parseGitHubSourceUrl };
+export { slugifyCustomToolsAppName, validateCustomToolsAppSlug };
+
+export const suggestCustomToolsAppName = (url: string): string => {
+  const parsed = parseGitHubSourceUrl(url);
+  return parsed.ok ? parsed.value.name : "";
+};
 
 export const validateGitHubSourceUrl = (url: string): string | null => {
   const parsed = parseGitHubSourceUrl(url);
@@ -81,6 +94,31 @@ export const listCustomToolSources = (
   fetchImpl: CustomToolsFetch = fetch,
 ): Promise<GitHubSourcesListResponse> => Effect.runPromise(listCustomToolSourcesEffect(fetchImpl));
 
+export const getCustomToolSourceEffect = (
+  slug: string,
+  fetchImpl: CustomToolsFetch = fetch,
+): Effect.Effect<GitHubSourceDetailResponse, CustomToolsClientError> =>
+  Effect.tryPromise({
+    try: () =>
+      fetchImpl(`/api/apps/sources/github/${encodeURIComponent(slug)}`, {
+        credentials: "same-origin",
+      }),
+    catch: () => new CustomToolsClientError({ message: "Failed to load custom tools source." }),
+  }).pipe(
+    Effect.flatMap((response) =>
+      parseJsonResponseEffect<GitHubSourceDetailResponse>(
+        response,
+        "Failed to load custom tools source.",
+      ),
+    ),
+  );
+
+export const getCustomToolSource = (
+  slug: string,
+  fetchImpl: CustomToolsFetch = fetch,
+): Promise<GitHubSourceDetailResponse> =>
+  Effect.runPromise(getCustomToolSourceEffect(slug, fetchImpl));
+
 export const syncCustomToolSourceEffect = (
   input: SyncGitHubSourceRequest,
   fetchImpl: CustomToolsFetch = fetch,
@@ -92,7 +130,9 @@ export const syncCustomToolSourceEffect = (
         headers: { "content-type": "application/json" },
         credentials: "same-origin",
         body: JSON.stringify({
-          url: input.url.trim(),
+          ...(input.url?.trim() ? { url: input.url.trim() } : {}),
+          ...(input.name?.trim() ? { name: input.name.trim() } : {}),
+          ...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
           ...(input.ref?.trim() ? { ref: input.ref.trim() } : {}),
           ...(input.token?.trim() ? { token: input.token.trim() } : {}),
         }),
@@ -108,6 +148,32 @@ export const syncCustomToolSource = (
   input: SyncGitHubSourceRequest,
   fetchImpl: CustomToolsFetch = fetch,
 ): Promise<GitHubSyncResult> => Effect.runPromise(syncCustomToolSourceEffect(input, fetchImpl));
+
+export const removeCustomToolSourceEffect = (
+  slug: string,
+  fetchImpl: CustomToolsFetch = fetch,
+): Effect.Effect<{ readonly removed: boolean }, CustomToolsClientError> =>
+  Effect.tryPromise({
+    try: () =>
+      fetchImpl(`/api/apps/sources/github/${encodeURIComponent(slug)}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      }),
+    catch: () => new CustomToolsClientError({ message: "Failed to remove custom tools source." }),
+  }).pipe(
+    Effect.flatMap((response) =>
+      parseJsonResponseEffect<{ readonly removed: boolean }>(
+        response,
+        "Failed to remove custom tools source.",
+      ),
+    ),
+  );
+
+export const removeCustomToolSource = (
+  slug: string,
+  fetchImpl: CustomToolsFetch = fetch,
+): Promise<{ readonly removed: boolean }> =>
+  Effect.runPromise(removeCustomToolSourceEffect(slug, fetchImpl));
 
 export const syncStatusLabel = (result: GitHubSyncResult): string => {
   if (result.status === "published") return `Published ${result.tools.length} tools.`;

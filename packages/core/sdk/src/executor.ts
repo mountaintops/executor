@@ -1927,6 +1927,19 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           if (!existing.can_remove) {
             return yield* new IntegrationRemovalNotAllowedError({ slug });
           }
+          const runtime = runtimes.get(existing.plugin_id);
+          if (runtime?.plugin.removeIntegration) {
+            yield* runtime.plugin
+              .removeIntegration({
+                ctx: runtime.ctx,
+                integration: rowToIntegrationRecord(existing, describeAuthMethodsForRow(existing)),
+              })
+              .pipe(
+                Effect.mapError((cause) =>
+                  pluginStorageFailure(existing.plugin_id, "removeIntegration", cause),
+                ),
+              );
+          }
           // Drop owned connections / tools / definitions for this integration.
           const where = (b: AnyCb) => b("integration", "=", String(slug));
           yield* core.deleteMany("tool", { where });

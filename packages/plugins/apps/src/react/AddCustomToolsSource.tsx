@@ -10,12 +10,15 @@ import {
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
 import { toast } from "@executor-js/react/components/sonner";
-import { FormErrorAlert } from "@executor-js/react/lib/integration-add";
+import { FormErrorAlert, useSlugAlreadyExists } from "@executor-js/react/lib/integration-add";
 
 import {
   formatSyncErrors,
+  slugifyCustomToolsAppName,
+  suggestCustomToolsAppName,
   syncCustomToolSourceEffect,
   syncStatusLabel,
+  validateCustomToolsAppSlug,
   validateGitHubSourceUrl,
 } from "./custom-tools-client";
 
@@ -24,21 +27,36 @@ export default function AddCustomToolsSource(props: {
   readonly onCancel: () => void;
 }) {
   const [url, setUrl] = useState("");
+  const [name, setName] = useState("");
+  const [nameTouched, setNameTouched] = useState(false);
   const [token, setToken] = useState("");
   const [tokenRevealed, setTokenRevealed] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const effectiveName = nameTouched
+    ? name
+    : slugifyCustomToolsAppName(suggestCustomToolsAppName(url));
+  const slug = effectiveName;
+  const slugAlreadyExists = useSlugAlreadyExists(slug);
 
   const submit = async () => {
     const validation = validateGitHubSourceUrl(url);
+    const nextNameError = validateCustomToolsAppSlug(slug);
     setUrlError(validation);
+    setNameError(nextNameError);
     setSyncError(null);
-    if (validation) return;
+    if (validation || nextNameError) return;
+    if (slugAlreadyExists) {
+      setSyncError(`An integration named "${slug}" already exists. Choose another name.`);
+      return;
+    }
 
     setSyncing(true);
     const exit = await Effect.runPromiseExit(
       syncCustomToolSourceEffect({
+        name: slug,
         url,
         token,
       }),
@@ -55,7 +73,7 @@ export default function AddCustomToolsSource(props: {
       return;
     }
     toast.success(syncStatusLabel(result));
-    props.onComplete("apps");
+    props.onComplete(slug);
   };
 
   return (
@@ -79,6 +97,7 @@ export default function AddCustomToolsSource(props: {
                 onChange={(event) => {
                   setUrl((event.target as HTMLInputElement).value);
                   setUrlError(null);
+                  setNameError(null);
                   setSyncError(null);
                 }}
                 onBlur={() => setUrlError(validateGitHubSourceUrl(url))}
@@ -87,6 +106,32 @@ export default function AddCustomToolsSource(props: {
                 aria-invalid={urlError ? true : undefined}
               />
               {urlError && <p className="text-xs text-destructive">{urlError}</p>}
+            </div>
+          </CardStackEntryField>
+
+          <CardStackEntryField
+            label="Name"
+            description="- Lowercase letters, numbers, and hyphens. Addresses use this name."
+          >
+            <div className="space-y-1.5">
+              <Input
+                value={effectiveName}
+                onChange={(event) => {
+                  setNameTouched(true);
+                  setName(slugifyCustomToolsAppName((event.target as HTMLInputElement).value));
+                  setNameError(null);
+                  setSyncError(null);
+                }}
+                placeholder="executor-custom-tools-demo"
+                className="text-sm"
+                aria-invalid={nameError ? true : undefined}
+              />
+              {nameError && <p className="text-xs text-destructive">{nameError}</p>}
+              {slugAlreadyExists && !syncing && !nameError && (
+                <p className="text-xs text-destructive">
+                  An integration named &quot;{slug}&quot; already exists.
+                </p>
+              )}
             </div>
           </CardStackEntryField>
 
