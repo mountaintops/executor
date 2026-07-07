@@ -13,6 +13,7 @@ import { Predicate, Schema } from "effect";
 import {
   AuthTemplateSlug,
   ConnectionAddress,
+  ConnectionAlreadyExistsError,
   ConnectionName,
   ConnectionNotFoundError,
   CredentialProviderNotRegisteredError,
@@ -166,6 +167,9 @@ const ConnectionNotFound = ConnectionNotFoundError.annotate({
 const IntegrationNotFound = IntegrationNotFoundError.annotate({
   httpApiStatus: 404,
 });
+const ConnectionAlreadyExists = ConnectionAlreadyExistsError.annotate({
+  httpApiStatus: 409,
+});
 const CredentialProviderNotRegistered = CredentialProviderNotRegisteredError.annotate({
   httpApiStatus: 409,
 });
@@ -192,6 +196,7 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
       error: [
         InternalError,
         IntegrationNotFound,
+        ConnectionAlreadyExists,
         CredentialProviderNotRegistered,
         InvalidConnectionInput,
       ],
