@@ -43,13 +43,33 @@ const readMcpJson = async <A>(response: JsonReadableResponse): Promise<A> => {
   if (contentType.includes("application/json")) {
     return (await response.json()) as A;
   }
+  // Parse the SSE stream properly instead of grabbing the first `data:` line:
+  // the server may legally interleave other events (e.g. the priming event a
+  // tools/call stream emits so clients can reconnect) before the JSON-RPC
+  // message. Only `message`-typed events (the SSE default) carry JSON-RPC.
   const text = await response.text();
-  const data = text
-    .split("\n")
-    .find((line) => line.startsWith("data: "))
-    ?.slice("data: ".length);
-  expect(data).toBeTruthy();
-  return decodeUnknownJson(data!) as A;
+  let responseMessage: unknown;
+  for (const block of text.split("\n\n")) {
+    let eventType = "message";
+    let data = "";
+    for (const line of block.replace(/\r/g, "").split("\n")) {
+      if (line.startsWith("event:")) eventType = line.slice("event:".length).trim();
+      if (line.startsWith("data:")) data += line.slice("data:".length).trimStart();
+    }
+    if (eventType !== "message" || data.length === 0) continue;
+    const parsed = decodeUnknownJson(data);
+    // Skip protocol-legal notifications; the tests want the response.
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      ("result" in parsed || "error" in parsed)
+    ) {
+      responseMessage = parsed;
+      break;
+    }
+  }
+  expect(responseMessage, "a JSON-RPC response arrives on the SSE stream").toBeTruthy();
+  return responseMessage as A;
 };
 
 describe("cloudflare host e2e (workerd/miniflare)", () => {

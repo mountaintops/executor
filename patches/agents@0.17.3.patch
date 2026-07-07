@@ -19,7 +19,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..77f9fe3f6f2375eadc9f7a2974f0d202
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5f6d71fb3 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..32d52598b42a4062d09020f0a1abfd67dbf3c266 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,17 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -643,7 +643,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  	* Handles POST requests containing JSON-RPC messages
  	*/
  	async handlePostRequest(req, parsedBody) {
-@@ -733,6 +1076,17 @@ var StreamableHTTPServerTransport = class {
+@@ -733,6 +1076,22 @@ var StreamableHTTPServerTransport = class {
  			};
  			connection.setState(postState);
  			if (this._eventStore) await agent.setStreamRequestIds(streamId, requestIds);
@@ -657,11 +657,16 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
 +			// a real event-store entry so its id sorts BEFORE the eventual
 +			// response; a reconnect with `last-event-id: <primingId>` replays
 +			// everything after it (i.e. the result). See patches/agents patch.
-+			await this.emitPrimingEvent(agent, connection, streamId);
++			// Scoped to tools/call streams: reconnect-with-replay only matters
++			// where the result can outlive the connection (long-running tool
++			// calls). initialize/tools/list resolve in milliseconds and clients
++			// retry them; priming those streams adds a storage write and an
++			// extra SSE frame per request for nothing.
++			if (messages.some((message) => isJSONRPCRequest(message) && message.method === "tools/call")) await this.emitPrimingEvent(agent, connection, streamId);
  			for (const message of messages) {
  				if (this.messageInterceptor) {
  					if (await this.messageInterceptor(message, {
-@@ -777,9 +1131,11 @@ var StreamableHTTPServerTransport = class {
+@@ -777,9 +1136,11 @@ var StreamableHTTPServerTransport = class {
  		} catch (error) {
  			this.onerror?.(error);
  		}
@@ -675,7 +680,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  		}
  	}
  	async send(message, options) {
-@@ -861,12 +1217,10 @@ var StreamableHTTPServerTransport = class {
+@@ -861,12 +1222,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -692,7 +697,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -899,6 +1253,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -899,6 +1258,7 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  		const eventId = `${streamId}:${seq.toString(16).padStart(DurableObjectEventStore.SEQ_PAD, "0")}`;
  		const eventKey = `${DurableObjectEventStore.EVENT_KEY_PREFIX}${eventId}`;
  		await this.storage.put(eventKey, message);
@@ -700,7 +705,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1270,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1275,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -761,7 +766,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1378,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1383,9 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -771,7 +776,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1381,6 +1789,47 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1381,6 +1794,47 @@ var McpAgent = class McpAgent extends Agent {
  	async deleteStreamRequestIds(streamId) {
  		await this.ctx.storage.delete(`${McpAgent.STREAM_REQS_KEY_PREFIX}${streamId}`);
  	}
@@ -819,7 +824,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..c3601bdb084bf82ebfea23cdabe1fab5
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1697,7 +2146,8 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2151,8 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
