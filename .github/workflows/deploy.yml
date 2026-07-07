@@ -1,9 +1,30 @@
 name: Deploy
 
+# Deploy model: upload -> staged promotion (see apps/cloud/DEPLOY.md).
+#
+# A merge to main runs migrations and UPLOADS a new cloud Worker version
+# (`wrangler versions upload`) but does NOT route traffic to it: no Durable
+# Objects restart, so in-flight MCP sessions are untouched. Promoting that
+# version to live traffic is a separate, deliberate step (`wrangler versions
+# deploy`) run via `workflow_dispatch` with an explicit percentage, so the
+# blast radius of a promotion (the DO restart it causes) is staged and
+# operator-controlled.
+#
+# `promote_percent` (workflow_dispatch input): when set, the promote-cloud job
+# runs and promotes the LATEST uploaded version to that percentage. Leave empty
+# (the default, e.g. on a push) to upload only.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      promote_percent:
+        description: >-
+          Promote the latest uploaded cloud version to this percentage of
+          traffic (1-100). Leave empty to upload only (no promotion).
+        required: false
+        default: ""
 
 concurrency:
   group: deploy-production
@@ -44,8 +65,13 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-  deploy-cloud:
-    name: Deploy cloud
+  # Upload a new cloud version WITHOUT routing traffic to it. This runs on
+  # every merge. `wrangler versions upload` does not restart Durable Objects,
+  # so live MCP sessions keep running through it (validated empirically: see
+  # apps/cloud/DEPLOY.md, experiment 2). Promotion to traffic is a separate,
+  # gated step below.
+  upload-cloud:
+    name: Upload cloud version
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
     needs: migrate
@@ -76,10 +102,59 @@ jobs:
         env:
           VITE_PUBLIC_SENTRY_DSN: ${{ secrets.VITE_PUBLIC_SENTRY_DSN }}
 
-      - name: Deploy cloud
-        run: bun run wrangler deploy -c dist/server/wrangler.json
+      - name: Upload cloud version
+        run: bun run wrangler versions upload -c dist/server/wrangler.json
         working-directory: apps/cloud
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # Promote the LATEST uploaded cloud version to a chosen percentage of live
+  # traffic. Gated: runs only on a manual `workflow_dispatch` that sets
+  # `promote_percent`. A promotion moves a Durable Object's version and so
+  # restarts DOs whose sessions land on the newly promoted version -- keep
+  # `promote_percent` small for the first step of a rollout, watch telemetry,
+  # then re-run at a higher percentage. See apps/cloud/DEPLOY.md.
+  promote-cloud:
+    name: Promote cloud version
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: production
+    needs: upload-cloud
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.promote_percent != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build cloud
+        run: bun run --cwd apps/cloud build
+        env:
+          VITE_PUBLIC_SENTRY_DSN: ${{ secrets.VITE_PUBLIC_SENTRY_DSN }}
+
+      - name: Promote latest uploaded version
+        run: bun run scripts/promote-cloud.ts --percent "${PROMOTE_PERCENT}"
+        working-directory: apps/cloud
+        env:
+          PROMOTE_PERCENT: ${{ inputs.promote_percent }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
