@@ -42,6 +42,15 @@ export const mcpPresets: readonly McpPreset[] = [
     featured: true,
   },
   {
+    id: "slack",
+    name: "Slack",
+    summary: "Search messages, read canvases, and write Slack updates via MCP.",
+    url: "https://mcp.slack.com/mcp",
+    endpoint: "https://mcp.slack.com/mcp",
+    icon: "https://integrations.sh/logo/slack.com",
+    featured: true,
+  },
+  {
     id: "context7",
     name: "Context7",
     summary: "Up-to-date docs and code examples for any library.",
