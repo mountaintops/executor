@@ -1,4 +1,4 @@
-import { Effect, Layer, Option, Stream } from "effect";
+import { Effect, Exit, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import type { ToolFileValue } from "@executor-js/sdk/core";
 
@@ -201,6 +201,8 @@ const isTextContentType = (ct: string | null | undefined): boolean =>
 const isOctetStream = (ct: string | null | undefined): boolean =>
   normalizeContentType(ct) === "application/octet-stream";
 
+const decodeJsonLine = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+
 const parseStreamingJsonLines = (text: string, truncated: boolean): unknown => {
   const lines = text.split(/\r?\n/);
   let lastNonEmptyIndex = -1;
@@ -216,32 +218,34 @@ const parseStreamingJsonLines = (text: string, truncated: boolean): unknown => {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     if (line === undefined || line.trim() === "") continue;
-    try {
-      rows.push(JSON.parse(line));
-    } catch {
-      if (truncated && index === lastNonEmptyIndex) continue;
-      return text;
+    const parsed = decodeJsonLine(line);
+    if (Exit.isSuccess(parsed)) {
+      rows.push(parsed.value);
+      continue;
     }
+    // A trailing fragment cut mid-line by the byte/time cap is expected; any
+    // other unparseable line means the body is not NDJSON after all.
+    if (truncated && index === lastNonEmptyIndex) continue;
+    return text;
   }
 
   return rows;
 };
 
+const NDJSON_CONTENT_TYPES = new Set([
+  "application/stream+json",
+  "application/x-ndjson",
+  "application/jsonl",
+]);
+
 const decodeStreamingResponseBody = (
   contentType: string | null,
   text: string,
   truncated: boolean,
-): unknown => {
-  switch (normalizeContentType(contentType)) {
-    case "application/stream+json":
-    case "application/x-ndjson":
-    case "application/jsonl":
-      return parseStreamingJsonLines(text, truncated);
-    case "text/event-stream":
-    default:
-      return text;
-  }
-};
+): unknown =>
+  NDJSON_CONTENT_TYPES.has(normalizeContentType(contentType))
+    ? parseStreamingJsonLines(text, truncated)
+    : text;
 
 export const collectStreamingBody = (
   stream: Stream.Stream<Uint8Array, unknown, never>,
