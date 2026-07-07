@@ -91,6 +91,56 @@ const openPostSse = async (): Promise<{ response: Response; ws: FakeWebSocket }>
   return { response, ws };
 };
 
+// The legacy-SSE GET stream never closes on its own (no final-frame handshake),
+// so open it, keep a live reader, and let the caller pull whatever bytes have
+// been forwarded so far without waiting for a stream end that never comes.
+const openLegacySse = async (): Promise<{
+  response: Response;
+  ws: FakeWebSocket;
+  readSoFar: () => Promise<string>;
+}> => {
+  const ws = makeWebSocket();
+  const agent = makeAgentStub(ws);
+  const namespace = makeNamespace(agent);
+  const handler = McpAgent.serve("/mcp", { binding: "MCP_SESSION", transport: "sse" });
+  const response = await handler.fetch(
+    new Request("https://executor.sh/mcp?sessionId=session-1", {
+      headers: { accept: "text/event-stream" },
+      method: "GET",
+    }),
+    { MCP_SESSION: namespace } as never,
+    makeExecutionContext(),
+  );
+  expect(response.status).toBe(200);
+  expect(ws.accepted).toBe(true);
+  expect(response.body).toBeDefined();
+
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  // A single outstanding read at a time (a default reader forbids concurrent
+  // reads). Keep the pending read across calls: race it against a microtask
+  // flush so a still-open stream resolves with only the bytes queued so far.
+  let pending: ReturnType<NonNullable<typeof reader>["read"]> | undefined;
+  const IDLE = { idle: true } as const;
+  const readSoFar = async (): Promise<string> => {
+    if (!reader) return text;
+    for (;;) {
+      pending ??= reader.read();
+      const raced = await Promise.race([
+        pending.then((r) => ({ idle: false as const, r })),
+        flushMicrotasks().then(() => IDLE),
+      ]);
+      if (raced.idle) return text; // nothing more queued; keep `pending`
+      pending = undefined;
+      if (raced.r.done) break;
+      text += decoder.decode(raced.r.value, { stream: true });
+    }
+    return text;
+  };
+  return { response, readSoFar, ws };
+};
+
 const drainResponse = (response: Response): Promise<string> => {
   const reader = response.body?.getReader();
   if (!reader) return Promise.resolve("");
@@ -199,6 +249,57 @@ describe("worker<->DO bridge unknown-frame tolerance", () => {
     });
     await drained;
 
+    expect(parseWarnings(warnLogs)).toEqual([]);
+    expect(errorLogs).toEqual([]);
+  });
+
+  // The legacy-SSE DO->worker forward loop is a separate code path from the
+  // streamable-HTTP handlers above: it validates each frame against
+  // JSONRPCMessageSchema and silently drops anything that fails. Without the
+  // guard an unknown bridge frame (worker/DO version skew) would be dropped with
+  // no signal; with it, the frame is warned + skipped and the stream survives.
+  it("ignores an unknown bridge frame on the legacy-SSE stream and keeps it alive", async () => {
+    const { readSoFar, ws } = await openLegacySse();
+    // The initial `event: endpoint` frame is written on open.
+    expect(await readSoFar()).toContain("event: endpoint");
+
+    // A newer DO emits a frame type this (older) worker has never seen.
+    emitFrame(ws, { type: "cf_mcp_future_control", nonce: "abc" });
+    await flushMicrotasks();
+
+    // The stream survives: no close, no error forwarded.
+    expect(ws.closeCode).toBeUndefined();
+    expect(ws.closeReason).toBeUndefined();
+    expect(errorLogs).toEqual([]);
+
+    // Logged once, structured, with the frame type + direction.
+    const warnings = parseWarnings(warnLogs);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      event: "mcp_bridge_unknown_frame",
+      frameType: "cf_mcp_future_control",
+      direction: "do->worker",
+    });
+
+    // A subsequent RECOGNIZED bare JSON-RPC frame still flows through as an SSE
+    // message, proving the unknown frame did not wedge the legacy bridge.
+    emitFrame(ws, { id: 1, jsonrpc: "2.0", result: { ok: true } });
+    await flushMicrotasks();
+    const body = await readSoFar();
+    expect(body).toContain("event: message");
+    expect(body).toContain('"ok":true');
+    expect(ws.closeCode).toBeUndefined();
+  });
+
+  it("does not warn on a recognized JSON-RPC frame over legacy-SSE", async () => {
+    const { readSoFar, ws } = await openLegacySse();
+    await readSoFar();
+
+    emitFrame(ws, { id: 1, jsonrpc: "2.0", result: { ok: true } });
+    await flushMicrotasks();
+    const body = await readSoFar();
+
+    expect(body).toContain("event: message");
     expect(parseWarnings(warnLogs)).toEqual([]);
     expect(errorLogs).toEqual([]);
   });
