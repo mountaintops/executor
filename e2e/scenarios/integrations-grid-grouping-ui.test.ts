@@ -26,12 +26,11 @@
 //
 // SHARED-STATE ROBUSTNESS: on selfhost every scenario acts as the same
 // bootstrap admin, so google-per-service-add-ui may already have created these
-// integrations before this file runs (or vice versa, in either order). The add
-// flow's submit button is DISABLED when the custom slug (`google_custom`)
-// already exists (`customSlugAlreadyExists` gates `canAdd` in
-// AddGoogleSource), so this spec first checks the grid, adds only what is
-// missing, and removes ONLY what it created in an `ensuring` finalizer so the
-// google-per-service spec finds a clean slate if it runs after this file.
+// integrations before this file runs (or vice versa, in either order). This
+// spec first checks the grid, adds only what is missing (re-submitting an
+// existing service is a harmless "skipped" row), and removes ONLY what it
+// created in an `ensuring` finalizer so the google-per-service spec finds a
+// clean slate if it runs after this file.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
@@ -67,13 +66,15 @@ scenario(
           // integrations and tolerates "skipped" rows. The real grouping/icon
           // assertions live in the steps below.
           //
-          // preset id -> integration slug (dashes become underscores; custom -> google_custom)
+          // preset id -> integration slug (dashes become underscores). The
+          // custom Tasks Discovery URL derives its identity from the fetched
+          // Discovery doc: slug google_tasks, name "Google Tasks".
           const presetToSlug: Record<string, string> = {
             "google-calendar": "google_calendar",
             "google-gmail": "google_gmail",
             "google-drive": "google_drive",
           };
-          const customSlug = "google_custom";
+          const customSlug = "google_tasks";
 
           await page.goto("/integrations", { waitUntil: "networkidle" });
           const existingMain = page.getByRole("main");
@@ -111,9 +112,9 @@ scenario(
             await setPresetChecked(page, presetId, true);
           }
 
-          // Only add the custom Discovery URL when google_custom is missing: if
-          // it already exists, filling it flips customSlugAlreadyExists true and
-          // disables the submit button.
+          // Only add the custom Discovery URL when google_tasks is missing
+          // (re-adding would just produce a "skipped" row, but it is state this
+          // test would then wrongly clean up as its own).
           if (customMissing) {
             const customField = page.getByPlaceholder(
               "https://www.googleapis.com/discovery/v1/apis/<service>/<version>/rest",
@@ -139,7 +140,7 @@ scenario(
             ).toContain(await row.getAttribute("data-state"));
           }
           if (customMissing) {
-            const customRow = page.getByTestId("add-result-row-custom");
+            const customRow = page.getByTestId("add-result-row-google_tasks");
             await customRow.waitFor({ timeout: 120_000 });
             expect(
               ["added", "skipped"],
@@ -166,7 +167,7 @@ scenario(
 
         // Every per-service integration (including the custom one) is an entry
         // INSIDE the Google umbrella, not a flat sibling.
-        for (const slug of ["google_calendar", "google_gmail", "google_drive", "google_custom"]) {
+        for (const slug of ["google_calendar", "google_gmail", "google_drive", "google_tasks"]) {
           const entry = group.getByTestId(`integration-entry-${slug}`);
           await entry.waitFor({ timeout: 20_000 });
           expect(await group.getByTestId(`integration-entry-${slug}`).count(), slug).toBe(1);
@@ -212,7 +213,8 @@ scenario(
       Effect.ensuring(
         // Remove ONLY the integrations this test created (never pre-existing
         // ones): on selfhost the next scenario acts as the same admin, and a
-        // leaked google_custom disables the Google add flow's submit button.
+        // leaked google_tasks would show up as an unexpected "skipped" row in
+        // the google-per-service spec's results.
         Effect.forEach(
           createdSlugs,
           (slug) =>
