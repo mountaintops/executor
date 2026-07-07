@@ -4,7 +4,6 @@ import type { InvokeOptions } from "@executor-js/sdk";
 
 import type { HandleBridge, HandleRootSpec } from "../seams/tool-sandbox";
 import { ToolSandboxError } from "../seams/tool-sandbox";
-import type { ScopeDbHandle } from "../seams/scope-db";
 import type { IntegrationDecl } from "../pipeline/descriptor";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +15,7 @@ import type { IntegrationDecl } from "../pipeline/descriptor";
 // has exactly one connection for a role's integration, that connection is used
 // as the default. Missing, unknown, or wrong-integration choices are typed
 // BindingError failures. The handler receives clients under the declared role
-// names and `db`.
+// names.
 // ---------------------------------------------------------------------------
 
 export class BindingError extends Data.TaggedError("BindingError")<{
@@ -60,8 +59,6 @@ export interface BindingContext {
   readonly declared: Readonly<Record<string, IntegrationDecl>>;
   /** Resolved role -> connection address choices for this invocation. */
   readonly bindings: RoleBindings;
-  /** The invoking scope's app database (bound to the `db` root). */
-  readonly db: ScopeDbHandle;
   /** Routes a bound method call to the real integration. */
   readonly resolver: ClientResolver;
   /** Caller-supplied invoke options to preserve approval/elicitation context. */
@@ -166,12 +163,12 @@ export const resolveIntegrationBindings = (
     return { input, bindings };
   });
 
-/** Compute the sandbox handle roots: `db` plus one single root per declared
- *  integration role. */
+/** Compute the sandbox handle roots: one single root per declared integration
+ *  role. */
 export const rootsFor = (
   declared: Readonly<Record<string, IntegrationDecl>>,
 ): Readonly<Record<string, HandleRootSpec>> => {
-  const roots: Record<string, HandleRootSpec> = { db: { kind: "single" } };
+  const roots: Record<string, HandleRootSpec> = {};
   for (const role of Object.keys(declared)) {
     roots[role] = { kind: "single" };
   }
@@ -192,12 +189,11 @@ const invokeErr = (message: string): ToolSandboxError =>
   new ToolSandboxError({ kind: "invoke", message });
 
 /**
- * Build the HandleBridge the sandbox calls out through. `db` routes to the
- * scope database; a declared role routes to its resolved connection through the
- * `ClientResolver`. The dispatch is STRICT: an empty/malformed path, a reserved
- * root, an undeclared root, or an indexed root is an error, never a silent
- * success. A `.account` read on a client returns bound-connection metadata
- * without a round-trip.
+ * Build the HandleBridge the sandbox calls out through. A declared role routes
+ * to its resolved connection through the `ClientResolver`. The dispatch is
+ * STRICT: an empty/malformed path, a reserved root, an undeclared root, or an
+ * indexed root is an error, never a silent success. A `.account` read on a
+ * client returns bound-connection metadata without a round-trip.
  */
 export const buildBridge = (context: BindingContext): HandleBridge => ({
   call: ({ root, path, args }) => {
@@ -209,23 +205,6 @@ export const buildBridge = (context: BindingContext): HandleBridge => ({
     }
     if (RESERVED_ROOTS.has(root)) {
       return Effect.fail(invokeErr(`reserved handle root is not callable: ${root}`));
-    }
-
-    if (root === "db") {
-      if (path.length === 1 && path[0] === "sql") {
-        const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
-        return context.db.sql(strings, ...values).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ToolSandboxError({
-                kind: "invoke",
-                message: "scope database call failed",
-                cause,
-              }),
-          ),
-        );
-      }
-      return Effect.fail(invokeErr(`unsupported db call: ${path.join(".")}`));
     }
 
     const { role, index } = parseRoot(root);

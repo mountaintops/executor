@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,26 +7,12 @@ import { Effect } from "effect";
 import { IntegrationSlug } from "@executor-js/sdk";
 import { makeTestExecutor } from "@executor-js/sdk/testing";
 
-import { appsPlugin } from "./apps-plugin";
+import { SourceOriginError, appsPlugin, assertSourceOrigin } from "./apps-plugin";
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver } from "../testing";
+import { dailyBriefFileSet } from "../testing/daily-brief";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
-
-const PROTOTYPE_ROOT = "/Users/rhyssullivan/agent-workspace/prototypes/custom-tools";
-
-const prototypeFileSet = (): Map<string, string> =>
-  new Map<string, string>([
-    ["executor.json", readFileSync(join(PROTOTYPE_ROOT, "executor.json"), "utf8")],
-    [
-      "tools/deal-pipeline-sync.ts",
-      readFileSync(join(PROTOTYPE_ROOT, "tools/deal-pipeline-sync.ts"), "utf8"),
-    ],
-    [
-      "tools/find-deal-docs.ts",
-      readFileSync(join(PROTOTYPE_ROOT, "tools/find-deal-docs.ts"), "utf8"),
-    ],
-  ]);
 
 describe("appsPlugin custom-tools contract", () => {
   it.effect("detects GitHub repo URLs for console auto-detect", () =>
@@ -77,30 +63,41 @@ describe("appsPlugin custom-tools contract", () => {
     }),
   );
 
-  it("round-trips prototype files through publish, resolveTools, and invokeTool", async () => {
-    let dealListArgs: unknown;
+  it.effect("rejects publishing through a different source door for a GitHub-managed app", () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(assertSourceOrigin("github", "mcp"));
+
+      expect(failure).toBeInstanceOf(SourceOriginError);
+      expect(failure.message).toBe("this app is managed by its GitHub repo");
+      expect(failure.existingOrigin).toBe("github");
+      expect(failure.requestedOrigin).toBe("mcp");
+    }),
+  );
+
+  it("round-trips custom tool files through publish, resolveTools, and invokeTool", async () => {
+    let issueListArgs: unknown;
     const resolver = makeTestResolver(
       {
-        dealcloud: {
-          "deals.list": (args) => {
-            dealListArgs = args[0];
-            return [];
+        github: {
+          "issues.listForRepo": (args) => {
+            issueListArgs = args[0];
+            return [{ number: 7, title: "Renewal diligence" }];
           },
         },
-        "microsoft-sharepoint": {
-          "search.query": () => [],
+        gmail: {
+          "messages.search": () => ({ messages: [] }),
         },
       },
       [
         {
-          address: "tools.dealcloud.user.crm-main",
-          integration: "dealcloud",
-          name: "crm-main",
+          address: "tools.github.user.github-main",
+          integration: "github",
+          name: "github-main",
         },
         {
-          address: "tools.microsoft-sharepoint.user.sharepoint-main",
-          integration: "microsoft-sharepoint",
-          name: "sharepoint-main",
+          address: "tools.gmail.user.inbox-main",
+          integration: "gmail",
+          name: "inbox-main",
         },
       ],
     );
@@ -114,6 +111,7 @@ describe("appsPlugin custom-tools contract", () => {
     const plugin = appsPlugin({ backings: host.backings });
     const appIntegration = IntegrationSlug.make("rhys-tools");
     const appConfig = {
+      origin: "github",
       kind: "github",
       repoUrl: "https://github.com/rhys/tools",
       repo: "rhys/tools",
@@ -142,7 +140,7 @@ describe("appsPlugin custom-tools contract", () => {
       },
     };
 
-    await run(runtime.publish({ scope: "rhys", files: prototypeFileSet() }));
+    await run(runtime.publish({ scope: "rhys", files: dailyBriefFileSet() }));
 
     const resolved = await run(
       plugin.resolveTools!({
@@ -151,18 +149,18 @@ describe("appsPlugin custom-tools contract", () => {
         connection: { name: "main" },
       } as never),
     );
-    const syncTool = resolved.tools.find((tool) => String(tool.name) === "deal-pipeline-sync");
+    const syncTool = resolved.tools.find((tool) => String(tool.name) === "issues-sync");
     expect(syncTool).toBeTruthy();
     const persistedInputSchema = syncTool!.inputSchema as {
       properties: Record<string, unknown>;
     };
-    expect(persistedInputSchema.properties.crm).toBeUndefined();
+    expect(persistedInputSchema.properties.github).toBeUndefined();
 
     const projected = await run(
       plugin.projectToolSchema!({
         ctx,
         toolRow: {
-          name: "deal-pipeline-sync",
+          name: "issues-sync",
           integration: appIntegration,
           connection: "main",
         },
@@ -174,31 +172,38 @@ describe("appsPlugin custom-tools contract", () => {
       properties: Record<string, { enum?: string[]; default?: string; description?: string }>;
       required?: string[];
     };
-    expect(inputSchema.properties.crm.enum).toEqual(["tools.dealcloud.user.crm-main"]);
-    expect(inputSchema.properties.crm.default).toBe("tools.dealcloud.user.crm-main");
-    expect(inputSchema.properties.crm.description).toBe("Connection to use for crm (dealcloud)");
-    expect(inputSchema.required ?? []).not.toContain("crm");
+    expect(inputSchema.properties.github.enum).toEqual(["tools.github.user.github-main"]);
+    expect(inputSchema.properties.github.default).toBe("tools.github.user.github-main");
+    expect(inputSchema.properties.github.description).toBe("Connection to use for github (github)");
+    expect(inputSchema.required ?? []).not.toContain("github");
 
     const output = await run(
       plugin.invokeTool!({
         ctx,
         toolRow: {
-          name: "deal-pipeline-sync",
+          name: "issues-sync",
           integration: appIntegration,
           connection: "main",
         },
         args: {
-          crm: "tools.dealcloud.user.crm-main",
-          updatedSince: "2026-01-01T00:00:00Z",
+          github: "tools.github.user.github-main",
+          repos: ["acme/tools"],
+          since: "2026-01-01T00:00:00Z",
         },
       } as never),
     );
 
-    expect(output).toEqual({ synced: 0 });
-    expect(dealListArgs).toEqual({
-      status: "active",
-      updatedSince: "2026-01-01T00:00:00Z",
-      pageSize: 200,
+    expect(output).toEqual({
+      synced: 1,
+      repos: 1,
+      issues: [{ repo: "acme/tools", number: 7, title: "Renewal diligence" }],
+    });
+    expect(issueListArgs).toEqual({
+      owner: "acme",
+      repo: "tools",
+      state: "open",
+      since: "2026-01-01T00:00:00Z",
+      per_page: 100,
     });
     await host.close();
   });

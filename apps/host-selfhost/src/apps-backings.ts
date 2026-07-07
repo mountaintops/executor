@@ -1,10 +1,7 @@
 import { join } from "node:path";
 
-import { Effect } from "effect";
-
 import {
   makeGitArtifactStore,
-  makeLibsqlScopeDb,
   makeQuickjsToolSandbox,
   makeSqliteAppsStore,
   type AppsBackings,
@@ -19,19 +16,13 @@ interface SelfHostAppsBackings {
 
 const createBackings = (dataDir: string): SelfHostAppsBackings => {
   const appsDir = join(dataDir, "apps");
-  const scopeDb = makeLibsqlScopeDb({
-    root: join(appsDir, "scope-db"),
-  });
   return {
     backings: {
       artifactStore: makeGitArtifactStore({ root: join(appsDir, "artifacts") }),
-      scopeDb,
       sandbox: makeQuickjsToolSandbox(),
       store: makeSqliteAppsStore({ path: join(appsDir, "store.sqlite") }),
     },
-    close: async () => {
-      await Effect.runPromise(scopeDb.close().pipe(Effect.orElseSucceed(() => undefined)));
-    },
+    close: async () => {},
   };
 };
 

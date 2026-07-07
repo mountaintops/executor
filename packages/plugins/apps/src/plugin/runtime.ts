@@ -2,7 +2,6 @@ import { Effect, Predicate } from "effect";
 import type { InvokeOptions } from "@executor-js/sdk";
 
 import type { ArtifactStore } from "../seams/artifact-store";
-import type { ScopeDb } from "../seams/scope-db";
 import {
   InputValidationError,
   OutputValidationError,
@@ -33,7 +32,6 @@ import type { GitHubSkippedArtifact } from "../source/github-source";
 
 export interface AppsRuntimeDeps {
   readonly artifactStore: ArtifactStore;
-  readonly scopeDb: ScopeDb;
   readonly sandbox: ToolSandbox;
   readonly store: AppsStore;
   /** Routes a bound integration method call to the real API (policy/audit). */
@@ -289,20 +287,9 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
       );
       const roots = rootsFor(toolDesc.integrations);
       const code = yield* bundleFor(descriptor, toolDesc.sourcePath);
-      const db = yield* deps.scopeDb.forScope(scopeAddress(descriptor.tenant, scope)).pipe(
-        Effect.mapError(
-          (c) =>
-            new PublishError({
-              message: c.message,
-              stage: "project",
-              diagnostics: [],
-            }),
-        ),
-      );
       const bridge = buildBridge({
         declared: toolDesc.integrations,
         bindings: resolved.bindings,
-        db,
         resolver: activeResolver,
         invokeOptions,
       });
@@ -434,9 +421,6 @@ export const makeAppsRuntime = (deps: AppsRuntimeDeps): AppsRuntime => {
         yield* deps.artifactStore
           .removeScope(address)
           .pipe(Effect.mapError(toPublishError("remove artifact scope failed")));
-        yield* deps.scopeDb
-          .removeScope(address)
-          .pipe(Effect.mapError(toPublishError("remove scope db failed")));
       });
     },
 

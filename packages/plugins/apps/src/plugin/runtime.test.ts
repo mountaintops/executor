@@ -7,7 +7,6 @@ import { Effect, Exit } from "effect";
 
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
 import { makeInMemoryAppsStore, makeTestResolver, dailyBriefFileSet } from "../testing";
-import { scopeAddress } from "../seams/scope-address";
 
 const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> => Effect.runPromise(effect);
 
@@ -36,7 +35,7 @@ const githubHandlers = {
 };
 
 describe("AppsRuntime end-to-end (publish -> invoke)", () => {
-  it("publishes daily-brief and invokes the tool into the scope db", async () => {
+  it("publishes daily-brief and invokes the tool through declared integrations", async () => {
     const store = makeInMemoryAppsStore();
     const resolver = makeTestResolver(githubHandlers, [
       { address: "tools.github.user.rhys-github", integration: "github", name: "rhys-github" },
@@ -61,12 +60,19 @@ describe("AppsRuntime end-to-end (publish -> invoke)", () => {
         tool: "issues-sync",
         args: { github: "tools.github.user.rhys-github" },
       }),
-    )) as { synced: number; repos: number };
-    expect(syncResult).toEqual({ synced: 2, repos: 1 });
-
-    const db = await run(host.scopeDb.forScope(scopeAddress("org", "rhys")));
-    const rows = await run(db.exec<{ n: number }>("SELECT COUNT(*) AS n FROM issues"));
-    expect(Number(rows[0].n)).toBe(2);
+    )) as {
+      synced: number;
+      repos: number;
+      issues: readonly { repo: string; number: number; title: string }[];
+    };
+    expect(syncResult).toEqual({
+      synced: 2,
+      repos: 1,
+      issues: [
+        { repo: "acme/app", number: 1, title: "Fresh bug" },
+        { repo: "acme/app", number: 2, title: "Old bug" },
+      ],
+    });
 
     await host.close();
   });

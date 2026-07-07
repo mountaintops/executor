@@ -94,6 +94,34 @@ export default defineTool({
     expect(JSON.stringify(exit)).toContain("crm");
   });
 
+  it("rejects tools that reference storage", async () => {
+    const deps = makeDeps();
+    const files = new Map<string, string>([
+      [
+        "tools/storage.ts",
+        `import { defineTool } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "storage",
+  input: z.object({}),
+  async handler(_input, { db }) {
+    await db.sql\`SELECT 1\`;
+    return { ok: true };
+  },
+});`,
+      ],
+    ]);
+
+    const exit = await Effect.runPromiseExit(publish(deps, { scope: "s", files }));
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("storage is not available yet");
+    const latest = await run(
+      Effect.flatMap(deps.artifactStore.forScope(scopeAddress("org", "s")), (s) => s.latest()),
+    );
+    expect(latest).toBeNull();
+  });
+
   it("rejects a Standard Schema vendor without JSON Schema export", async () => {
     const deps = makeDeps();
     const files = new Map<string, string>([

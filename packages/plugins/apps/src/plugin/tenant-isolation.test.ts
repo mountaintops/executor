@@ -6,7 +6,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { makeSqliteAppsStore } from "../backing/sqlite-apps-store";
-import { scopeAddress } from "../seams/scope-address";
 import { syncGitHubSource } from "../source/github-source";
 import { makeTestResolver } from "../testing";
 import { makeSelfHostAppsRuntime } from "./self-host-runtime";
@@ -18,11 +17,9 @@ import { z } from "zod";
 export default defineTool({
   description: "${name}",
   input: z.object({}),
-  output: z.object({ ok: z.boolean() }),
-  async handler(_input, { db }) {
-    await db.sql\`CREATE TABLE IF NOT EXISTS markers (name TEXT NOT NULL)\`;
-    await db.sql\`INSERT INTO markers (name) VALUES (${JSON.stringify(name)})\`;
-    return { ok: true };
+  output: z.object({ ok: z.boolean(), name: z.string() }),
+  async handler() {
+    return { ok: true, name: ${JSON.stringify(name)} };
   },
 });`;
 
@@ -118,22 +115,6 @@ describe("tenant scope isolation", () => {
     const descriptorB = await run(hostB.runtime.getDescriptor(tenantB, scope));
     expect(descriptorA?.tools.map((tool) => tool.name)).toEqual(["alpha"]);
     expect(descriptorB?.tools.map((tool) => tool.name)).toEqual(["beta"]);
-
-    const dbA = await run(hostA.scopeDb.forScope(scopeAddress(tenantA, scope)));
-    const dbB = await run(hostB.scopeDb.forScope(scopeAddress(tenantB, scope)));
-    await run(dbA.exec("CREATE TABLE marker (value TEXT)"));
-    await run(dbA.exec("INSERT INTO marker (value) VALUES ('a')"));
-    await run(dbB.exec("CREATE TABLE marker (value TEXT)"));
-    await run(dbB.exec("INSERT INTO marker (value) VALUES ('b')"));
-    expect(
-      (await run(dbA.exec<{ value: string }>("SELECT value FROM marker"))).map((r) => r.value),
-    ).toEqual(["a"]);
-    expect(
-      (await run(dbB.exec<{ value: string }>("SELECT value FROM marker"))).map((r) => r.value),
-    ).toEqual(["b"]);
-    expect(
-      readdirSync(join(dataDir, "scope-db")).filter((name) => name.endsWith(".db")).length,
-    ).toBe(2);
 
     await hostA.close();
     await hostB.close();

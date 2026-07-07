@@ -1,4 +1,4 @@
-import { Effect, Result } from "effect";
+import { Data, Effect, Result } from "effect";
 
 import {
   AuthTemplateSlug,
@@ -24,7 +24,6 @@ import {
 import type { IntegrationDecl, ToolDescriptor } from "../pipeline/descriptor";
 import { PublishError } from "../pipeline/discover";
 import { ArtifactStoreError } from "../seams/artifact-store";
-import { ScopeDbError } from "../seams/scope-db";
 import { ToolSandboxError } from "../seams/tool-sandbox";
 import {
   parseGitHubSourceUrl,
@@ -45,6 +44,7 @@ export const APPS_PLUGIN_ID = "apps";
 const APP_CONNECTION_NAME = connectionIdentifier("main");
 
 interface AppsGitHubSourceConfig {
+  readonly origin: "github";
   readonly kind: "github";
   readonly repoUrl: string;
   readonly repo: string;
@@ -58,6 +58,29 @@ type ResolverFactory = (input: {
   readonly scope: string;
   readonly tool: string;
 }) => ClientResolver;
+
+export class SourceOriginError extends Data.TaggedError("SourceOriginError")<{
+  readonly message: string;
+  readonly existingOrigin: string;
+  readonly requestedOrigin: string;
+}> {}
+
+export const assertSourceOrigin = (
+  existingOrigin: string,
+  requestedOrigin: string,
+): Effect.Effect<void, SourceOriginError> =>
+  existingOrigin === requestedOrigin
+    ? Effect.void
+    : Effect.fail(
+        new SourceOriginError({
+          existingOrigin,
+          requestedOrigin,
+          message:
+            existingOrigin === "github"
+              ? "this app is managed by its GitHub repo"
+              : `this app is managed by its ${existingOrigin} source`,
+        }),
+      );
 
 export type AppsPluginOptions =
   | {
@@ -171,21 +194,6 @@ const missingRuntime = (): AppsRuntime => ({
           }),
         ),
     },
-    scopeDb: {
-      forScope: () =>
-        Effect.fail(
-          new ScopeDbError({
-            message: missingBackingsMessage,
-          }),
-        ),
-      removeScope: () =>
-        Effect.fail(
-          new ScopeDbError({
-            message: missingBackingsMessage,
-          }),
-        ),
-      close: () => Effect.void,
-    },
     sandbox: {
       collect: () =>
         Effect.fail(
@@ -221,7 +229,7 @@ const configBaseUrl = (config: unknown): string | undefined =>
     : undefined;
 
 const decodeSourceConfig = (config: unknown): AppsGitHubSourceConfig | null => {
-  if (!isRecord(config) || config.kind !== "github") return null;
+  if (!isRecord(config) || config.origin !== "github" || config.kind !== "github") return null;
   const repoUrl = asString(config.repoUrl);
   const repo = asString(config.repo);
   const scope = asString(config.scope);
@@ -235,6 +243,7 @@ const decodeSourceConfig = (config: unknown): AppsGitHubSourceConfig | null => {
       }
     : undefined;
   return {
+    origin: "github",
     kind: "github",
     repoUrl,
     repo,
@@ -440,10 +449,18 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
     Effect.gen(function* () {
       const slug = IntegrationSlug.make(slugValue);
       const record = yield* ctx.core.integrations.get(slug).pipe(Effect.orElseSucceed(() => null));
-      const config = record?.kind === APPS_PLUGIN_ID ? decodeSourceConfig(record.config) : null;
-      if (!record || !config) {
+      if (!record) {
         return syncFailure(`Custom tools source "${slugValue}" does not exist.`);
       }
+      if (record.kind === APPS_PLUGIN_ID && isRecord(record.config)) {
+        const origin = asString(record.config.origin);
+        if (origin) {
+          const originCheck = yield* assertSourceOrigin(origin, "github").pipe(Effect.result);
+          if (Result.isFailure(originCheck)) return syncFailure(originCheck.failure.message);
+        }
+      }
+      const config = record.kind === APPS_PLUGIN_ID ? decodeSourceConfig(record.config) : null;
+      if (!config) return syncFailure(`Custom tools source "${slugValue}" does not exist.`);
       const github = yield* ctx.core.integrations
         .get(IntegrationSlug.make("github"))
         .pipe(Effect.orElseSucceed(() => null));
@@ -542,6 +559,7 @@ export const appsPlugin = definePlugin((options?: AppsPluginOptions) => {
       const descriptor = yield* runtime.getDescriptor(tenant, scope);
       const source = descriptor?.source?.kind === "github" ? descriptor.source : null;
       const config: AppsGitHubSourceConfig = {
+        origin: "github",
         kind: "github",
         repoUrl: source?.url ?? input.url.trim(),
         repo: source?.repo ?? parsed.value.repo,

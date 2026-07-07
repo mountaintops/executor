@@ -29,6 +29,8 @@ import { stableStringify } from "../pipeline/descriptor";
 // `await __invokeTool("__handle__", { root, path, args })` — the ONE bridge the
 // QuickJS runtime already provides (`tools`/`__invokeTool`). Our
 // `SandboxToolInvoker` decodes that and forwards to the host `HandleBridge`.
+// The old `db` handle is intentionally unavailable in v1; handlers that still
+// try it get a clear error before any host storage call exists.
 // Everything crossing is JSON (the cloud version is RPC), so the interface
 // stays honest.
 //
@@ -60,6 +62,16 @@ function __mkHandle(root, prefix) {
     },
     apply: function(_t, _this, callArgs) {
       return __handleBridge(root, prefix, callArgs);
+    }
+  });
+}
+function __unavailableStorage() {
+  return new Proxy({}, {
+    get: function() {
+      return function() { throw new Error('storage is not available yet'); };
+    },
+    apply: function() {
+      throw new Error('storage is not available yet');
     }
   });
 }
@@ -167,6 +179,16 @@ return await (async () => {
     });
   };
   var def = __defs.tool || (globalThis.__artifact && (globalThis.__artifact.default || globalThis.__artifact));
+  if (def && typeof def.handler === 'function') {
+    var handlerSource = Function.prototype.toString.call(def.handler);
+    if (/\\bdb\\b/.test(handlerSource)) {
+      fail('StorageUnavailableError', {
+        tool: artifactName,
+        field: 'handler',
+        message: 'tool "' + artifactName + '" uses storage, but storage is not available yet',
+      });
+    }
+  }
   var integrations = {};
   if (def && def.integrations) {
     for (var k in def.integrations) {
@@ -226,6 +248,7 @@ return await (async () => {
     if (spec.kind !== 'single') throw new Error('unsupported handle root kind: ' + spec.kind);
     injected[name] = __mkHandle(name, []);
   }
+  injected.db = __unavailableStorage();
   var input = await validateWithStandardSchema('input', def.input, ${inputLiteral});
   var out = await def.handler(input, injected);
   out = await validateWithStandardSchema('output', def.output, out);
@@ -267,7 +290,10 @@ export const makeQuickjsToolSandbox = (options: QuickjsToolSandboxOptions = {}):
       Effect.flatMap((result) => {
         if (result.error) {
           const marker = parseMarker(result.error);
-          if (isMarker(marker, "SchemaExportError")) {
+          if (
+            isMarker(marker, "SchemaExportError") ||
+            isMarker(marker, "StorageUnavailableError")
+          ) {
             return Effect.fail(
               new ToolSandboxError({
                 kind: "collect",

@@ -28,7 +28,6 @@ export {
 export { type AppsRuntime, type GitHubCustomToolsSourceSummary } from "./plugin/runtime";
 export { makeAppsRuntimeFromBackings, type AppsBackings } from "./plugin/backings";
 export { makeGitArtifactStore } from "./backing/git-artifact-store";
-export { makeLibsqlScopeDb } from "./backing/libsql-scope-db";
 export { makeQuickjsToolSandbox } from "./backing/quickjs-tool-sandbox";
 export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";
 export {
@@ -38,6 +37,7 @@ export {
   type RoleBindings,
 } from "./plugin/bindings";
 export { makePluginCtxAppsResolver } from "./plugin/resolver";
+export { SourceOriginError, assertSourceOrigin } from "./plugin/apps-plugin";
 export {
   fetchGitHubSource,
   parseGitHubSourceUrl,

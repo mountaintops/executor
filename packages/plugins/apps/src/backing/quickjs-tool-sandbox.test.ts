@@ -31,7 +31,7 @@ describe("QuickJS ToolSandbox", () => {
     expect(descriptor.inputJsonSchema.properties).toHaveProperty("since");
   });
 
-  it("invokes a tool, routing injected-client + db calls through the bridge", async () => {
+  it("invokes a tool, routing injected-client calls through the bridge", async () => {
     const files = new Map([["tools/issues-sync.ts", ISSUES_SYNC_TS]]);
     const { code } = await run(bundleEntry({ files, entry: "tools/issues-sync.ts" }));
 
@@ -56,7 +56,6 @@ describe("QuickJS ToolSandbox", () => {
               },
             ];
           }
-          // db.sql calls return empty rows
           return [];
         }),
     };
@@ -68,16 +67,41 @@ describe("QuickJS ToolSandbox", () => {
           artifact: "issues-sync",
           kind: "tool",
           input: {},
-          roots: { github: { kind: "single" }, db: { kind: "single" } },
+          roots: { github: { kind: "single" } },
         },
         bridge,
       ),
     );
 
-    expect(result.output).toEqual({ synced: 1, repos: 1 });
-    // The db write went through the bridge (root "db").
-    expect(calls.some((c) => c.root === "db")).toBe(true);
+    expect(result.output).toEqual({
+      synced: 1,
+      repos: 1,
+      issues: [{ repo: "acme/app", number: 1, title: "Bug" }],
+    });
     expect(calls.some((c) => c.root === "github")).toBe(true);
+  });
+
+  it("reports storage as unavailable when an old handler calls db.sql", async () => {
+    const source = `import { defineTool } from "executor:app";
+import { z } from "zod";
+export default defineTool({
+  description: "legacy storage",
+  input: z.object({}),
+  async handler(_input, { db }) {
+    await db.sql\`SELECT 1\`;
+    return { ok: true };
+  },
+});`;
+    const files = new Map([["tools/storage.ts", source]]);
+    const { code } = await run(bundleEntry({ files, entry: "tools/storage.ts" }));
+    const bridge: HandleBridge = { call: () => Effect.succeed(null) };
+
+    const exit = await Effect.runPromiseExit(
+      sandbox.invoke(code, { artifact: "storage", kind: "tool", input: {}, roots: {} }, bridge),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(JSON.stringify(exit)).toContain("storage is not available yet");
   });
 
   it("surfaces Standard Schema validation issues before the handler runs", async () => {

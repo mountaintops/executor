@@ -49,7 +49,7 @@ export class OutputValidationError extends Data.TaggedError("OutputValidationErr
 
 /**
  * The serializable bridge the sandbox calls out through. `root` names an
- * injected handle (a connection role, `db`, or one element of a fan-out set);
+ * injected handle (a connection role or one element of a fan-out set);
  * `path` is the method chain (`["events", "list"]`); `args` is the JSON call
  * arguments. The return value is JSON. This is the ONE way sandboxed code
  * reaches the host — nothing else is wired.
@@ -62,9 +62,9 @@ export interface HandleBridge {
   }) => Effect.Effect<unknown, ToolSandboxError>;
 }
 
-/** Which handle roots to inject. Each declared integration role and `db` are
- *  single roots. Everything the handler can see is enumerated here —
- *  undeclared roots are simply absent. */
+/** Which handle roots to inject. Each declared integration role is a single
+ *  root. Everything the handler can see is enumerated here; undeclared roots
+ *  are simply absent. */
 export interface HandleRootSpec {
   readonly kind: "single";
 }
@@ -77,7 +77,7 @@ export interface InvokeRequest {
   /** JSON input passed to the handler. */
   readonly input: unknown;
   /** The handle roots to inject, keyed by the name the handler destructures
-   *  (`github`, `db`, `inboxes`). */
+   *  (`github`, `inboxes`). */
   readonly roots: Readonly<Record<string, HandleRootSpec>>;
 }
 

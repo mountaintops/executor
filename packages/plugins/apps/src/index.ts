@@ -52,6 +52,7 @@ export {
   type BindingContext,
 } from "./plugin/bindings";
 export { makePluginCtxAppsResolver } from "./plugin/resolver";
+export { SourceOriginError, assertSourceOrigin } from "./plugin/apps-plugin";
 export {
   makeSelfHostAppsRuntime,
   type SelfHostAppsRuntime,
@@ -60,6 +61,5 @@ export {
 
 // Self-host seam backings.
 export { makeGitArtifactStore } from "./backing/git-artifact-store";
-export { makeLibsqlScopeDb } from "./backing/libsql-scope-db";
 export { makeQuickjsToolSandbox } from "./backing/quickjs-tool-sandbox";
 export { makeSqliteAppsStore } from "./backing/sqlite-apps-store";

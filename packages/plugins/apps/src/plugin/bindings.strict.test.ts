@@ -3,20 +3,12 @@ import { Effect, Exit } from "effect";
 
 import { buildBridge, resolveIntegrationBindings, type ClientResolver } from "./bindings";
 import type { IntegrationDecl } from "../pipeline/descriptor";
-import type { ScopeDbHandle } from "../seams/scope-db";
 
 // ---------------------------------------------------------------------------
 // Strict HandleBridge dispatch (Fix 4, grafted from build A). The bridge is the
 // ONE channel out of the sandbox, so its dispatch must reject anything
 // malformed, reserved, undeclared, or out-of-range rather than resolve it.
 // ---------------------------------------------------------------------------
-
-const okDb: ScopeDbHandle = {
-  sql: () => Effect.succeed([]),
-  exec: () => Effect.succeed([]),
-  tableVersion: () => Effect.succeed(0),
-  versions: () => Effect.succeed(new Map()),
-};
 
 const okResolver: ClientResolver = {
   listConnections: ({ integration }) =>
@@ -55,7 +47,7 @@ describe("HandleBridge strict dispatch", () => {
   const bindings = {
     gh: "tools.github.user.main",
   };
-  const bridge = buildBridge({ declared, bindings, db: okDb, resolver: okResolver });
+  const bridge = buildBridge({ declared, bindings, resolver: okResolver });
 
   it("rejects an empty method path", async () => {
     expect(await fails(bridge.call({ root: "gh", path: [], args: [] }))).toBe(true);
@@ -73,10 +65,6 @@ describe("HandleBridge strict dispatch", () => {
     expect(await fails(bridge.call({ root: "gh#0", path: ["repos", "list"], args: [] }))).toBe(
       true,
     );
-  });
-
-  it("rejects an unsupported db call", async () => {
-    expect(await fails(bridge.call({ root: "db", path: ["drop"], args: [] }))).toBe(true);
   });
 
   it("routes a valid single-connection call through the resolver", async () => {

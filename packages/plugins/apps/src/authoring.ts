@@ -1,4 +1,3 @@
-import type { ScopeDbHandle } from "./seams/scope-db";
 import type { StandardSchemaV1 } from "./standard-schema";
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -16,8 +15,6 @@ export interface IntegrationDeclaration<Slug extends string = string> {
 export type ToolHandlerContext<
   TIntegrations extends Readonly<Record<string, IntegrationDeclaration>> | undefined,
 > = {
-  readonly db: ScopeDbHandle;
-} & {
   readonly [K in keyof NonNullable<TIntegrations>]: unknown;
 };
 
