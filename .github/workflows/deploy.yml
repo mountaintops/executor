@@ -10,9 +10,14 @@ name: Deploy
 # blast radius of a promotion (the DO restart it causes) is staged and
 # operator-controlled.
 #
-# `promote_percent` (workflow_dispatch input): when set, the promote-cloud job
-# runs and promotes the LATEST uploaded version to that percentage. Leave empty
-# (the default, e.g. on a push) to upload only.
+# Promotion is DECOUPLED from upload: a `workflow_dispatch` that sets
+# `promote_percent` runs ONLY the promote-cloud job (no migrate, no upload, so
+# it never builds a new version). It promotes the version named by
+# `promote_version` (an explicit version id), which is REQUIRED so that
+# "widen the same canary" is the natural operation and advancing a rollout can
+# never silently promote unreviewed code that landed after the canary. The
+# literal value `latest` is an explicit opt-in for the "promote whatever was
+# uploaded last" case (e.g. right after a merge); it is never the default.
 
 on:
   push:
@@ -21,8 +26,18 @@ on:
     inputs:
       promote_percent:
         description: >-
-          Promote the latest uploaded cloud version to this percentage of
-          traffic (1-100). Leave empty to upload only (no promotion).
+          Promote a cloud version to this percentage of traffic (1-100).
+          Leave empty to do nothing (this workflow only uploads on push to
+          main; a manual run is for promotion only).
+        required: false
+        default: ""
+      promote_version:
+        description: >-
+          The cloud version id to promote (from `wrangler versions list`).
+          Required when promote_percent is set. Use the literal `latest` to
+          promote the most recently uploaded version (opt-in; only correct
+          right after the intended merge, never for advancing an existing
+          canary).
         required: false
         default: ""
 
@@ -31,10 +46,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Runs only on the upload path (push to main). A promote-only
+  # workflow_dispatch must not re-run migrations.
   migrate:
     name: Migrate database
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -75,6 +93,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
     needs: migrate
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -109,21 +128,33 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-  # Promote the LATEST uploaded cloud version to a chosen percentage of live
-  # traffic. Gated: runs only on a manual `workflow_dispatch` that sets
-  # `promote_percent`. A promotion moves a Durable Object's version and so
-  # restarts DOs whose sessions land on the newly promoted version -- keep
-  # `promote_percent` small for the first step of a rollout, watch telemetry,
-  # then re-run at a higher percentage. See apps/cloud/DEPLOY.md.
+  # Promote a specific, already-uploaded cloud version to a chosen percentage
+  # of live traffic. DECOUPLED from migrate/upload: it does NOT `needs` them and
+  # runs only on a manual `workflow_dispatch` that sets `promote_percent`, so a
+  # promotion never builds a new version. The version to promote is named
+  # explicitly by `promote_version` (required) so advancing an existing canary
+  # widens THAT version rather than silently promoting whatever landed on main
+  # since. A promotion moves a Durable Object's version and so restarts DOs whose
+  # sessions land on the newly promoted version -- keep `promote_percent` small
+  # for the first step of a rollout, watch telemetry, then re-run at a higher
+  # percentage for the SAME `promote_version`. See apps/cloud/DEPLOY.md.
   promote-cloud:
     name: Promote cloud version
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
-    needs: upload-cloud
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.promote_percent != ''
     steps:
+      # GitHub cannot conditionally require an input, so enforce it here: fail
+      # fast (before checkout/build) if promote_version is missing rather than
+      # letting the promote script error after the expensive steps.
+      - name: Require promote_version
+        if: inputs.promote_version == ''
+        run: |
+          echo "::error::promote_version is required when promote_percent is set. Pass a version id from 'wrangler versions list', or the literal 'latest'."
+          exit 1
+
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
@@ -150,18 +181,22 @@ jobs:
         env:
           VITE_PUBLIC_SENTRY_DSN: ${{ secrets.VITE_PUBLIC_SENTRY_DSN }}
 
-      - name: Promote latest uploaded version
-        run: bun run scripts/promote-cloud.ts --percent "${PROMOTE_PERCENT}"
+      - name: Promote cloud version
+        run: bun run scripts/promote-cloud.ts --percent "${PROMOTE_PERCENT}" --version "${PROMOTE_VERSION}"
         working-directory: apps/cloud
         env:
           PROMOTE_PERCENT: ${{ inputs.promote_percent }}
+          PROMOTE_VERSION: ${{ inputs.promote_version }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+  # Marketing deploys on the normal merge-to-main path only. A promote-only
+  # workflow_dispatch targets the cloud worker and must not redeploy marketing.
   deploy-marketing:
     name: Deploy marketing
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
+    if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
 

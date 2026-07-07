@@ -13,34 +13,60 @@ claims are measured, not assumed. The findings are summarized at the end.
 
 ## The flow
 
-1. **Merge to main** runs `.github/workflows/deploy.yml`:
+1. **Merge to main** runs `.github/workflows/deploy.yml` (`push` trigger only):
    - `migrate` applies database migrations.
    - `upload-cloud` runs `wrangler versions upload`. This creates a new Worker
      **version** but routes **no traffic** to it. No DOs restart; live MCP
      sessions keep running. This is safe to do on every merge.
-2. **Promotion is a separate, deliberate step.** Re-run the Deploy workflow via
-   **workflow_dispatch** with a `promote_percent` input (1-100). The
-   `promote-cloud` job promotes the **latest uploaded** version to that
-   percentage of traffic (`scripts/promote-cloud.ts`, which calls
-   `wrangler versions deploy`). For a canary, start small (e.g. 10), watch
-   telemetry, then re-run at a higher percentage; run 100 for a full cutover.
+   - `deploy-marketing` deploys the marketing worker (unchanged behaviour).
+   - Note the uploaded **version id** from the `upload-cloud` job log (or run
+     `wrangler versions list`): you promote it by id below.
+2. **Promotion is a separate, deliberate, DECOUPLED step.** Run the Deploy
+   workflow via **workflow_dispatch** with two inputs:
+   - `promote_percent` (1-100): the traffic percentage for this step.
+   - `promote_version`: the **version id** to promote (required). Use the
+     literal `latest` only for "promote what I just merged"; for advancing an
+     existing canary always pass the **same version id** you canaried, so you
+     widen that reviewed version rather than something newer.
+
+   A promote-only dispatch runs **only** the `promote-cloud` job: it does **not**
+   re-run `migrate` or `upload-cloud`, so it never builds a new version. The job
+   promotes `promote_version` to `promote_percent` of traffic
+   (`scripts/promote-cloud.ts`, which calls `wrangler versions deploy`).
+
+   Canary walk for one version `V`:
+   - dispatch `promote_percent=10`, `promote_version=V` (10% on `V`);
+   - watch telemetry;
+   - dispatch `promote_percent=50`, `promote_version=V` (widen the **same** `V`);
+   - dispatch `promote_percent=100`, `promote_version=V` (full cutover).
+
+   Merges that land **after** you start a canary upload their own versions but do
+   **not** get promoted until you dispatch with **their** id: advancing `V` never
+   silently ships unreviewed code.
 
 ### Promoting from the CLI (manual, out of band)
 
-From `apps/cloud`, against the generated build config:
+From `apps/cloud`, against the generated build config. `--version` is required;
+it is either an explicit version id or the literal `latest`:
 
 ```bash
 bun run build
-# Canary: latest uploaded version at 10%, current-live at 90%.
-bun run scripts/promote-cloud.ts --percent 10
-# Advance:
-bun run scripts/promote-cloud.ts --percent 50
-# Full cutover:
-bun run scripts/promote-cloud.ts --percent 100
+wrangler versions list -c dist/server/wrangler.json    # find the version id
+# Canary: version <id> at 10%, current-live at 90%.
+bun run scripts/promote-cloud.ts --percent 10 --version <id>
+# Advance (same version id):
+bun run scripts/promote-cloud.ts --percent 50 --version <id>
+# Full cutover (same version id):
+bun run scripts/promote-cloud.ts --percent 100 --version <id>
+# Or, right after a merge, promote the most recent upload explicitly:
+bun run scripts/promote-cloud.ts --percent 10 --version latest
 ```
 
-The script sorts versions by version number, promotes the newest, and holds the
-remainder of a partial promotion on the current-live version.
+The script promotes exactly the version you name (`latest` resolves to the
+highest version number) and holds the remainder of a partial promotion on the
+current-live version. It refuses to run unless the resolved wrangler config
+targets the `executor-cloud` worker (set `PROMOTE_CLOUD_ALLOW_NAME` to override
+for a non-production worker such as the deploy lab).
 
 ## Session version-affinity (zone ruleset, MUST be configured manually)
 
