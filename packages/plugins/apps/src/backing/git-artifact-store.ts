@@ -69,6 +69,25 @@ const run = (
     }
   });
 
+export const compareAndSwapSnapshotRef = (
+  repoDir: string,
+  commitHash: string,
+  expectedOld: string | null,
+): Effect.Effect<void, ArtifactStoreError> =>
+  run(repoDir, ["update-ref", BRANCH, commitHash, expectedOld ?? EMPTY_OID]).pipe(
+    Effect.asVoid,
+    Effect.mapError(
+      (cause) =>
+        new ArtifactStoreError({
+          message: `publish conflict: ${BRANCH} moved concurrently (expected ${
+            expectedOld ?? EMPTY_OID
+          }); retry from the new head`,
+          conflict: true,
+          cause,
+        }),
+    ),
+  );
+
 const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
   // Environment forcing a deterministic author/committer so a snapshot's hash
   // depends only on its content + parent, not on wall-clock/identity drift.
@@ -184,17 +203,7 @@ const makeScopeStore = (repoDir: string): ScopeArtifactStore => {
         // is no parent, so we assert the ref is absent (the empty-oid form). A CAS
         // failure surfaces as a typed conflict for the caller to retry from a
         // fresh parent.
-        const expectedOld = parent ?? EMPTY_OID;
-        yield* run(repoDir, ["update-ref", BRANCH, commitHash, expectedOld]).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ArtifactStoreError({
-                message: `publish conflict: ${BRANCH} moved concurrently (expected ${expectedOld}); retry from the new head`,
-                conflict: true,
-                cause,
-              }),
-          ),
-        );
+        yield* compareAndSwapSnapshotRef(repoDir, commitHash, parent);
         return yield* readMeta(commitHash);
       }),
 
