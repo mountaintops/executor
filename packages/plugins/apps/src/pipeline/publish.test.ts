@@ -197,7 +197,7 @@ describe("publish", () => {
                 import { defineTool, integration } from "executor:app";
                 export default defineTool({
                   description: "Bad",
-                  integrations: { crm: integration("dealcloud").all() },
+                  integrations: { crm: { kind: "integration", slug: "dealcloud", mode: "bad" } },
                   input: z.object({}),
                   handler(input) { return input; },
                 });

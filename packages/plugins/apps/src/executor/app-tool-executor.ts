@@ -32,7 +32,6 @@ export interface CollectedTool {
       {
         readonly slug: string;
         readonly mode: "one" | "many";
-        readonly all: boolean;
         readonly description?: string;
       }
     >
@@ -138,7 +137,6 @@ const integrationDeclaration = (value: unknown): CollectedIntegrationDecl | null
   return {
     slug: value.slug,
     mode: value.mode,
-    all: value.allConnections === true,
     ...(typeof value.description === "string" ? { description: value.description } : {}),
   };
 };
@@ -180,13 +178,6 @@ const collectIntegrations = (
         diagnostics: [{ path: sourcePath, message: `invalid integration declaration: ${field}` }],
       });
     }
-    if (decl.mode === "one" && decl.all) {
-      throw new AppExecutorError({
-        kind: "collect",
-        message: `tool "${toolName}" integration "${field}" calls .all() without .array()`,
-        diagnostics: [{ path: sourcePath, message: `.all() requires .array(): ${field}` }],
-      });
-    }
     out[field] = decl;
   }
   return out;
@@ -200,7 +191,6 @@ const projectInputSchema = (
   const properties = isRecord(base.properties) ? { ...base.properties } : {};
   const required = Array.isArray(base.required) ? [...base.required] : [];
   for (const [field, decl] of Object.entries(integrations)) {
-    if (decl.all) continue;
     if (decl.mode === "one") {
       properties[field] = {
         type: "string",
@@ -384,10 +374,6 @@ const splitInvokeInput = (
         });
       }
       handles[field] = makeClient(field, [], bridge);
-      continue;
-    }
-    if (raw === undefined && decl.all) {
-      handles[field] = [];
       continue;
     }
     if (!Array.isArray(raw) || raw.some((item) => typeof item !== "string" || item.length === 0)) {

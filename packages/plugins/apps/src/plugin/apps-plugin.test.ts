@@ -20,8 +20,8 @@ describe("apps plugin schema projection", () => {
             bundleKey: "bundle",
             description: "Sync",
             integrations: {
-              crm: { slug: "dealcloud", mode: "one", all: false },
-              inboxes: { slug: "gmail", mode: "many", all: false },
+              crm: { slug: "dealcloud", mode: "one" },
+              inboxes: { slug: "gmail", mode: "many" },
             },
           }),
       };
@@ -60,47 +60,6 @@ describe("apps plugin schema projection", () => {
         },
         required: ["crm", "inboxes"],
       });
-    }),
-  );
-
-  it.effect("omits all-bound integration fields from projected schemas", () =>
-    Effect.gen(function* () {
-      const storage: AppsStore = {
-        putBlob: () => Effect.succeed("bundle"),
-        getBlob: () => Effect.succeed(null),
-        getDescriptorRecord: () => Effect.succeed(null),
-        putPublished: () => Effect.void,
-        listActiveTools: () => Effect.succeed([]),
-        getTool: () =>
-          Effect.succeed({
-            app: "mail",
-            name: "search_all_mail",
-            bundleKey: "bundle",
-            description: "Search mail",
-            integrations: {
-              inboxes: { slug: "gmail", mode: "many", all: true },
-            },
-          }),
-      };
-      const inputSchema = {
-        type: "object",
-        properties: {
-          query: { type: "string" },
-        },
-        required: ["query"],
-      };
-      const result = yield* projectAppsToolSchema(
-        {
-          storage,
-          connections: {
-            list: () => Effect.succeed([{ address: "tools.gmail.org.work" }]),
-          },
-        } as never,
-        "search_all_mail",
-        inputSchema,
-        undefined,
-      );
-      expect(result.inputSchema).toEqual(inputSchema);
     }),
   );
 });

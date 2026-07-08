@@ -20,7 +20,6 @@ export interface ToolchainRef {
 export interface IntegrationDecl {
   readonly slug: string;
   readonly mode: "one" | "many";
-  readonly all: boolean;
   readonly description?: string;
 }
 

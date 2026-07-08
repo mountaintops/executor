@@ -18,15 +18,13 @@ export interface IntegrationDeclaration<Slug extends string = string> {
   readonly kind: "integration";
   readonly slug: Slug;
   readonly mode: IntegrationMode;
-  readonly allConnections: boolean;
   readonly description?: string;
-  readonly array: () => IntegrationDeclaration<Slug>;
   /**
-   * Bind every visible connection for this integration. This does not project a caller field:
-   * optional fields are suggestions, and model callers under-fill them. Tools that search
-   * everything must not expose a connections parameter.
+   * Ask the caller to choose a set of connections. Future author-chosen binding modes should not
+   * project optional caller fields: optional fields are suggestions, and model callers under-fill
+   * them.
    */
-  readonly all: () => IntegrationDeclaration<Slug>;
+  readonly array: () => IntegrationDeclaration<Slug>;
   readonly describe: (text: string) => IntegrationDeclaration<Slug>;
 }
 
@@ -46,14 +44,12 @@ export type IntegrationDeclarations = Readonly<Record<string, IntegrationDeclara
 interface IntegrationDeclarationState<Slug extends string = string> {
   readonly slug: Slug;
   readonly mode: IntegrationMode;
-  readonly allConnections: boolean;
   readonly description?: string;
 }
 
 export interface SerializedIntegrationDeclaration {
   readonly slug: string;
   readonly mode: IntegrationMode;
-  readonly all: boolean;
   readonly description?: string;
 }
 
@@ -64,10 +60,8 @@ const makeIntegrationDeclaration = <Slug extends string>(
     kind: "integration" as const,
     slug: state.slug,
     mode: state.mode,
-    allConnections: state.allConnections,
     ...(state.description !== undefined ? { description: state.description } : {}),
     array: () => makeIntegrationDeclaration({ ...state, mode: "many" }),
-    all: () => makeIntegrationDeclaration({ ...state, allConnections: true }),
     describe: (text: string) => makeIntegrationDeclaration({ ...state, description: text }),
   };
   return Object.freeze(declaration);
@@ -112,7 +106,7 @@ export interface DefinedTool<
 }
 
 export const integration = <Slug extends string>(slug: Slug): IntegrationDeclaration<Slug> =>
-  makeIntegrationDeclaration({ slug, mode: "one", allConnections: false });
+  makeIntegrationDeclaration({ slug, mode: "one" });
 
 export const defineTool = <
   TInputSchema extends ToolSchema,

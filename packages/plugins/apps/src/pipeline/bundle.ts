@@ -69,14 +69,12 @@ const makeIntegrationDeclaration = (state) => Object.freeze({
   kind: "integration",
   slug: state.slug,
   mode: state.mode,
-  allConnections: state.allConnections,
   ...(state.description !== undefined ? { description: state.description } : {}),
   array: () => makeIntegrationDeclaration({ ...state, mode: "many" }),
-  all: () => makeIntegrationDeclaration({ ...state, allConnections: true }),
   describe: (text) => makeIntegrationDeclaration({ ...state, description: text }),
 });
 export const integration = (slug) =>
-  makeIntegrationDeclaration({ slug, mode: "one", allConnections: false });
+  makeIntegrationDeclaration({ slug, mode: "one" });
 export const defineTool = (definition) => ({ ...definition, "~executorAppTool": true });
 `;
 

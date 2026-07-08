@@ -2,7 +2,6 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { bundleEntry } from "../pipeline/bundle";
-import { buildBridge, resolveIntegrationBindings, type ClientResolver } from "../plugin/bindings";
 import { makeInProcessAppToolExecutor } from "./app-tool-executor";
 
 const bytes = (value: string): string => value;
@@ -34,44 +33,12 @@ describe("in-process app tool executor", () => {
         sourcePath: "tools/sync-deals.ts",
       });
       expect(collected.tools[0]?.integrations).toEqual({
-        crm: { slug: "dealcloud", mode: "one", all: false, description: "CRM account" },
+        crm: { slug: "dealcloud", mode: "one", description: "CRM account" },
       });
       expect(collected.tools[0]?.inputSchema).toMatchObject({
         properties: { crm: { type: "string", description: "CRM account" } },
         required: ["crm"],
       });
-    }),
-  );
-
-  it.effect("omits many all declarations from projected input and round-trips the flag", () =>
-    Effect.gen(function* () {
-      const bundled = yield* bundle(`
-        import { z } from "zod";
-        import { defineTool, integration } from "executor:app";
-        export default defineTool({
-          description: "Fan out",
-          integrations: { inboxes: integration("gmail").array().all() },
-          input: z.object({ q: z.string() }),
-          async handler(input, { inboxes }) {
-            return { count: inboxes.length };
-          },
-        });
-      `);
-      const collected = yield* makeInProcessAppToolExecutor().collect(bundled.code, {
-        fileSlug: "sync-deals",
-        sourcePath: "tools/sync-deals.ts",
-      });
-      expect(collected.tools[0]?.integrations).toEqual({
-        inboxes: { slug: "gmail", mode: "many", all: true },
-      });
-      expect(collected.tools[0]?.inputSchema).toMatchObject({
-        properties: { q: { type: "string" } },
-        required: ["q"],
-      });
-      const inputSchema = collected.tools[0]?.inputSchema as
-        | { readonly properties?: Record<string, unknown> }
-        | undefined;
-      expect(inputSchema?.properties?.inboxes).toBeUndefined();
     }),
   );
 
@@ -96,30 +63,6 @@ describe("in-process app tool executor", () => {
         })
         .pipe(Effect.flip);
       expect(error).toMatchObject({ message: expect.stringContaining("collides") });
-    }),
-  );
-
-  it.effect("rejects all on single integration declarations", () =>
-    Effect.gen(function* () {
-      const bundled = yield* bundle(`
-        import { z } from "zod";
-        import { defineTool, integration } from "executor:app";
-        export default defineTool({
-          description: "Bad all",
-          integrations: { crm: integration("dealcloud").all() },
-          input: z.object({}),
-          async handler(input) {
-            return input;
-          },
-        });
-      `);
-      const error = yield* makeInProcessAppToolExecutor()
-        .collect(bundled.code, {
-          fileSlug: "sync-deals",
-          sourcePath: "tools/sync-deals.ts",
-        })
-        .pipe(Effect.flip);
-      expect(error).toMatchObject({ message: expect.stringContaining(".all()") });
     }),
   );
 
@@ -247,62 +190,6 @@ describe("in-process app tool executor", () => {
       expect(calls).toEqual([
         { toolPath: "inboxes#0.messages.list", args: { q: "unread" } },
         { toolPath: "inboxes#1.messages.list", args: { q: "unread" } },
-      ]);
-    }),
-  );
-
-  it.effect("expands all integrations before invoke and passes every proxy to the handler", () =>
-    Effect.gen(function* () {
-      const bundled = yield* bundle(`
-        import { z } from "zod";
-        import { defineTool, integration } from "executor:app";
-        export default defineTool({
-          description: "Search all inboxes",
-          integrations: { inboxes: integration("gmail").array().all() },
-          input: z.object({ q: z.string() }),
-          output: z.object({ seen: z.number() }),
-          async handler({ q }, { inboxes }) {
-            const batches = await Promise.all(inboxes.map((inbox) => inbox.messages.list({ q })));
-            return { seen: batches.flat().length };
-          },
-        });
-      `);
-      const calls: unknown[] = [];
-      const resolver: ClientResolver = {
-        listConnections: ({ integration }) =>
-          Effect.succeed([
-            { integration, address: "tools.gmail.org.work" },
-            { integration, address: "tools.gmail.user.personal" },
-            { integration, address: "tools.gmail.org.shared" },
-          ]),
-        resolveConnection: () => Effect.succeed(null),
-        call: (input) =>
-          Effect.sync(() => {
-            calls.push(input);
-            return [{ id: input.connection }];
-          }),
-      };
-      const bindings = yield* resolveIntegrationBindings(
-        { inboxes: { slug: "gmail", mode: "many", all: true } },
-        { q: "unread" },
-        resolver,
-      );
-      const result = yield* makeInProcessAppToolExecutor().invoke(
-        bundled.code,
-        { toolName: "sync-deals" },
-        { ...bindings.input, ...bindings.bindings },
-        buildBridge({
-          declared: { inboxes: { slug: "gmail", mode: "many", all: true } },
-          bindings: bindings.bindings,
-          resolver,
-        }),
-        { timeoutMs: 1000 },
-      );
-      expect(result.output).toEqual({ seen: 3 });
-      expect(calls).toMatchObject([
-        { connection: "tools.gmail.org.work", path: ["messages", "list"] },
-        { connection: "tools.gmail.user.personal", path: ["messages", "list"] },
-        { connection: "tools.gmail.org.shared", path: ["messages", "list"] },
       ]);
     }),
   );
