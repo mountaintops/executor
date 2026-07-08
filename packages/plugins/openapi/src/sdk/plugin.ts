@@ -878,11 +878,12 @@ export const openApiPlugin = definePlugin<
             },
             httpClientLayer,
           );
-          const compiled = yield* compileOpenApiSpec(resolved.specText);
+          const compiled = resolved.keepPathItem
+            ? undefined
+            : yield* compileOpenApiSpec(resolved.specText);
 
           const previousOperations = yield* ctx.storage.listOperations(rawSlug);
           const previousNames = new Set(previousOperations.map((op) => op.toolName));
-          const nextNames = new Set(compiled.definitions.map((def) => def.toolPath));
 
           // The resolved spec text lives in the plugin blob store keyed by its
           // content hash (`spec/<hash>`); the config carries only the hash. Put
@@ -890,7 +891,9 @@ export const openApiPlugin = definePlugin<
           // aborted config update just leaves an unreferenced blob.
           const specHash = yield* sha256Hex(resolved.specText);
           yield* ctx.storage.putSpec(specHash, resolved.specText);
-          yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          if (compiled) {
+            yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
+          }
 
           const nextConfig: OpenApiIntegrationConfig = {
             ...current,
@@ -905,12 +908,27 @@ export const openApiPlugin = definePlugin<
               yield* ctx.core.integrations.update(slug, {
                 config: nextConfig satisfies OpenApiIntegrationConfig as IntegrationConfig,
               });
-              yield* ctx.storage.putOperations(
-                rawSlug,
-                openApiStoredOperationsFromCompiled(rawSlug, compiled),
-              );
+              if (compiled) {
+                yield* ctx.storage.putOperations(
+                  rawSlug,
+                  openApiStoredOperationsFromCompiled(rawSlug, compiled),
+                );
+              } else {
+                yield* compileAndPersistOpenApiSpecStreaming({
+                  specText: resolved.specText,
+                  integration: rawSlug,
+                  storage: ctx.storage,
+                  specHash,
+                  keepPathItem: resolved.keepPathItem,
+                });
+              }
             }),
           );
+
+          const nextOperations = compiled
+            ? openApiStoredOperationsFromCompiled(rawSlug, compiled)
+            : yield* ctx.storage.listOperations(rawSlug);
+          const nextNames = new Set(nextOperations.map((op) => op.toolName));
 
           // Rebuild each connection's tool rows from the new spec. Outside the
           // transaction: refresh opens its own, and a half-refreshed catalog
@@ -936,7 +954,7 @@ export const openApiPlugin = definePlugin<
 
           return {
             slug,
-            toolCount: compiled.definitions.length,
+            toolCount: nextNames.size,
             addedTools: [...nextNames].filter((name) => !previousNames.has(name)).sort(),
             removedTools: [...previousNames].filter((name) => !nextNames.has(name)).sort(),
           } satisfies UpdateSpecResult;
