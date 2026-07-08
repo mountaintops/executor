@@ -75,6 +75,7 @@ export default defineExecutorConfig({
     workosCredentials,
     workosVaultClient,
     activeToolkitSlug,
+    allowLocalNetwork,
     workerLoader,
   }: CloudPluginDeps = {}) =>
     [
@@ -94,6 +95,7 @@ export default defineExecutorConfig({
             }
           : {}),
         sourceKinds: ["git"],
+        allowPrivateGitHosts: allowLocalNetwork === true,
       }),
       toolkitsPlugin({ activeToolkitSlug }),
       workosVaultPlugin({

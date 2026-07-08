@@ -264,7 +264,6 @@ scenario(
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
-      if (target.name !== "selfhost") return;
       const browser = yield* Browser;
       yield* Api;
       const identity = yield* target.newIdentity();
