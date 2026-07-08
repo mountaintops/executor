@@ -1,4 +1,10 @@
 import { Data, Effect, Schema } from "effect";
+import {
+  EXECUTOR_ORG_HEADER,
+  getActiveOrgSlug,
+  getExecutorApiBaseUrl,
+  getExecutorServerAuthorizationHeader,
+} from "@executor-js/react/api/server-connection";
 
 export const CUSTOM_TOOLS_PLUGIN_KEY = "apps";
 export const CUSTOM_TOOLS_LABEL = "Custom tools";
@@ -91,6 +97,23 @@ export type SyncSourceResult =
     };
 
 export type CustomToolsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+const customToolsFetch: CustomToolsFetch = (input, init = {}) => {
+  const headers = new Headers(init.headers);
+  const authorization = getExecutorServerAuthorizationHeader();
+  if (authorization && !headers.has("authorization")) {
+    headers.set("authorization", authorization);
+  }
+  const orgSlug = getActiveOrgSlug();
+  if (orgSlug && !headers.has(EXECUTOR_ORG_HEADER)) {
+    headers.set(EXECUTOR_ORG_HEADER, orgSlug);
+  }
+  const url =
+    typeof input === "string" && input.startsWith("/")
+      ? new URL(input, getExecutorApiBaseUrl()).toString()
+      : input;
+  return fetch(url, { ...init, headers });
+};
 
 export interface CustomToolsDirectoryEntry {
   readonly name: string;
@@ -195,7 +218,7 @@ const parseJsonResponseEffect = <A>(
   });
 
 export const listCustomToolSourcesEffect = (
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<SourcesListResponse, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () => fetchImpl("/api/apps/sources", { credentials: "same-origin" }),
@@ -210,12 +233,12 @@ export const listCustomToolSourcesEffect = (
   );
 
 export const listCustomToolSources = (
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Promise<SourcesListResponse> => Effect.runPromise(listCustomToolSourcesEffect(fetchImpl));
 
 export const getCustomToolSourceEffect = (
   slug: string,
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<SourceDetailResponse, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () =>
@@ -234,7 +257,7 @@ export const getCustomToolSourceEffect = (
 
 export const createCustomToolSourceEffect = (
   input: CreateSourceRequest,
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<CreateSourceResponse, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () =>
@@ -256,7 +279,7 @@ export const createCustomToolSourceEffect = (
 
 export const listCustomToolDirectoriesEffect = (
   input: { readonly path?: string; readonly includeHidden?: boolean } = {},
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<CustomToolsDirectoryListing, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () => {
@@ -278,7 +301,7 @@ export const listCustomToolDirectoriesEffect = (
 
 export const syncCustomToolSourceEffect = (
   slug: string,
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<SyncSourceResult, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () =>
@@ -295,7 +318,7 @@ export const syncCustomToolSourceEffect = (
 
 export const removeCustomToolSourceEffect = (
   slug: string,
-  fetchImpl: CustomToolsFetch = fetch,
+  fetchImpl: CustomToolsFetch = customToolsFetch,
 ): Effect.Effect<{ readonly removed: boolean }, CustomToolsClientError> =>
   Effect.tryPromise({
     try: () =>

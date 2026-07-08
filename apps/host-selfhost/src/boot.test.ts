@@ -150,6 +150,7 @@ test("apps source sync publishes and invokes a local-directory tool over HTTP", 
   );
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "local-greeter" }));
 
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test fixture must dispose the booted app after assertions
   try {
     const created = await localDirectoryApp.handler(
       new Request("http://localhost/api/apps/sources", {

@@ -10,6 +10,7 @@ import {
 import { FloatActions } from "@executor-js/react/components/float-actions";
 import { Input } from "@executor-js/react/components/input";
 import { Checkbox } from "@executor-js/react/components/checkbox";
+import { Label } from "@executor-js/react/components/label";
 import {
   Dialog,
   DialogContent,
@@ -342,13 +343,13 @@ function DirectoryBrowserModal(props: {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Label className="flex items-center gap-2 text-sm text-muted-foreground">
             <Checkbox
               checked={includeHidden}
               onCheckedChange={(checked) => setIncludeHidden(checked === true)}
             />
             Show hidden directories
-          </label>
+          </Label>
           <div className="max-h-[340px] overflow-auto rounded-md border border-border">
             {loading ? (
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">Loading...</div>
@@ -361,10 +362,11 @@ function DirectoryBrowserModal(props: {
             ) : (
               <div role="listbox" aria-label="Directories" className="divide-y divide-border">
                 {rows.map((row) => (
-                  <button
+                  <Button
                     key={`${row.kind}:${row.path}`}
                     type="button"
-                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                    variant="ghost"
+                    className="h-auto w-full justify-between gap-3 rounded-none px-3 py-2 text-left text-sm font-normal hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
                     onClick={() => setCurrentPath(row.path)}
                   >
                     <span className="min-w-0 truncate font-mono">
@@ -375,7 +377,7 @@ function DirectoryBrowserModal(props: {
                         symlink
                       </span>
                     )}
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}

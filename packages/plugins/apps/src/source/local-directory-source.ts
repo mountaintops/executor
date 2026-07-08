@@ -250,14 +250,30 @@ export const listLocalDirectoryDirs = (
     for (const name of entries) {
       if (!input.includeHidden && name.startsWith(".")) continue;
       const child = `${root}${sep}${name}`;
-      const entryStat = yield* Effect.promise(() => lstat(child).catch(() => null));
+      const entryStat = yield* Effect.tryPromise({
+        try: () => lstat(child),
+        catch: (cause) =>
+          new AppSourceError({
+            message: "failed to stat local-directory child",
+            path: child,
+            cause,
+          }),
+      }).pipe(Effect.catch(() => Effect.succeed(null)));
       if (!entryStat) continue;
       if (entryStat.isDirectory()) {
         dirs.push({ name, path: child, isSymlink: false });
         continue;
       }
       if (!entryStat.isSymbolicLink()) continue;
-      const targetStat = yield* Effect.promise(() => stat(child).catch(() => null));
+      const targetStat = yield* Effect.tryPromise({
+        try: () => stat(child),
+        catch: (cause) =>
+          new AppSourceError({
+            message: "failed to stat local-directory symlink target",
+            path: child,
+            cause,
+          }),
+      }).pipe(Effect.catch(() => Effect.succeed(null)));
       if (targetStat?.isDirectory()) dirs.push({ name, path: child, isSymlink: true });
     }
     dirs.sort((a, b) => a.name.localeCompare(b.name));

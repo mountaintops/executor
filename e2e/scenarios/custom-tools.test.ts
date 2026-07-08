@@ -211,7 +211,7 @@ const addSourceThroughConsole = (input: {
       await page.locator('input[type="password"]').fill("fixture-token");
       await page.getByRole("button", { name: "Sync source" }).click();
       await page.waitForURL(/\/integrations\/repo(?:\?|$)/, { timeout: 90_000 });
-      await page.getByText("2 tools").waitFor({ timeout: 90_000 });
+      await page.getByLabel("Source").getByText("2 tools").waitFor({ timeout: 90_000 });
       await page.getByRole("link", { name: "repo" }).waitFor({ timeout: 90_000 });
       await page.getByRole("tab", { name: "Tools" }).click();
       await page.getByRole("button", { name: /repo\s+2/ }).click();
