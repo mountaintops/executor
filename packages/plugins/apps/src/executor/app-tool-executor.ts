@@ -135,7 +135,7 @@ const jsonSchemaFor = (
       });
     }
     try {
-      const converted = jsonSchema[side]({});
+      const converted = jsonSchema[side]({ target: "draft-2020-12" });
       if (!isRecord(converted)) return converted;
       const { $schema: _metaSchema, ...withoutMetaSchema } = converted;
       return withoutMetaSchema;

@@ -120,7 +120,7 @@ const jsonSchemaFor = (schema, side, toolName, sourcePath) => {
     throw fail("collect", 'tool "' + toolName + '" ' + side + ' schema library does not expose the Standard Schema jsonSchema extension', [issue(sourcePath, side + " schema library does not expose the Standard Schema jsonSchema extension")]);
   }
   try {
-    const converted = jsonSchema[side]({});
+    const converted = jsonSchema[side]({ target: "draft-2020-12" });
     if (!isRecord(converted)) return converted;
     const { $schema: _metaSchema, ...withoutMetaSchema } = converted;
     return withoutMetaSchema;
