@@ -309,4 +309,55 @@ describe.skipIf(!isDenoAvailable())("runtime-deno-subprocess", () => {
       expect(output.error).toBeUndefined();
     }),
   );
+
+  it.effect("tools proxy throws a search hint on enumeration", () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor();
+      const toolInvoker = makeTestInvoker({});
+
+      const output = yield* executor.execute(
+        [
+          "const outcomes = {};",
+          "try {",
+          "  Object.keys(tools);",
+          '  outcomes.keys = "no error";',
+          "} catch (e) {",
+          "  outcomes.keys = e instanceof Error ? e.message : String(e);",
+          "}",
+          "try {",
+          "  ({ ...tools.github });",
+          '  outcomes.spread = "no error";',
+          "} catch (e) {",
+          "  outcomes.spread = e instanceof Error ? e.message : String(e);",
+          "}",
+          "return outcomes;",
+        ].join("\n"),
+        toolInvoker,
+      );
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({
+        keys: 'tools is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+        spread:
+          'tools.github is a lazy proxy and cannot be enumerated. Use tools.search({ query: "..." }) to find tools, or tools.executor.coreTools.connections.list({}) to list saved connections.',
+      });
+    }),
+  );
+
+  it.effect("tools proxy still invokes after the enumeration traps", () =>
+    Effect.gen(function* () {
+      const executor = makeDenoSubprocessExecutor();
+      const toolInvoker = makeTestInvoker({
+        "a.b.c": () => "a.b.c",
+      });
+
+      const output = yield* executor.execute(
+        ["try { Object.keys(tools); } catch {}", "return tools.a.b.c({});"].join("\n"),
+        toolInvoker,
+      );
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toBe("a.b.c");
+    }),
+  );
 });
