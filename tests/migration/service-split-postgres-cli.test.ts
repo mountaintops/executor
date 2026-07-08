@@ -101,8 +101,11 @@ const createSchema = async (sql: SqlClient): Promise<void> => {
     CREATE TABLE blob (
       id text NOT NULL,
       namespace text NOT NULL,
-      key text NOT NULL
+      key text NOT NULL,
+      value text NOT NULL,
+      row_id text NOT NULL
     );
+    CREATE UNIQUE INDEX blob_id_uidx ON blob (id);
 
     CREATE TABLE tool_policy (
       id text NOT NULL,
@@ -178,14 +181,25 @@ const seedMonolith = async (sql: SqlClient): Promise<void> => {
       JSON.stringify({
         integration: "google",
         toolName: "calendar.events.list",
-        binding: { method: "get", pathTemplate: "/calendar.events.list", parameters: [] },
+        binding: {
+          method: "get",
+          pathTemplate: "/calendar.events.list",
+          parameters: [],
+        },
         description: "calendar.events.list",
       }),
       now,
     ],
   );
   await sql.unsafe(
-    "INSERT INTO blob (id, namespace, key) VALUES ('spec', 'o:org_1/google', 'spec/mono-hash'), ('defs', 'o:org_1/google', 'defs/mono-hash')",
+    `INSERT INTO blob (id, namespace, key, value, row_id)
+     VALUES
+      ($1, 'o:org_1/google', 'spec/mono-hash', 'spec text', 'spec_row'),
+      ($2, 'o:org_1/google', 'defs/mono-hash', 'defs text', 'defs_row')`,
+    [
+      JSON.stringify(["o:org_1/google", "spec/mono-hash"]),
+      JSON.stringify(["o:org_1/google", "defs/mono-hash"]),
+    ],
   );
   await sql.unsafe(
     `
@@ -202,7 +216,11 @@ const seedMonolith = async (sql: SqlClient): Promise<void> => {
 describe("service-split-postgres-cli", () => {
   it("applies a synthetic monolith split through the Postgres runner and stamps the ledger", async () => {
     const pglite = await PGlite.create("memory://");
-    const server = new PGLiteSocketServer({ db: pglite, port: 0, host: "127.0.0.1" });
+    const server = new PGLiteSocketServer({
+      db: pglite,
+      port: 0,
+      host: "127.0.0.1",
+    });
     await server.start();
     const port = Number(server.getServerConn().split(":").at(1));
     const sql = postgres(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, {
@@ -229,7 +247,11 @@ describe("service-split-postgres-cli", () => {
       await applyOrg(sql, org!);
 
       const integrations = await sql.unsafe<
-        { readonly slug: string; readonly plugin_id: string; readonly config: unknown }[]
+        {
+          readonly slug: string;
+          readonly plugin_id: string;
+          readonly config: unknown;
+        }[]
       >("SELECT slug, plugin_id, config::jsonb AS config FROM integration ORDER BY slug");
       expect(integrations).toHaveLength(1);
       expect(integrations[0]).toMatchObject({
@@ -263,7 +285,11 @@ describe("service-split-postgres-cli", () => {
       });
 
       const operations = await sql.unsafe<
-        { readonly plugin_id: string; readonly key: string; readonly data: unknown }[]
+        {
+          readonly plugin_id: string;
+          readonly key: string;
+          readonly data: unknown;
+        }[]
       >("SELECT plugin_id, key, data FROM plugin_storage WHERE collection = 'operation'");
       expect(operations).toHaveLength(1);
       expect(operations[0]).toMatchObject({
@@ -276,7 +302,11 @@ describe("service-split-postgres-cli", () => {
       });
 
       const tools = await sql.unsafe<
-        { readonly integration: string; readonly plugin_id: string; readonly name: string }[]
+        {
+          readonly integration: string;
+          readonly plugin_id: string;
+          readonly name: string;
+        }[]
       >("SELECT integration, plugin_id, name FROM tool");
       expect(tools).toEqual([
         {
@@ -290,6 +320,26 @@ describe("service-split-postgres-cli", () => {
         "SELECT pattern, action FROM tool_policy",
       );
       expect(policies).toEqual([{ pattern: "google_calendar.*", action: "block" }]);
+
+      const blobs = await sql.unsafe<
+        {
+          readonly namespace: string;
+          readonly key: string;
+          readonly value: string;
+        }[]
+      >("SELECT namespace, key, value FROM blob WHERE namespace = 'o:org_1/openapi' ORDER BY key");
+      expect(blobs).toEqual([
+        {
+          namespace: "o:org_1/openapi",
+          key: "defs/mono-hash",
+          value: "defs text",
+        },
+        {
+          namespace: "o:org_1/openapi",
+          key: "spec/mono-hash",
+          value: "spec text",
+        },
+      ]);
 
       const ledger = await sql.unsafe<{ readonly tenant: string }[]>(
         `SELECT tenant FROM ${LEDGER_TABLE}`,

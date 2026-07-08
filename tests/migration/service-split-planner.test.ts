@@ -200,7 +200,9 @@ describe("provider service split migration planner", () => {
         },
       ],
     });
-    expect(planned?.healthCheck).toEqual({ operation: "calendar.calendarList.list" });
+    expect(planned?.healthCheck).toEqual({
+      operation: "calendar.calendarList.list",
+    });
     expect(planned?.servingState).toMatchObject({
       specHash: "mono-hash",
       specSource: "google/google",
@@ -209,6 +211,20 @@ describe("provider service split migration planner", () => {
       operationsToBuild: 1,
       operationToolNames: ["calendar.events.list"],
     });
+    expect(plan.orgs[0]?.blobCopies).toEqual([
+      expect.objectContaining({
+        sourceNamespace: "o:org_1/google",
+        targetNamespace: "o:org_1/openapi",
+        key: "spec/mono-hash",
+        sourcePresent: true,
+      }),
+      expect.objectContaining({
+        sourceNamespace: "o:org_1/google",
+        targetNamespace: "o:org_1/openapi",
+        key: "defs/mono-hash",
+        sourcePresent: true,
+      }),
+    ]);
     expect(operationStorageKey("google_calendar", "calendar.events.list")).toMatch(/^op\./);
   });
 
@@ -332,6 +348,46 @@ describe("provider service split migration planner", () => {
     ).toThrow(/would be dropped/);
   });
 
+  it("hard-errors when config omits a tool-implied service", () => {
+    expect(() =>
+      planMigration(
+        input({
+          tools: [tool("calendar.events.list"), tool("gmail.users.messages.send")],
+          pluginStorage: [
+            operation("calendar.events.list"),
+            operation("gmail.users.messages.send"),
+          ],
+        }),
+      ),
+    ).toThrow(/config omits tool-implied service preset\(s\): google-gmail/);
+  });
+
+  it("boot-rail mode creates a catalog-backed tool-implied service", () => {
+    const plan = planMigration(
+      input({
+        tools: [tool("calendar.events.list"), tool("gmail.users.messages.send")],
+        pluginStorage: [operation("calendar.events.list"), operation("gmail.users.messages.send")],
+        bootRailCreateToolImpliedServices: true,
+      }),
+    );
+
+    expect(plan.orgs[0]?.integrations.map((row) => row.target.slug)).toEqual([
+      "google_calendar",
+      "google_gmail",
+    ]);
+  });
+
+  it("records a hard error when a source blob is missing", () => {
+    const plan = planMigration(
+      input({ blobs: [blob("spec/mono-hash")], collectPolicyErrors: true }),
+    );
+
+    expect(plan.orgs[0]?.hardErrors).toEqual([
+      "Missing source blob o:org_1/google/defs/mono-hash for migrated OpenAPI service namespace o:org_1/openapi",
+    ]);
+    expect(plan.summary.hardErrorOrgs).toBe(1);
+  });
+
   it("retargets orphan block policies in boot-rail mode", () => {
     const plan = planMigration(
       input({
@@ -383,7 +439,10 @@ describe("provider service split migration planner", () => {
         ],
         connections: [
           connection(),
-          connection({ integration: "google_calendar", row_id: "conn_calendar" }),
+          connection({
+            integration: "google_calendar",
+            row_id: "conn_calendar",
+          }),
         ],
       }),
     );

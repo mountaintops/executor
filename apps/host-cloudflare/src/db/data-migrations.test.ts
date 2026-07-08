@@ -277,6 +277,7 @@ describe("runCloudflareDataMigrations", () => {
         }),
       );
       objects.set("o:org_1/openapi/spec/googlehash", "google spec");
+      objects.set("o:org_1/google/defs/googlehash", "google defs");
 
       const d1 = makeFakeD1(db.client);
       expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([
@@ -296,6 +297,52 @@ describe("runCloudflareDataMigrations", () => {
         db.client.execute("SELECT plugin_id, key FROM plugin_storage ORDER BY plugin_id, key"),
       );
       expect(storage.rows).toEqual([{ plugin_id: "openapi", key: expect.stringMatching(/^op\./) }]);
+
+      yield* Effect.promise(() => db.close());
+    }),
+  );
+
+  it.effect("splits Google monolith ownership and copies R2 spec and defs objects", () =>
+    Effect.gen(function* () {
+      const db = yield* Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() }));
+      const { bucket, objects } = makeFakeR2();
+
+      yield* Effect.promise(() =>
+        insertIntegration(db.client, {
+          rowId: "google-monolith-row",
+          tenant: "org_1",
+          slug: "google",
+          pluginId: "google",
+          config: {
+            specHash: "mono-hash",
+            googleDiscoveryUrls: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"],
+          },
+        }),
+      );
+      yield* Effect.promise(() =>
+        insertOperationStorage(db.client, {
+          tenant: "org_1",
+          pluginId: "google",
+          integration: "google",
+        }),
+      );
+      objects.set("o:org_1/google/spec/mono-hash", "google spec");
+      objects.set("o:org_1/google/defs/mono-hash", "google defs");
+
+      const d1 = makeFakeD1(db.client);
+      expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([
+        "2026-06-20-google-openapi-ownership",
+        "2026-07-08-provider-service-split",
+      ]);
+      expect(yield* Effect.promise(() => runCloudflareDataMigrations(d1, bucket))).toEqual([]);
+
+      expect(objects.get("o:org_1/openapi/spec/mono-hash")).toBe("google spec");
+      expect(objects.get("o:org_1/openapi/defs/mono-hash")).toBe("google defs");
+
+      const integrations = yield* Effect.promise(() =>
+        db.client.execute("SELECT slug, plugin_id FROM integration ORDER BY slug"),
+      );
+      expect(integrations.rows).toEqual([{ slug: "google_calendar", plugin_id: "openapi" }]);
 
       yield* Effect.promise(() => db.close());
     }),

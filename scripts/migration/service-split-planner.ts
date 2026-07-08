@@ -147,6 +147,8 @@ export interface MigrationInput {
   readonly collectPolicyErrors?: boolean;
   readonly orphanPolicyMode?: "hard_error" | "retarget_all";
   readonly blobBackend?: "database" | "external";
+  readonly assumeExternalBlobSourcePresent?: boolean;
+  readonly bootRailCreateToolImpliedServices?: boolean;
 }
 
 export interface ServiceTarget {
@@ -179,6 +181,19 @@ export interface PlannedIntegration {
   };
 }
 
+export interface PlannedBlobCopy {
+  readonly source: Pick<IntegrationRow, "tenant" | "slug" | "plugin_id">;
+  readonly specHash: string;
+  readonly key: string;
+  readonly sourceNamespace: string;
+  readonly targetNamespace: string;
+  readonly backend: "database" | "external";
+  readonly sourcePresent: boolean;
+  readonly targetPresent: boolean;
+  readonly sourceObjectName: string;
+  readonly targetObjectName: string;
+}
+
 export interface PlannedConnection {
   readonly source: Pick<ConnectionRow, "tenant" | "owner" | "subject" | "integration" | "name">;
   readonly targetIntegration: string;
@@ -203,6 +218,7 @@ export interface OrgPlan {
   readonly integrations: readonly PlannedIntegration[];
   readonly connections: readonly PlannedConnection[];
   readonly policies: readonly PlannedPolicyRewrite[];
+  readonly blobCopies: readonly PlannedBlobCopy[];
   readonly deleteMonoliths: readonly Pick<
     IntegrationRow,
     "tenant" | "slug" | "plugin_id" | "name"
@@ -405,6 +421,7 @@ const presetIdForTool = (pluginId: MonolithPluginId, toolName: string): string |
 const deriveServices = (
   integration: IntegrationRow,
   tools: readonly ToolRow[],
+  bootRailCreateToolImpliedServices: boolean,
 ): readonly ServiceTarget[] => {
   const pluginId = integration.plugin_id as MonolithPluginId;
   const fromConfig =
@@ -412,10 +429,33 @@ const deriveServices = (
       ? googlePresetIdsFromConfig(integration)
       : microsoftPresetIdsFromConfig(integration);
   const fromTools = unique(tools.flatMap((tool) => presetIdForTool(pluginId, tool.name) ?? []));
-  const presetIds = fromConfig.length > 0 ? fromConfig : fromTools;
+  const missingToolPresetIds = fromTools.filter((presetId) => !fromConfig.includes(presetId));
+  if (
+    fromConfig.length > 0 &&
+    missingToolPresetIds.length > 0 &&
+    !bootRailCreateToolImpliedServices
+  ) {
+    throw new Error(
+      `Monolith ${tenantHash(integration.tenant)}/${integration.plugin_id}/${integration.slug} config omits tool-implied service preset(s): ${missingToolPresetIds.join(", ")}`,
+    );
+  }
+  const presetIds =
+    bootRailCreateToolImpliedServices && fromConfig.length > 0
+      ? unique([...fromConfig, ...fromTools])
+      : fromConfig.length > 0
+        ? fromConfig
+        : fromTools;
   const services = presetIds.flatMap(
     (presetId) => serviceTargetForPreset(pluginId, presetId) ?? [],
   );
+  const missingCatalogPresetIds = presetIds.filter(
+    (presetId) => !serviceTargetForPreset(pluginId, presetId),
+  );
+  if (missingCatalogPresetIds.length > 0) {
+    throw new Error(
+      `Monolith ${tenantHash(integration.tenant)}/${integration.plugin_id}/${integration.slug} references unknown service preset(s): ${missingCatalogPresetIds.join(", ")}`,
+    );
+  }
   if (services.length === 0) {
     throw new Error(
       `Monolith ${tenantHash(integration.tenant)}/${integration.plugin_id}/${integration.slug} has no derivable services`,
@@ -477,6 +517,8 @@ const specHashFor = (integration: IntegrationRow): string => {
 };
 
 const pluginBlobNamespace = (tenant: string, pluginId: string): string => `o:${tenant}/${pluginId}`;
+
+const blobObjectName = (namespace: string, key: string): string => `${namespace}/${key}`;
 
 const operationRowsForService = (
   monolith: IntegrationRow,
@@ -706,7 +748,12 @@ export const verifyPolicyRewriteNeverWidens = (
     }
   }
 
-  return { ok: widened.length === 0 && narrowed.length === 0, checkedPolicies, widened, narrowed };
+  return {
+    ok: widened.length === 0 && narrowed.length === 0,
+    checkedPolicies,
+    widened,
+    narrowed,
+  };
 };
 
 export const planMigration = (input: MigrationInput): MigrationPlan => {
@@ -741,21 +788,64 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
     const orgIntegrations: PlannedIntegration[] = [];
     const orgConnections: PlannedConnection[] = [];
     const orgPolicies: PlannedPolicyRewrite[] = [];
+    const orgBlobCopies: PlannedBlobCopy[] = [];
+    const plannedBlobCopyKeys = new Set<string>();
     const hardErrors: string[] = [];
     let clonedToolRows = 0;
     let operationsToBuild = 0;
 
     for (const monolith of orgMonoliths) {
       const monolithTools = orgTools.filter((tool) => tool.integration === monolith.slug);
-      const services = deriveServices(monolith, monolithTools);
+      let services: readonly ServiceTarget[];
+      try {
+        services = deriveServices(
+          monolith,
+          monolithTools,
+          input.bootRailCreateToolImpliedServices ?? false,
+        );
+      } catch (error) {
+        if (!input.collectPolicyErrors) throw error;
+        hardErrors.push(error instanceof Error ? error.message : String(error));
+        continue;
+      }
       const specHash = specHashFor(monolith);
       const namespace = pluginBlobNamespace(tenant, monolith.plugin_id);
+      const targetNamespace = pluginBlobNamespace(tenant, "openapi");
       const specBlobPresent =
-        blobBackend === "external" ||
+        (blobBackend === "external" && input.assumeExternalBlobSourcePresent === true) ||
         orgBlobs.some((blob) => blob.namespace === namespace && blob.key === `spec/${specHash}`);
       const defsBlobPresent =
-        blobBackend === "external" ||
+        (blobBackend === "external" && input.assumeExternalBlobSourcePresent === true) ||
         orgBlobs.some((blob) => blob.namespace === namespace && blob.key === `defs/${specHash}`);
+      for (const key of [`spec/${specHash}`, `defs/${specHash}`]) {
+        const copyKey = rowKey(namespace, targetNamespace, key);
+        if (plannedBlobCopyKeys.has(copyKey)) continue;
+        plannedBlobCopyKeys.add(copyKey);
+        const sourcePresent =
+          (blobBackend === "external" && input.assumeExternalBlobSourcePresent === true) ||
+          orgBlobs.some((blob) => blob.namespace === namespace && blob.key === key);
+        const targetPresent =
+          blobBackend === "external"
+            ? false
+            : orgBlobs.some((blob) => blob.namespace === targetNamespace && blob.key === key);
+        if (!sourcePresent) {
+          hardErrors.push(
+            `Missing source blob ${namespace}/${key} for migrated OpenAPI service namespace ${targetNamespace}`,
+          );
+        }
+        orgBlobCopies.push({
+          source: monolith,
+          specHash,
+          key,
+          sourceNamespace: namespace,
+          targetNamespace,
+          backend: blobBackend,
+          sourcePresent,
+          targetPresent,
+          sourceObjectName: blobObjectName(namespace, key),
+          targetObjectName: blobObjectName(targetNamespace, key),
+        });
+      }
       for (const target of services) {
         const exists = integrationExists.has(rowKey(tenant, target.slug));
         const serviceOperations = operationRowsForService(monolith, target, orgStorage);
@@ -823,6 +913,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       integrations: orgIntegrations,
       connections: orgConnections,
       policies: orgPolicies,
+      blobCopies: orgBlobCopies,
       deleteMonoliths: orgMonoliths,
       clonedToolRows,
       operationsToBuild,
@@ -882,7 +973,7 @@ export const renderOrgDiff = (org: OrgPlan): string => {
   }
   if (org.hardErrors.length > 0) {
     lines.push("## Hard Errors");
-    lines.push("Apply is blocked for this org until these policies are handled.");
+    lines.push("Apply is blocked for this org until these errors are handled.");
     for (const error of org.hardErrors) {
       lines.push(`- ${error}`);
     }
@@ -901,6 +992,13 @@ export const renderOrgDiff = (org: OrgPlan): string => {
   for (const row of org.deleteMonoliths) {
     lines.push(
       `- delete monolith in apply mode: ${row.plugin_id}/${row.slug} (${row.name ?? "unnamed"})`,
+    );
+  }
+  lines.push("");
+  lines.push("## Blob Copies");
+  for (const row of org.blobCopies) {
+    lines.push(
+      `- ${row.backend}: ${row.sourceObjectName} -> ${row.targetObjectName} / source: ${row.sourcePresent ? "present" : "missing"} / target: ${row.targetPresent ? "present" : "missing"}`,
     );
   }
   lines.push("");

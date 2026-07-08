@@ -20,6 +20,7 @@ import {
 } from "./service-split-planner";
 
 const MIGRATION_NAME = "2026-07-08-provider-service-split";
+const LEDGER_TABLE = "provider_service_split_org_migration";
 
 const operationKeyPrefix = (integration: string): string =>
   `${operationStorageKey(integration, "").split(".").slice(0, 2).join(".")}.%`;
@@ -69,10 +70,38 @@ const tableExists = (client: SqliteDataMigrationClient, table: string) =>
     args: [table],
   }).pipe(Effect.map((result) => result.rows.length > 0));
 
+const ensureLedgerTable = (client: SqliteDataMigrationClient) =>
+  execute(
+    client,
+    `CREATE TABLE IF NOT EXISTS ${LEDGER_TABLE} (
+    tenant text PRIMARY KEY NOT NULL,
+    time_completed integer NOT NULL
+  )`,
+  );
+
+const readCompletedTenants = (client: SqliteDataMigrationClient) =>
+  execute(client, `SELECT tenant FROM ${LEDGER_TABLE} ORDER BY tenant`).pipe(
+    Effect.map((result) => result.rows.map((row) => String(row.tenant))),
+  );
+
+const stampCompletedTenant = (client: SqliteDataMigrationClient, tenant: string) =>
+  execute(client, {
+    sql: `INSERT INTO ${LEDGER_TABLE} (tenant, time_completed)
+      VALUES (?, ?)
+      ON CONFLICT(tenant) DO UPDATE SET time_completed = excluded.time_completed`,
+    args: [tenant, Date.now()],
+  });
+
 const readDatabaseInput = (
   client: SqliteDataMigrationClient,
+  options: {
+    readonly blobBackend?: MigrationInput["blobBackend"];
+    readonly blobs?: readonly BlobRow[];
+  } = {},
 ): Effect.Effect<MigrationInput, DataMigrationError> =>
   Effect.gen(function* () {
+    yield* ensureLedgerTable(client);
+    const completedTenants = yield* readCompletedTenants(client);
     const integrations = yield* execute(
       client,
       `SELECT tenant, slug, plugin_id, name, description, config, health_check,
@@ -103,8 +132,9 @@ const readDatabaseInput = (
         connections: [],
         tools: [],
         pluginStorage: [],
-        blobs: [],
+        blobs: options.blobs ?? [],
         policies: [],
+        completedTenants,
       };
     }
 
@@ -229,13 +259,16 @@ const readDatabaseInput = (
           row_id: String(row.row_id),
         }),
       ),
-      blobs: blobs.rows.map(
-        (row): BlobRow => ({
-          id: String(row.id),
-          namespace: String(row.namespace),
-          key: String(row.key),
-        }),
-      ),
+      blobs: [
+        ...blobs.rows.map(
+          (row): BlobRow => ({
+            id: String(row.id),
+            namespace: String(row.namespace),
+            key: String(row.key),
+          }),
+        ),
+        ...(options.blobs ?? []),
+      ],
       policies: policies.rows.filter(tenantFilter).map(
         (row): ToolPolicyRow => ({
           tenant: String(row.tenant),
@@ -250,8 +283,11 @@ const readDatabaseInput = (
           row_id: String(row.row_id),
         }),
       ),
-      blobBackend: "database",
+      blobBackend: options.blobBackend ?? "database",
       orphanPolicyMode: "retarget_all",
+      collectPolicyErrors: true,
+      bootRailCreateToolImpliedServices: true,
+      completedTenants,
     };
   });
 
@@ -261,7 +297,33 @@ const applyOrg = (
 ): Effect.Effect<void, DataMigrationError> =>
   Effect.gen(function* () {
     if (org.completed) return;
+    if (org.hardErrors.length > 0) return;
     const now = Date.now();
+
+    for (const copy of org.blobCopies.filter((item) => item.backend === "database")) {
+      const source = yield* execute(client, {
+        sql: "SELECT value FROM blob WHERE namespace = ? AND key = ? LIMIT 1",
+        args: [copy.sourceNamespace, copy.key],
+      });
+      const sourceRow = source.rows[0];
+      if (!sourceRow || typeof sourceRow.value !== "string") {
+        return yield* new DataMigrationError({
+          migration: MIGRATION_NAME,
+          cause: `Missing source blob ${copy.sourceNamespace}/${copy.key}`,
+        });
+      }
+      yield* execute(client, {
+        sql: `INSERT OR IGNORE INTO blob (namespace, key, value, row_id, id)
+          VALUES (?, ?, ?, ?, ?)`,
+        args: [
+          copy.targetNamespace,
+          copy.key,
+          sourceRow.value,
+          stableId("blob", org.tenant, copy.targetNamespace, copy.key),
+          JSON.stringify([copy.targetNamespace, copy.key]),
+        ],
+      });
+    }
 
     for (const row of org.integrations.filter((item) => item.action === "create")) {
       yield* execute(client, {
@@ -453,27 +515,36 @@ const applyOrg = (
 
 export const runSqliteProviderServiceSplitMigration = (
   client: SqliteDataMigrationClient,
+  options: {
+    readonly beforeStampOrg?: (org: OrgPlan) => Effect.Effect<void, DataMigrationError>;
+    readonly blobBackend?: MigrationInput["blobBackend"];
+    readonly blobs?: readonly BlobRow[];
+  } = {},
 ): Effect.Effect<number, DataMigrationError> =>
   Effect.gen(function* () {
     if (!(yield* tableExists(client, "integration"))) return 0;
-    const input = yield* readDatabaseInput(client);
+    const input = yield* readDatabaseInput(client, options);
     const plan = planMigration(input);
-    const moved = plan.orgs.filter((org) => !org.completed).length;
+    const moved = plan.orgs.filter((org) => !org.completed && org.hardErrors.length === 0).length;
     if (moved === 0) return 0;
 
-    yield* execute(client, "BEGIN");
-    const applyAll = Effect.gen(function* () {
-      for (const org of plan.orgs) {
-        if (org.hardErrors.length > 0) {
-          console.warn(
-            `provider-service-split: retargeted orphan policies for org ${org.tenantHash}`,
-          );
-        }
-        yield* applyOrg(client, org);
+    for (const org of plan.orgs) {
+      if (org.completed) continue;
+      if (org.hardErrors.length > 0) {
+        console.warn(
+          `provider-service-split: skipped org ${org.tenantHash}: ${org.hardErrors.join("; ")}`,
+        );
+        continue;
       }
-      yield* execute(client, "COMMIT");
-    });
-    yield* applyAll.pipe(Effect.tapError(() => execute(client, "ROLLBACK").pipe(Effect.ignore)));
+      yield* execute(client, "BEGIN");
+      const applyOne = Effect.gen(function* () {
+        yield* applyOrg(client, org);
+        if (options.beforeStampOrg) yield* options.beforeStampOrg(org);
+        yield* stampCompletedTenant(client, org.tenant);
+        yield* execute(client, "COMMIT");
+      });
+      yield* applyOne.pipe(Effect.tapError(() => execute(client, "ROLLBACK").pipe(Effect.ignore)));
+    }
     return moved;
   });
 

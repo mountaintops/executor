@@ -48,6 +48,7 @@ const outputDir = resolve(
 const orgFilter = argValue("--org");
 const trafficLastTenant = argValue("--traffic-last-tenant");
 const databaseUrl = argValue("--database-url") ?? process.env.DATABASE_URL;
+const r2CopiesDone = hasArg("--r2-copies-done");
 export const LEDGER_TABLE = "provider_service_split_org_migration";
 
 const parseInputJson = (path: string): MigrationInput =>
@@ -212,6 +213,7 @@ export const readDatabaseInput = async (
     completedTenants,
     trafficLastTenant,
     blobBackend,
+    assumeExternalBlobSourcePresent: blobBackend === "external",
   };
 };
 
@@ -242,10 +244,34 @@ const operationKeyPrefix = (integration: string): string =>
 export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
   if (org.completed) return;
   if (org.hardErrors.length > 0) {
-    throw new Error(`org ${org.tenantHash} has unresolved policy hard errors; apply is blocked`);
+    throw new Error(`org ${org.tenantHash} has unresolved hard errors; apply is blocked`);
   }
   await sql.begin(async (tx) => {
     const now = new Date();
+    for (const copy of org.blobCopies.filter((item) => item.backend === "database")) {
+      const [source] = await tx.unsafe<{ readonly value: string }[]>(
+        "SELECT value FROM blob WHERE namespace = $1 AND key = $2 LIMIT 1",
+        [copy.sourceNamespace, copy.key],
+      );
+      if (!source) {
+        throw new Error(`Missing source blob ${copy.sourceNamespace}/${copy.key}`);
+      }
+      await tx.unsafe(
+        `
+          INSERT INTO blob (namespace, key, value, row_id, id)
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (id) DO NOTHING
+        `,
+        [
+          copy.targetNamespace,
+          copy.key,
+          source.value,
+          stableId("blob", org.tenant, copy.targetNamespace, copy.key),
+          JSON.stringify([copy.targetNamespace, copy.key]),
+        ],
+      );
+    }
+
     for (const row of org.integrations.filter((item) => item.action === "create")) {
       await tx.unsafe(
         `
@@ -471,17 +497,35 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
 const writeDryRun = (planInput: MigrationInput): void => {
   const plan = planMigration({ ...planInput, collectPolicyErrors: true });
   const neverWiden = verifyPolicyRewriteNeverWidens(plan, planInput);
+  const r2Copies = plan.orgs
+    .filter((org) => !org.completed && org.hardErrors.length === 0)
+    .flatMap((org) =>
+      org.blobCopies
+        .filter((copy) => copy.backend === "external")
+        .map((copy) => ({
+          tenantHash: org.tenantHash,
+          tenant: org.tenant,
+          sourceKey: copy.sourceObjectName,
+          destKey: copy.targetObjectName,
+        })),
+    );
   mkdirSync(outputDir, { recursive: true });
   for (const org of plan.orgs) {
     writeFileSync(`${outputDir}/org-${org.tenantHash}.md`, renderOrgDiff(org));
   }
+  writeFileSync(`${outputDir}/r2-copy-manifest.json`, `${JSON.stringify(r2Copies, null, 2)}\n`);
   writeFileSync(
     `${outputDir}/summary.md`,
-    `${renderSummary(plan)}\npolicy_never_widen=${neverWiden.ok}\npolicy_never_widen_checked=${neverWiden.checkedPolicies}\n`,
+    `${renderSummary(plan)}\npolicy_never_widen=${neverWiden.ok}\npolicy_never_widen_checked=${neverWiden.checkedPolicies}\nr2_copy_manifest=${outputDir}/r2-copy-manifest.json\nr2_copy_count=${r2Copies.length}\nr2_copy_command=wrangler r2 object get <bucket>/<sourceKey> | wrangler r2 object put <bucket>/<destKey> --pipe\n`,
   );
   console.log(renderSummary(plan));
   console.log(`policy_never_widen=${neverWiden.ok}`);
   console.log(`policy_never_widen_checked=${neverWiden.checkedPolicies}`);
+  console.log(`r2_copy_manifest=${outputDir}/r2-copy-manifest.json`);
+  console.log(`r2_copy_count=${r2Copies.length}`);
+  console.log(
+    "r2_copy_command=wrangler r2 object get <bucket>/<sourceKey> | wrangler r2 object put <bucket>/<destKey> --pipe",
+  );
   console.log(`diff_dir=${outputDir}`);
   if (!neverWiden.ok) {
     throw new Error(
@@ -512,7 +556,10 @@ const main = async (): Promise<void> => {
     const input = parseInputJson(inputJson);
     writeDryRun(
       filterInputByOrg(
-        { ...input, trafficLastTenant: trafficLastTenant ?? input.trafficLastTenant },
+        {
+          ...input,
+          trafficLastTenant: trafficLastTenant ?? input.trafficLastTenant,
+        },
         orgFilter,
       ),
     );
@@ -558,6 +605,14 @@ const main = async (): Promise<void> => {
     if (zeroOperationIntegrations.length > 0) {
       throw new Error(
         `Serving operation check failed for ${zeroOperationIntegrations.length} planned integration(s)`,
+      );
+    }
+    const requiredR2Copies = plan.orgs
+      .filter((org) => !org.completed && org.hardErrors.length === 0)
+      .flatMap((org) => org.blobCopies.filter((copy) => copy.backend === "external"));
+    if (requiredR2Copies.length > 0 && !r2CopiesDone) {
+      throw new Error(
+        `External R2 blob copies are required before apply (${requiredR2Copies.length}); run dry-run, execute r2-copy-manifest.json, then pass --r2-copies-done`,
       );
     }
     for (const org of plan.orgs) {
