@@ -35,6 +35,7 @@ export const slackMcpUserScopes = [
   "search:read.mpim",
   "search:read.im",
   "search:read.files",
+  "search:read.users",
   "chat:write",
   "channels:history",
   "groups:history",

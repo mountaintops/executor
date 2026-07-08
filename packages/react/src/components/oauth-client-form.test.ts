@@ -151,8 +151,9 @@ describe("oauthAppSetupFor", () => {
 
     expect(manifest.settings.is_mcp_enabled).toBe(true);
     expect(manifest.oauth_config.redirect_urls).toEqual(["https://executor.sh/api/oauth/callback"]);
-    expect(manifest.oauth_config.scopes.user.length).toBe(25);
+    expect(manifest.oauth_config.scopes.user.length).toBe(26);
     expect(manifest.oauth_config.scopes.user).toContain("search:read.private");
+    expect(manifest.oauth_config.scopes.user).toContain("search:read.users");
     expect(manifest.oauth_config.scopes.user).toContain("chat:write");
     expect(manifest.settings.agent_view).toBeUndefined();
   });
