@@ -111,7 +111,8 @@ export default function AddOpenApiSource(props: {
   // Agent-visible description: prefilled from the spec's `info.description`
   // until the user types (null = untouched, keep deriving from the preview).
   const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
-  const identityFallbackName = preview ? Option.getOrElse(preview.title, () => "") : "";
+  const identityFallbackName =
+    initialPreset?.name ?? (preview ? Option.getOrElse(preview.title, () => "") : "");
   const identity = useIntegrationIdentity({
     fallbackName: identityFallbackName,
     fallbackNamespace: props.initialNamespace,
