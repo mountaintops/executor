@@ -56,10 +56,19 @@ const fetchGit = async (
   fetchImpl: typeof fetch,
   policy: GitUrlPolicy,
 ): Promise<Response> => {
-  let current = validateGitFetchUrl(rawUrl, policy);
+  const original = validateGitFetchUrl(rawUrl, policy);
+  let current = original;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+    // Strip credentials on cross-host redirects (same posture as git/curl):
+    // a host must not be able to bounce our Authorization header elsewhere.
+    let headers = init.headers as Record<string, string> | undefined;
+    if (headers?.authorization && current.host !== original.host) {
+      const { authorization: _dropped, ...rest } = headers;
+      headers = rest;
+    }
     const response = await fetchImpl(current.toString(), {
       ...init,
+      ...(headers ? { headers } : {}),
       redirect: "manual",
     });
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;

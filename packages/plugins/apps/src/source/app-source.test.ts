@@ -11,7 +11,7 @@ import { Effect, Exit } from "effect";
 import { FLUSH, parseInfoRefs, pktLine, resolveWant } from "../git-client/pktline";
 import { handFetch } from "../git-client/hand";
 import { parsePack, walkTree } from "../git-client/packfile";
-import { authForHost, uploadPack } from "../git-client/transport";
+import { authForHost, checkRefs, uploadPack } from "../git-client/transport";
 import { PUBLISH_LIMITS } from "../pipeline/publish";
 import { checkGitAppSourceRefs, fetchGitAppSource, parseGitSourceUrl } from "./git-source";
 import { fetchLocalDirectoryAppSource } from "./local-directory-source";
@@ -257,6 +257,34 @@ describe("git app sources", () => {
       }),
     );
     expect(Exit.isFailure(exit)).toBe(true);
+  });
+
+  it("drops the authorization header on cross-host redirects", async () => {
+    const seenAuth: Array<string | null> = [];
+    const fetchImpl = testFetch(async (input, init) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : "");
+      const headers = new Headers(init?.headers);
+      seenAuth.push(headers.get("authorization"));
+      if (url.hostname === "example.test") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://mirror.test/repo.git/info/refs?service=git-upload-pack" },
+        });
+      }
+      return new Response(
+        new Uint8Array(advertisement("1111111111111111111111111111111111111111")),
+        {
+          headers: { "content-type": "application/x-git-upload-pack-advertisement" },
+        },
+      );
+    });
+    const result = await checkRefs(
+      "https://example.test/repo",
+      { authorization: "Basic secret" },
+      fetchImpl,
+    );
+    expect(result.adv.headTarget).toBe("refs/heads/main");
+    expect(seenAuth).toEqual(["Basic secret", null]);
   });
 
   it("enforces pack expansion caps during parse and delta application", async () => {
