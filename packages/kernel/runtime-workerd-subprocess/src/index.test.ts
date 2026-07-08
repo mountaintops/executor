@@ -159,8 +159,9 @@ describe.skipIf(!isWorkerdAvailable())("runtime-workerd-subprocess", () => {
     await runner.ensureStarted();
     const pid = runner.pid();
     expect(pid).toEqual(expect.any(Number));
+    if (pid === undefined) throw new Error("workerd pid was unavailable");
     await runner.dispose();
-    expect(await waitUntilGone(pid as number)).toBe(true);
+    expect(await waitUntilGone(pid)).toBe(true);
   });
 
   it("restarts after a crash", async () => {
@@ -169,8 +170,9 @@ describe.skipIf(!isWorkerdAvailable())("runtime-workerd-subprocess", () => {
       await runner.ensureStarted();
       const firstPid = runner.pid();
       expect(firstPid).toEqual(expect.any(Number));
+      if (firstPid === undefined) throw new Error("workerd pid was unavailable");
       runner.crashForTest();
-      expect(await waitUntilGone(firstPid as number)).toBe(true);
+      expect(await waitUntilGone(firstPid)).toBe(true);
       const output = await runner.run<{ value: string }>({ op: "echo", value: "after" });
       expect(output.body.value).toBe("after");
       expect(runner.pid()).not.toBe(firstPid);
