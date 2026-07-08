@@ -3,7 +3,7 @@ import { sha256Hex, type Owner } from "@executor-js/sdk";
 
 import type { AppToolExecutor, CollectedTool } from "../executor/app-tool-executor";
 import type { AppsStore } from "../plugin/store";
-import { bundleEntry, inProcessBundleBackend, type BundleBackend } from "./bundle";
+import { bundleEntry, defaultBundleBackend, type BundleBackend } from "./bundle";
 import {
   DESCRIPTOR_VERSION,
   stableStringify,
@@ -143,7 +143,11 @@ export const publish = (
 ): Effect.Effect<PublishResult, PublishError> =>
   Effect.gen(function* () {
     const owner = input.owner ?? "org";
-    const bundler = deps.bundler ?? inProcessBundleBackend();
+    const bundler =
+      deps.bundler ??
+      (yield* defaultBundleBackend().pipe(
+        Effect.mapError((error) => toPublishError("bundle", "", error)),
+      ));
     const limitError = enforcePublishLimits(input.files);
     if (limitError) return yield* limitError;
     const files = fileMap(input.files);
