@@ -31,6 +31,10 @@ const makeInvokeStore = (input: {
       description: "Sync",
       integrations: input.integrations,
     }),
+  putSource: () => Effect.void,
+  listSources: () => Effect.succeed([]),
+  getSource: () => Effect.succeed(null),
+  removeSource: () => Effect.void,
 });
 
 const invokeCtx = (input: {
@@ -64,6 +68,10 @@ describe("apps plugin schema projection", () => {
         getDescriptorRecord: () => Effect.succeed(null),
         putPublished: () => Effect.void,
         listActiveTools: () => Effect.succeed([]),
+        putSource: () => Effect.void,
+        listSources: () => Effect.succeed([]),
+        getSource: () => Effect.succeed(null),
+        removeSource: () => Effect.void,
         getTool: () =>
           Effect.succeed({
             app: "crm",

@@ -29,6 +29,7 @@
     "typecheck:slow": "bunx tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@executor-js/api": "workspace:*",
     "@executor-js/runtime-workerd-subprocess": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "esbuild": "^0.27.3",

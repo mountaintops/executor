@@ -1,11 +1,28 @@
-import { Data, Effect, Predicate } from "effect";
+import { Data, Effect, Predicate, Result } from "effect";
 import { ToolName, ToolResult, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
 
 import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
 import { publish } from "../pipeline/publish";
 import { buildBridge, resolveIntegrationBindings } from "./bindings";
 import { makePluginCtxAppsResolver } from "./resolver";
-import { descriptorCollection, makeAppsStore, toolCollection, type AppsStore } from "./store";
+import {
+  descriptorCollection,
+  makeAppsStore,
+  sourceCollection,
+  toolCollection,
+  type AppSourceConfig,
+  type AppSourceRecord,
+  type AppsStore,
+} from "./store";
+import {
+  publishErrorToDiagnostic,
+  sourceErrorToDiagnostic,
+  type SyncDiagnostic,
+} from "../source/app-source";
+import { fetchGitHubAppSource } from "../source/github-source";
+import { fetchLocalDirectoryAppSource } from "../source/local-directory-source";
+import type { AppSourceSnapshot } from "../source/app-source";
+import type { PublishError } from "../pipeline/publish";
 
 const APPS_INTEGRATION = "apps";
 const APPS_CONNECTION = "published";
@@ -56,20 +73,187 @@ const innerToolError = (
   };
 };
 
-const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor) => ({
-  publish: (input: Parameters<typeof publish>[1]) =>
-    publish({ store: ctx.storage, executor: executor ?? makeInProcessAppToolExecutor() }, input),
-});
+const slugify = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+
+export interface CreateAppSourceInput {
+  readonly slug?: string;
+  readonly app?: string;
+  readonly kind: AppSourceConfig["kind"];
+  readonly url?: string;
+  readonly ref?: string;
+  readonly token?: string;
+  readonly baseUrl?: string;
+  readonly path?: string;
+}
+
+export type SyncAppSourceResult =
+  | {
+      readonly status: "published";
+      readonly sourceRef: string;
+      readonly tools: readonly string[];
+      readonly errors?: undefined;
+    }
+  | {
+      readonly status: "up-to-date";
+      readonly sourceRef: string;
+      readonly tools: readonly string[];
+      readonly errors?: undefined;
+    }
+  | {
+      readonly status: "failed";
+      readonly sourceRef?: string;
+      readonly tools: readonly string[];
+      readonly errors: readonly SyncDiagnostic[];
+    };
+
+const sourceConfig = (input: CreateAppSourceInput): AppSourceConfig => {
+  if (input.kind === "github") {
+    if (!input.url) throw new AppPluginError({ message: "github source url is required" });
+    return {
+      kind: "github",
+      url: input.url,
+      ...(input.ref ? { ref: input.ref } : {}),
+      ...(input.token ? { token: input.token } : {}),
+      ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+    };
+  }
+  if (!input.path) throw new AppPluginError({ message: "local-directory source path is required" });
+  return { kind: "local-directory", path: input.path };
+};
+
+const fetchSource = (config: AppSourceConfig): Effect.Effect<AppSourceSnapshot, unknown> =>
+  config.kind === "github" ? fetchGitHubAppSource(config) : fetchLocalDirectoryAppSource(config);
+
+const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor) => {
+  const activeExecutor = executor ?? makeInProcessAppToolExecutor();
+  const now = () => Date.now();
+  return {
+    publish: (input: Parameters<typeof publish>[1]) =>
+      publish({ store: ctx.storage, executor: activeExecutor }, input),
+    listSources: () => ctx.storage.listSources(),
+    getSource: (slug: string) => ctx.storage.getSource(slug),
+    createSource: (input: CreateAppSourceInput) =>
+      Effect.gen(function* () {
+        const config = sourceConfig(input);
+        const slug = slugify(
+          input.slug ?? input.app ?? (config.kind === "github" ? config.url : config.path),
+        );
+        if (!slug) return yield* new AppPluginError({ message: "source slug is required" });
+        const app = slugify(input.app ?? slug);
+        const record: AppSourceRecord = {
+          slug,
+          app,
+          kind: config.kind,
+          config,
+          status: { type: "pending" },
+          updatedAt: now(),
+        };
+        yield* ctx.storage.putSource(record, "org");
+        return record;
+      }),
+    deleteSource: (slug: string) =>
+      ctx.storage.removeSource(slug, "org").pipe(Effect.as({ removed: true })),
+    syncSource: (slug: string): Effect.Effect<SyncAppSourceResult, unknown> =>
+      Effect.gen(function* () {
+        const record = yield* ctx.storage.getSource(slug);
+        if (!record) return yield* new AppPluginError({ message: `app source not found: ${slug}` });
+        const fetched = yield* fetchSource(record.config).pipe(Effect.result);
+        if (Result.isFailure(fetched)) {
+          const error = fetched.failure;
+          const diagnostic = Predicate.isTagged("PublishError")(error)
+            ? publishErrorToDiagnostic(error as PublishError)
+            : sourceErrorToDiagnostic(error as never);
+          const failed: AppSourceRecord = {
+            ...record,
+            status: { type: "failed", at: now(), errors: [diagnostic] },
+            updatedAt: now(),
+          };
+          yield* ctx.storage.putSource(failed, "org");
+          return { status: "failed", tools: [], errors: [diagnostic] };
+        }
+        const snapshot = fetched.success;
+        if (record.sourceRef === snapshot.sourceRef) {
+          const tools = (yield* ctx.storage.listActiveTools())
+            .filter((tool) => tool.name.startsWith(`${record.app}__`) || tool.name === record.app)
+            .map((tool) => tool.name);
+          const updated: AppSourceRecord = {
+            ...record,
+            status: { type: "up-to-date", at: now(), tools },
+            updatedAt: now(),
+          };
+          yield* ctx.storage.putSource(updated, "org");
+          return { status: "up-to-date", sourceRef: snapshot.sourceRef, tools };
+        }
+        const published = yield* publish(
+          { store: ctx.storage, executor: activeExecutor },
+          {
+            app: record.app,
+            files: snapshot.files,
+            sourceRef: snapshot.sourceRef,
+          },
+        ).pipe(Effect.result);
+        if (Result.isFailure(published)) {
+          const diagnostic = publishErrorToDiagnostic(published.failure);
+          yield* ctx.storage.putSource(
+            {
+              ...record,
+              sourceRef: snapshot.sourceRef,
+              description: snapshot.description,
+              status: { type: "failed", at: now(), errors: [diagnostic] },
+              updatedAt: now(),
+            },
+            "org",
+          );
+          return {
+            status: "failed",
+            sourceRef: snapshot.sourceRef,
+            tools: [],
+            errors: [diagnostic],
+          };
+        }
+        yield* ctx.storage.putSource(
+          {
+            ...record,
+            sourceRef: snapshot.sourceRef,
+            description: snapshot.description,
+            status: {
+              type: published.success.noop ? "up-to-date" : "published",
+              at: now(),
+              tools: published.success.descriptor.tools.map((tool) => tool.name),
+            },
+            updatedAt: now(),
+          },
+          "org",
+        );
+        return {
+          status: published.success.noop ? "up-to-date" : "published",
+          sourceRef: snapshot.sourceRef,
+          tools: published.success.descriptor.tools.map((tool) => tool.name),
+        };
+      }),
+  };
+};
 
 export type AppsExtension = ReturnType<typeof makeAppsExtension>;
 
-export const makeAppsPlugin = (options?: { readonly executor?: AppToolExecutor }) =>
+export interface AppsPluginOptions {
+  readonly executor?: AppToolExecutor;
+}
+
+export const makeAppsPlugin = (options?: AppsPluginOptions) =>
   definePlugin(() => ({
     id: "apps",
     packageName: "@executor-js/plugin-apps",
     pluginStorage: {
       [descriptorCollection.name]: descriptorCollection,
       [toolCollection.name]: toolCollection,
+      [sourceCollection.name]: sourceCollection,
     },
     storage: ({ blobs, pluginStorage }) => makeAppsStore({ blobs, pluginStorage }),
     extension: (ctx: PluginCtx<AppsStore>) => makeAppsExtension(ctx, options?.executor),

@@ -13,6 +13,13 @@ import {
 } from "./descriptor";
 import { toolchainRef } from "./bundle";
 import { discover, PublishError, type SkippedArtifact } from "./discover";
+export { PublishError } from "./discover";
+
+export const PUBLISH_LIMITS = {
+  maxFiles: 256,
+  maxFileBytes: 1024 * 1024,
+  maxTotalBytes: 4 * 1024 * 1024,
+} as const;
 
 export interface PublishFile {
   readonly path: string;
@@ -40,6 +47,44 @@ export interface PublishDeps {
 }
 
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
+
+const byteLength = (value: Uint8Array | string): number =>
+  typeof value === "string" ? textEncoder.encode(value).byteLength : value.byteLength;
+
+export const enforcePublishLimits = (files: readonly PublishFile[]): PublishError | null => {
+  const diagnostics: { readonly path: string; readonly message: string }[] = [];
+  if (files.length > PUBLISH_LIMITS.maxFiles) {
+    diagnostics.push({
+      path: "",
+      message: `publish has ${files.length} files, exceeding the limit of ${PUBLISH_LIMITS.maxFiles}`,
+    });
+  }
+  let total = 0;
+  for (const file of files) {
+    const size = byteLength(file.bytes);
+    total += size;
+    if (size > PUBLISH_LIMITS.maxFileBytes) {
+      diagnostics.push({
+        path: file.path,
+        message: `file is ${size} bytes, exceeding the per-file limit of ${PUBLISH_LIMITS.maxFileBytes} bytes`,
+      });
+    }
+  }
+  if (total > PUBLISH_LIMITS.maxTotalBytes) {
+    diagnostics.push({
+      path: "",
+      message: `publish total is ${total} bytes, exceeding the total limit of ${PUBLISH_LIMITS.maxTotalBytes} bytes`,
+    });
+  }
+  return diagnostics.length === 0
+    ? null
+    : new PublishError({
+        stage: "discover",
+        message: `publish payload exceeds limits (${diagnostics.length} problem(s))`,
+        diagnostics,
+      });
+};
 
 const fileMap = (files: readonly PublishFile[]): ReadonlyMap<string, string> => {
   const out = new Map<string, string>();
@@ -98,6 +143,8 @@ export const publish = (
 ): Effect.Effect<PublishResult, PublishError> =>
   Effect.gen(function* () {
     const owner = input.owner ?? "org";
+    const limitError = enforcePublishLimits(input.files);
+    if (limitError) return yield* limitError;
     const files = fileMap(input.files);
     const discovered = discover(files);
     if (isPublishError(discovered)) return yield* discovered;
