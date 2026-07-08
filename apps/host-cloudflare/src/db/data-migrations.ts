@@ -9,6 +9,8 @@ import {
 } from "@executor-js/sdk";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
 
+import { providerServiceSplitDataMigration } from "../../../../scripts/migration/service-split-sqlite";
+
 const TX_CONTROL = new Set(["BEGIN", "BEGIN TRANSACTION", "COMMIT", "ROLLBACK"]);
 
 const firstWord = (sql: string): string => sql.trimStart().split(/\s+/, 1)[0]?.toUpperCase() ?? "";
@@ -170,6 +172,7 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
         yield* googleOpenApiOwnershipDataMigration.run(client);
       }),
   },
+  providerServiceSplitDataMigration,
 ];
 
 export const runCloudflareDataMigrations = (
