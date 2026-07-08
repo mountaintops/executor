@@ -34,7 +34,18 @@ export type DirectoryBrowserRow =
       readonly name: string;
       readonly path: string;
       readonly isSymlink: boolean;
+      readonly hasTools: boolean;
     };
+
+export type DirectorySourceVerdict =
+  | {
+      readonly type: "valid";
+      readonly message: string;
+      readonly visibleTools: readonly string[];
+      readonly moreCount: number;
+    }
+  | { readonly type: "empty-tools"; readonly message: string }
+  | { readonly type: "missing-tools"; readonly message: string };
 
 const shortRef = (ref: string | undefined): string => (ref ? ref.slice(0, 12) : "Not synced");
 
@@ -111,5 +122,35 @@ export const directoryBrowserRows = (
     name: dir.name,
     path: dir.path,
     isSymlink: dir.isSymlink,
+    hasTools: dir.hasTools,
   })),
 ];
+
+const toolNameFromFile = (file: string): string => file.replace(/\.[^.]+$/, "");
+
+export const directorySourceVerdict = (
+  listing: CustomToolsDirectoryListing,
+): DirectorySourceVerdict => {
+  const source = listing.source;
+  if (source.toolFiles.length > 0) {
+    const toolNames = source.toolFiles.map(toolNameFromFile);
+    const visibleTools = toolNames.slice(0, 5);
+    const moreCount = Math.max(0, toolNames.length - visibleTools.length);
+    return {
+      type: "valid",
+      message: `${toolsCountLabel(source.toolFiles.length)} found`,
+      visibleTools,
+      moreCount,
+    };
+  }
+  if (listing.dirs.some((dir) => dir.name === "tools" && !dir.isSymlink)) {
+    return {
+      type: "empty-tools",
+      message: "tools/ has no tool files (tools/<name>.ts)",
+    };
+  }
+  return {
+    type: "missing-tools",
+    message: "No tools/ folder. Pick a folder containing tools/<name>.ts files.",
+  };
+};

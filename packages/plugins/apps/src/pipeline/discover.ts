@@ -29,6 +29,15 @@ export interface DiscoverResult {
 const TOOL_RE = /^tools\/([a-z0-9][a-z0-9-]*)\.(ts|tsx|js|jsx)$/;
 const DEFERRED_RE = /^(workflows|ui|skills)\//;
 
+/** Reserved top-level app source folders whose contents are deferred by discovery. */
+export const RESERVED_ARTIFACT_DIRS = ["workflows", "ui", "skills"] as const;
+
+/** Returns the discovered tool key for a path when it matches the canonical tool layout. */
+export const toolKeyFromPath = (path: string): string | null => path.match(TOOL_RE)?.[1] ?? null;
+
+/** Returns true when a path is under a reserved app source folder. */
+export const isReservedArtifactPath = (path: string): boolean => DEFERRED_RE.test(path);
+
 export const validToolKey = (key: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(key);
 
 export const discover = (files: ReadonlyMap<string, string>): DiscoverResult | PublishError => {
@@ -39,9 +48,9 @@ export const discover = (files: ReadonlyMap<string, string>): DiscoverResult | P
 
   for (const [path] of files) {
     if (path === "executor.json") continue;
-    const tool = path.match(TOOL_RE);
+    const tool = toolKeyFromPath(path);
     if (tool) {
-      const name = tool[1]!;
+      const name = tool;
       if (seen.has(name)) {
         diagnostics.push({ path, message: `duplicate tool identity: ${name}` });
       } else {
@@ -54,7 +63,7 @@ export const discover = (files: ReadonlyMap<string, string>): DiscoverResult | P
       diagnostics.push({ path, message: "file does not match the expected layout for tools/" });
       continue;
     }
-    if (DEFERRED_RE.test(path)) skipped.push({ path, reason: "not supported yet" });
+    if (isReservedArtifactPath(path)) skipped.push({ path, reason: "not supported yet" });
   }
 
   if (diagnostics.length > 0) {

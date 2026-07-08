@@ -119,12 +119,20 @@ export interface CustomToolsDirectoryEntry {
   readonly name: string;
   readonly path: string;
   readonly isSymlink: boolean;
+  readonly hasTools: boolean;
+}
+
+export interface CustomToolsDirectorySourceShape {
+  readonly toolFiles: readonly string[];
+  readonly skipped: readonly string[];
+  readonly hasPackageJson: boolean;
 }
 
 export interface CustomToolsDirectoryListing {
   readonly path: string;
   readonly parent: string | null;
   readonly dirs: readonly CustomToolsDirectoryEntry[];
+  readonly source: CustomToolsDirectorySourceShape;
 }
 
 export class CustomToolsClientError extends Data.TaggedError("CustomToolsClientError")<{

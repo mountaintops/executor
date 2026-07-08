@@ -79,8 +79,14 @@ const ListDirsResponse = Schema.Struct({
       name: Schema.String,
       path: Schema.String,
       isSymlink: Schema.Boolean,
+      hasTools: Schema.Boolean,
     }),
   ),
+  source: Schema.Struct({
+    toolFiles: Schema.Array(Schema.String),
+    skipped: Schema.Array(Schema.String),
+    hasPackageJson: Schema.Boolean,
+  }),
 });
 
 const DomainErrors = [InternalError] as const;

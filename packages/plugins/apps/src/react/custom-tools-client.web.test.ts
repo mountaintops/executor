@@ -17,7 +17,11 @@ import appsClientPlugin, {
   type AppSourceRecord,
   type CustomToolsFetch,
 } from "./plugin-client";
-import { sourcePanelModel, syncNoticeFromResult } from "./source-panel-model";
+import {
+  directorySourceVerdict,
+  sourcePanelModel,
+  syncNoticeFromResult,
+} from "./source-panel-model";
 import { directoryBrowserRows } from "./source-panel-model";
 
 const jsonResponse = (body: unknown, init?: ResponseInit): Response =>
@@ -105,7 +109,10 @@ describe("custom tools console client", () => {
         return jsonResponse({
           path: "/Users/ada/tools",
           parent: "/Users/ada",
-          dirs: [{ name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false }],
+          dirs: [
+            { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false, hasTools: true },
+          ],
+          source: { toolFiles: ["greet.ts"], skipped: [], hasPackageJson: true },
         });
       }
       return jsonResponse({ error: "not found" }, { status: 404 });
@@ -136,7 +143,7 @@ describe("custom tools console client", () => {
     expect(syncStatusLabel(synced)).toBe("Already up to date.");
     expect(removed).toEqual({ removed: true });
     expect(dirs.dirs).toEqual([
-      { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
+      { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false, hasTools: true },
     ]);
     expect(calls.map((call) => `${call.init?.method ?? "GET"} ${call.url}`)).toEqual([
       "POST /api/apps/sources",
@@ -176,15 +183,70 @@ describe("custom tools console client", () => {
         path: "/Users/ada/tools",
         parent: "/Users/ada",
         dirs: [
-          { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
-          { name: "linked", path: "/Users/ada/tools/linked", isSymlink: true },
+          { name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false, hasTools: false },
+          { name: "linked", path: "/Users/ada/tools/linked", isSymlink: true, hasTools: false },
         ],
+        source: { toolFiles: [], skipped: [], hasPackageJson: false },
       }),
     ).toEqual([
       { kind: "parent", name: "..", path: "/Users/ada" },
-      { kind: "dir", name: "alpha", path: "/Users/ada/tools/alpha", isSymlink: false },
-      { kind: "dir", name: "linked", path: "/Users/ada/tools/linked", isSymlink: true },
+      {
+        kind: "dir",
+        name: "alpha",
+        path: "/Users/ada/tools/alpha",
+        isSymlink: false,
+        hasTools: false,
+      },
+      {
+        kind: "dir",
+        name: "linked",
+        path: "/Users/ada/tools/linked",
+        isSymlink: true,
+        hasTools: false,
+      },
     ]);
+  });
+
+  it("models directory source verdicts", () => {
+    expect(
+      directorySourceVerdict({
+        path: "/repo",
+        parent: null,
+        dirs: [{ name: "tools", path: "/repo/tools", isSymlink: false, hasTools: false }],
+        source: { toolFiles: [], skipped: [], hasPackageJson: false },
+      }),
+    ).toEqual({
+      type: "empty-tools",
+      message: "tools/ has no tool files (tools/<name>.ts)",
+    });
+    expect(
+      directorySourceVerdict({
+        path: "/repo",
+        parent: null,
+        dirs: [],
+        source: { toolFiles: [], skipped: [], hasPackageJson: false },
+      }),
+    ).toEqual({
+      type: "missing-tools",
+      message: "No tools/ folder. Pick a folder containing tools/<name>.ts files.",
+    });
+    expect(
+      directorySourceVerdict({
+        path: "/repo",
+        parent: null,
+        dirs: [],
+        source: {
+          toolFiles: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"],
+          skipped: [],
+          hasPackageJson: true,
+        },
+      }),
+    ).toEqual({
+      type: "valid",
+      message: "6 tools found",
+      visibleTools: ["a", "b", "c", "d", "e"],
+      moreCount: 1,
+    });
   });
 
   it("formats failed sync diagnostics by stage", () => {

@@ -486,6 +486,54 @@ describe("local-directory app sources", () => {
     expect(hidden.dirs.map((entry) => entry.name)).toEqual([".hidden", "alpha"]);
   });
 
+  it("reports app source shape and subdirectories with tools folders", async () => {
+    const root = await mkdtemp();
+    const valid = join(root, "valid-app");
+    const emptyTools = join(root, "empty-tools");
+    const noTools = join(root, "no-tools");
+    const nested = join(root, "parent-with-tools");
+    await mkdir(join(valid, "tools"), { recursive: true });
+    await mkdir(join(valid, "workflows"), { recursive: true });
+    await mkdir(join(valid, "ui"), { recursive: true });
+    await mkdir(join(valid, "skills"), { recursive: true });
+    await mkdir(join(emptyTools, "tools"), { recursive: true });
+    await mkdir(noTools, { recursive: true });
+    await mkdir(join(nested, "tools"), { recursive: true });
+    await writeFile(join(valid, "package.json"), "{}");
+    await writeFile(join(valid, "tools", "a.ts"), "export default {};");
+    await writeFile(join(valid, "tools", "b.tsx"), "export default {};");
+    await writeFile(join(valid, "tools", "bad_name.ts"), "export default {};");
+
+    const parentListing = await run(listLocalDirectoryDirs({ path: root }));
+    const validListing = await run(listLocalDirectoryDirs({ path: valid }));
+    const emptyListing = await run(listLocalDirectoryDirs({ path: emptyTools }));
+    const noToolsListing = await run(listLocalDirectoryDirs({ path: noTools }));
+
+    expect(parentListing.dirs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "valid-app", hasTools: true }),
+        expect.objectContaining({ name: "empty-tools", hasTools: true }),
+        expect.objectContaining({ name: "no-tools", hasTools: false }),
+        expect.objectContaining({ name: "parent-with-tools", hasTools: true }),
+      ]),
+    );
+    expect(validListing.source).toEqual({
+      toolFiles: ["a.ts", "b.tsx"],
+      skipped: ["workflows", "ui", "skills"],
+      hasPackageJson: true,
+    });
+    expect(emptyListing.source).toEqual({
+      toolFiles: [],
+      skipped: [],
+      hasPackageJson: false,
+    });
+    expect(noToolsListing.source).toEqual({
+      toolFiles: [],
+      skipped: [],
+      hasPackageJson: false,
+    });
+  });
+
   it("rejects parent traversal in directory listings", async () => {
     const exit = await Effect.runPromiseExit(listLocalDirectoryDirs({ path: "/tmp/../bad" }));
     expect(Exit.isFailure(exit)).toBe(true);
@@ -502,6 +550,7 @@ describe("local-directory app sources", () => {
       name: "linked",
       path: join(root, "linked"),
       isSymlink: true,
+      hasTools: false,
     });
 
     const followed = await Effect.runPromiseExit(

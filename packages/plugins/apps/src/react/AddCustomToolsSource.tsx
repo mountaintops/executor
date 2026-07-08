@@ -34,7 +34,7 @@ import {
   type CustomToolsDirectoryListing,
   type AppSourceKind,
 } from "./custom-tools-client";
-import { directoryBrowserRows } from "./source-panel-model";
+import { directoryBrowserRows, directorySourceVerdict } from "./source-panel-model";
 
 export default function AddCustomToolsSource(props: {
   readonly onComplete: (slug?: string) => void;
@@ -65,6 +65,7 @@ export default function AddCustomToolsSource(props: {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [pathListing, setPathListing] = useState<CustomToolsDirectoryListing | null>(null);
 
   const sourceValue = kind === "git" ? url : path;
   const effectiveName = useMemo(
@@ -73,6 +74,26 @@ export default function AddCustomToolsSource(props: {
   );
   const slug = effectiveName;
   const slugAlreadyExists = useSlugAlreadyExists(slug);
+
+  useEffect(() => {
+    if (kind !== "local-directory" || !path.trim().startsWith("/")) {
+      setPathListing(null);
+      return;
+    }
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      void Effect.runPromiseExit(listCustomToolDirectoriesEffect({ path: path.trim() })).then(
+        (exit) => {
+          if (!active) return;
+          setPathListing(Exit.isSuccess(exit) ? exit.value : null);
+        },
+      );
+    }, 300);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [kind, path]);
 
   const submit = async () => {
     const nextFieldError =
@@ -226,6 +247,14 @@ export default function AddCustomToolsSource(props: {
                       setFieldError(null);
                       setSyncError(null);
                     }}
+                    onBlur={() => {
+                      if (!path.trim().startsWith("/")) return;
+                      void Effect.runPromiseExit(
+                        listCustomToolDirectoriesEffect({ path: path.trim() }),
+                      ).then((exit) => {
+                        setPathListing(Exit.isSuccess(exit) ? exit.value : null);
+                      });
+                    }}
                     placeholder="/Users/me/tools"
                     className="font-mono text-sm"
                     aria-invalid={fieldError ? true : undefined}
@@ -239,6 +268,7 @@ export default function AddCustomToolsSource(props: {
                     Browse
                   </Button>
                 </div>
+                {pathListing && <DirectorySourceStatus listing={pathListing} />}
                 {fieldError && <p className="text-xs text-destructive">{fieldError}</p>}
               </div>
             </CardStackEntryField>
@@ -332,6 +362,8 @@ function DirectoryBrowserModal(props: {
 
   const rows = listing ? directoryBrowserRows(listing) : [];
   const selectedPath = listing?.path ?? currentPath ?? "";
+  const canSelect = Boolean(selectedPath) && !loading && !error;
+  const hasToolFiles = (listing?.source.toolFiles.length ?? 0) > 0;
 
   return (
     <Dialog open onOpenChange={(open) => (open ? undefined : props.onClose())}>
@@ -341,6 +373,7 @@ function DirectoryBrowserModal(props: {
           <DialogDescription className="font-mono text-xs break-all">
             {selectedPath || "Home"}
           </DialogDescription>
+          {listing && <DirectorySourceStatus listing={listing} />}
         </DialogHeader>
         <div className="space-y-3">
           <Label className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -372,11 +405,16 @@ function DirectoryBrowserModal(props: {
                     <span className="min-w-0 truncate font-mono">
                       {row.kind === "parent" ? ".." : row.name}
                     </span>
-                    {row.kind === "dir" && row.isSymlink && (
-                      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                        symlink
-                      </span>
-                    )}
+                    <span className="flex shrink-0 items-center gap-2">
+                      {row.kind === "dir" && row.hasTools && (
+                        <span className="rounded-sm border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                          tools
+                        </span>
+                      )}
+                      {row.kind === "dir" && row.isSymlink && (
+                        <span className="font-mono text-[11px] text-muted-foreground">symlink</span>
+                      )}
+                    </span>
                   </Button>
                 ))}
               </div>
@@ -387,15 +425,35 @@ function DirectoryBrowserModal(props: {
           <Button type="button" variant="ghost" onClick={props.onClose}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            onClick={() => props.onSelect(selectedPath)}
-            disabled={!selectedPath || loading || Boolean(error)}
-          >
-            Select
+          <Button type="button" onClick={() => props.onSelect(selectedPath)} disabled={!canSelect}>
+            {hasToolFiles ? "Select" : "Select anyway"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+function DirectorySourceStatus(props: { readonly listing: CustomToolsDirectoryListing }) {
+  const verdict = directorySourceVerdict(props.listing);
+  if (verdict.type === "valid") {
+    return (
+      <p className="mt-2 text-xs text-foreground">
+        {verdict.message}:{" "}
+        {verdict.visibleTools.map((tool, index) => (
+          <span key={tool}>
+            {index > 0 ? ", " : ""}
+            <span className="font-mono">{tool}</span>
+          </span>
+        ))}
+        {verdict.moreCount > 0 && (
+          <>
+            {", "}
+            <span className="font-mono">+{verdict.moreCount} more</span>
+          </>
+        )}
+      </p>
+    );
+  }
+  return <p className="mt-2 text-xs text-muted-foreground">{verdict.message}</p>;
 }

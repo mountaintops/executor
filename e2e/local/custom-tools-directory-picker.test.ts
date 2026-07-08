@@ -68,7 +68,14 @@ export default defineTool({
           await pathInput.fill(fixtureRoot);
           await page.getByRole("button", { name: "Browse" }).click();
           const dialog = page.getByRole("dialog", { name: "Choose directory" });
+          await dialog
+            .getByRole("button", { name: /picked-tools/ })
+            .locator("span")
+            .filter({ hasText: "tools" })
+            .waitFor({ timeout: 30_000 });
           await dialog.getByRole("button", { name: "picked-tools" }).click();
+          await dialog.getByText("1 tool found:").waitFor({ timeout: 30_000 });
+          await dialog.getByText("echo", { exact: true }).waitFor({ timeout: 30_000 });
           await dialog.getByRole("button", { name: "Select" }).click();
           expect(await pathInput.inputValue()).toBe(fixtureDir);
         });

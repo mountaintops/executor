@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
 
+import { RESERVED_ARTIFACT_DIRS, toolKeyFromPath } from "../pipeline/discover";
 import { PublishError, enforcePublishLimits, type PublishFile } from "../pipeline/publish";
 import { AppSourceError, type AppSourceSnapshot } from "./app-source";
 import {
@@ -33,12 +34,20 @@ export interface LocalDirectoryDirEntry {
   readonly name: string;
   readonly path: string;
   readonly isSymlink: boolean;
+  readonly hasTools: boolean;
+}
+
+export interface LocalDirectorySourceShape {
+  readonly toolFiles: readonly string[];
+  readonly skipped: readonly string[];
+  readonly hasPackageJson: boolean;
 }
 
 export interface LocalDirectoryDirsResult {
   readonly path: string;
   readonly parent: string | null;
   readonly dirs: readonly LocalDirectoryDirEntry[];
+  readonly source: LocalDirectorySourceShape;
 }
 
 const sha256 = (bytes: Uint8Array | string): string =>
@@ -193,6 +202,60 @@ const descriptionFor = (
     return typeof description === "string" ? description : undefined;
   });
 
+const lstatOrNull = (path: string): Effect.Effect<Awaited<ReturnType<typeof lstat>> | null> =>
+  Effect.tryPromise({
+    try: () => lstat(path),
+    catch: (cause) =>
+      new AppSourceError({ message: "failed to stat local-directory path", path, cause }),
+  }).pipe(Effect.catch(() => Effect.succeed(null)));
+
+const hasNonSymlinkDirectory = (path: string): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const entry = yield* lstatOrNull(path);
+    return entry !== null && entry.isDirectory() && !entry.isSymbolicLink();
+  });
+
+const hasNonSymlinkFile = (path: string): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const entry = yield* lstatOrNull(path);
+    return entry !== null && entry.isFile() && !entry.isSymbolicLink();
+  });
+
+const listLocalDirectorySourceShape = (
+  root: string,
+): Effect.Effect<LocalDirectorySourceShape, AppSourceError> =>
+  Effect.gen(function* () {
+    const toolsPath = `${root}${sep}tools`;
+    const toolsStat = yield* lstatOrNull(toolsPath);
+    const toolFiles: string[] = [];
+    if (toolsStat?.isDirectory() && !toolsStat.isSymbolicLink()) {
+      const toolEntries = yield* Effect.tryPromise({
+        try: () => readdir(toolsPath, { withFileTypes: true }),
+        catch: (cause) =>
+          new AppSourceError({
+            message: "failed to read local-directory tools folder",
+            path: toolsPath,
+            cause,
+          }),
+      });
+      for (const entry of toolEntries) {
+        if (!entry.isFile()) continue;
+        if (toolKeyFromPath(`tools/${entry.name}`) === null) continue;
+        toolFiles.push(entry.name);
+      }
+      toolFiles.sort((a, b) => a.localeCompare(b));
+    }
+    const skipped: string[] = [];
+    for (const name of RESERVED_ARTIFACT_DIRS) {
+      if (yield* hasNonSymlinkDirectory(`${root}${sep}${name}`)) skipped.push(name);
+    }
+    return {
+      toolFiles: toolFiles.slice(0, 20),
+      skipped,
+      hasPackageJson: yield* hasNonSymlinkFile(`${root}${sep}package.json`),
+    };
+  });
+
 export const fetchLocalDirectoryAppSource = (
   input: LocalDirectoryAppSourceInput,
 ): Effect.Effect<LocalDirectoryAppSourceSnapshot, AppSourceError | PublishError> =>
@@ -247,6 +310,7 @@ export const listLocalDirectoryDirs = (
         }),
     });
     const dirs: LocalDirectoryDirEntry[] = [];
+    const source = yield* listLocalDirectorySourceShape(root);
     for (const name of entries) {
       if (!input.includeHidden && name.startsWith(".")) continue;
       const child = `${root}${sep}${name}`;
@@ -261,7 +325,12 @@ export const listLocalDirectoryDirs = (
       }).pipe(Effect.catch(() => Effect.succeed(null)));
       if (!entryStat) continue;
       if (entryStat.isDirectory()) {
-        dirs.push({ name, path: child, isSymlink: false });
+        dirs.push({
+          name,
+          path: child,
+          isSymlink: false,
+          hasTools: yield* hasNonSymlinkDirectory(`${child}${sep}tools`),
+        });
         continue;
       }
       if (!entryStat.isSymbolicLink()) continue;
@@ -274,7 +343,9 @@ export const listLocalDirectoryDirs = (
             cause,
           }),
       }).pipe(Effect.catch(() => Effect.succeed(null)));
-      if (targetStat?.isDirectory()) dirs.push({ name, path: child, isSymlink: true });
+      if (targetStat?.isDirectory()) {
+        dirs.push({ name, path: child, isSymlink: true, hasTools: false });
+      }
     }
     dirs.sort((a, b) => a.name.localeCompare(b.name));
     const parent = dirname(root);
@@ -282,6 +353,7 @@ export const listLocalDirectoryDirs = (
       path: root,
       parent: parent === root ? null : parent,
       dirs,
+      source,
     };
   });
 
