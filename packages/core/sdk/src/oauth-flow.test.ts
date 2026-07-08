@@ -849,6 +849,170 @@ describe("oauth token refresh in resolveConnectionValue", () => {
       }),
     ),
   );
+
+  it.effect(
+    "checkHealth reports healthy from OAuth credential resolution when no probe is configured",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+          yield* server.clearRequests;
+
+          const result = yield* executor.connections.checkHealth({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("main"),
+          });
+
+          expect(result).toMatchObject({
+            status: "healthy",
+            detail: "Credential resolved (no probe configured).",
+          });
+          expect(result.identity).toBeUndefined();
+          const requests = yield* server.requests;
+          expect(requests).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect("records missing authorization-code scopes without blocking the connection", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["openid", "email", "profile", "offline_access", "read", "write"],
+          omitTokenResponseScopes: ["email", "profile", "write"],
+        });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed([
+          "openid",
+          "email",
+          "profile",
+          "offline_access",
+          "read",
+          "write",
+        ]);
+
+        yield* executor.oauth.createClient({
+          owner: "org",
+          slug: CLIENT,
+          authorizationUrl: server.authorizationEndpoint,
+          tokenUrl: server.tokenEndpoint,
+          grant: "authorization_code",
+          clientId: "test-client",
+          clientSecret: "test-secret",
+          resource: server.mcpResourceUrl,
+        });
+
+        const started = yield* executor.oauth.start({
+          owner: "org",
+          client: CLIENT,
+          clientOwner: "org",
+          name: ConnectionName.make("main"),
+          integration: INTEG,
+          template: TEMPLATE,
+        });
+        expect(started.status).toBe("redirect");
+        if (started.status !== "redirect") return;
+        const callback = yield* server.completeAuthorizationCodeFlow({
+          authorizationUrl: started.authorizationUrl,
+        });
+        const connection = yield* executor.oauth.complete({
+          state: started.state,
+          code: callback.code,
+        });
+
+        expect(connection.missingOAuthScopes).toEqual(["write"]);
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", {
+            where: (b) => b("name", "=", "main"),
+          }),
+        );
+        expect(row?.provider_state).toEqual({ missingOAuthScopes: ["write"] });
+        const listed = yield* executor.connections.list({ integration: INTEG });
+        expect(listed[0]?.missingOAuthScopes).toEqual(["write"]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "does not persist missing scopes when the authorization-code grant covers requested scopes",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read", "write"] });
+          const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+          yield* executor.acme.seed(["read", "write"]);
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "authorization_code",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            resource: server.mcpResourceUrl,
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const callback = yield* server.completeAuthorizationCodeFlow({
+            authorizationUrl: started.authorizationUrl,
+          });
+          const connection = yield* executor.oauth.complete({
+            state: started.state,
+            code: callback.code,
+          });
+
+          expect(connection.missingOAuthScopes).toEqual([]);
+          const row = yield* Effect.promise(() =>
+            config.db.findFirst("connection", {
+              where: (b) => b("name", "=", "main"),
+            }),
+          );
+          expect(row?.provider_state).toBeNull();
+        }),
+      ),
+  );
 });
 
 // Multi-site providers (Datadog) statically advertise one region's token

@@ -95,6 +95,7 @@ function AccountRow(props: {
   const displayLabel = identity ?? String(connection.name);
 
   const expired = status === "expired";
+  const missingOAuthScopes = connection.missingOAuthScopes ?? [];
 
   const handleCheck = async () => {
     if (checking) return;
@@ -148,6 +149,11 @@ function AccountRow(props: {
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
             This connection wasn't granted all the access this integration now needs.
+          </CardStackEntryDescription>
+        ) : null}
+        {missingOAuthScopes.length > 0 ? (
+          <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
+            Missing scopes: {missingOAuthScopes.join(", ")}
           </CardStackEntryDescription>
         ) : null}
       </CardStackEntryContent>

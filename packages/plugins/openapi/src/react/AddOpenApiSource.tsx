@@ -83,6 +83,58 @@ export const baseUrlFromSpecInput = (input: string): string => {
 export const openApiPreviewFailureMessage = (message: string | null | undefined): string =>
   `Couldn't load or parse this spec: ${message && message.trim().length > 0 ? message : "unknown error"}`;
 
+export function AddOpenApiHealthCheckSection(props: {
+  readonly presetHealthCheck?: HealthCheckSpec;
+  readonly candidates: readonly HealthCheckCandidate[];
+  readonly selected: HealthCheckCandidate | null;
+  readonly operation: string;
+  readonly onOperationChange: (operation: string) => void;
+  readonly identityField: string;
+  readonly onIdentityFieldChange: (field: string) => void;
+  readonly args: Record<string, string>;
+  readonly onArgChange: (name: string, value: string) => void;
+  readonly disabled: boolean;
+}) {
+  if (props.presetHealthCheck) {
+    return (
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium text-foreground">Health check</h3>
+        <p className="text-[11px] text-muted-foreground">
+          <span className="font-mono text-foreground">{props.presetHealthCheck.operation}</span>{" "}
+          From the catalog. Change it later from the integration page.
+        </p>
+      </section>
+    );
+  }
+
+  if (props.candidates.length === 0) return null;
+
+  return (
+    <section className="space-y-4">
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
+        <p className="text-[11px] text-muted-foreground">
+          An optional read-only probe adds live upstream depth. For OAuth connections, validity and
+          identity come from the OAuth grant itself. For non-OAuth methods, the probe can validate
+          the credential and identify the account.
+        </p>
+      </div>
+      <HealthCheckConfigFields
+        candidates={props.candidates}
+        selected={props.selected}
+        operation={props.operation}
+        onOperationChange={props.onOperationChange}
+        identityField={props.identityField}
+        onIdentityFieldChange={props.onIdentityFieldChange}
+        args={props.args}
+        onArgChange={props.onArgChange}
+        disabled={props.disabled}
+        idPrefix="add-health-check"
+      />
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component: single progressive form. Post-redesign: preview -> addSpec
 // (register the integration catalog entry with ALL detected auth methods) →
@@ -491,30 +543,20 @@ export default function AddOpenApiSource(props: {
         />
       )}
 
-      {preview && healthCheckCandidates.length > 0 && (
-        <section className="space-y-4">
-          <div className="space-y-1">
-            <h3 className="text-sm font-medium text-foreground">Health check (optional)</h3>
-            <p className="text-[11px] text-muted-foreground">
-              One read-only call Executor runs to tell whether a connection's credential is still
-              alive and, optionally, whose account it is. You can change this later, and run a live
-              preview against a key, from the integration page.
-            </p>
-          </div>
-          <HealthCheckConfigFields
-            candidates={healthCheckCandidates}
-            selected={hcSelected}
-            operation={hcOperation}
-            onOperationChange={onHcOperationChange}
-            identityField={hcIdentityField}
-            onIdentityFieldChange={setHcIdentityField}
-            args={hcArgs}
-            onArgChange={onHcArgChange}
-            disabled={adding}
-            idPrefix="add-health-check"
-          />
-        </section>
-      )}
+      {preview ? (
+        <AddOpenApiHealthCheckSection
+          presetHealthCheck={initialPreset?.healthCheck}
+          candidates={healthCheckCandidates}
+          selected={hcSelected}
+          operation={hcOperation}
+          onOperationChange={onHcOperationChange}
+          identityField={hcIdentityField}
+          onIdentityFieldChange={setHcIdentityField}
+          args={hcArgs}
+          onArgChange={onHcArgChange}
+          disabled={adding}
+        />
+      ) : null}
 
       {preview && slugAlreadyExists && !adding && <SlugCollisionAlert slug={resolvedSourceId} />}
 

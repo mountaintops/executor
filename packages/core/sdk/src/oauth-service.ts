@@ -91,6 +91,7 @@ export interface MintOAuthConnectionInput {
   readonly refreshItemId: string | null;
   readonly expiresAt: number | null;
   readonly oauthScope: string | null;
+  readonly missingOAuthScopes?: readonly string[];
   /** Per-connection override for the token endpoint, persisted only when the
    *  code was redeemed at a region other than the client's configured token
    *  host (Datadog multi-site). Null means refresh uses the client's token URL. */
@@ -201,6 +202,34 @@ const recordedOAuthScope = (
     token.refresh_token && requestedScopes.includes("offline_access") ? ["offline_access"] : [];
   const recorded = dedupeScopes([...granted, ...coveredByRefreshToken]);
   return recorded.join(" ") || null;
+};
+
+const OAUTH_SCOPE_ALIASES: Readonly<Record<string, string>> = {
+  "https://www.googleapis.com/auth/userinfo.email": "email",
+  "https://www.googleapis.com/auth/userinfo.profile": "profile",
+};
+
+const informationalOAuthScopes = new Set(["openid", "email", "profile", "offline_access"]);
+
+const canonicalOAuthScope = (scope: string): string => OAUTH_SCOPE_ALIASES[scope] ?? scope;
+
+const normalizedOAuthScopeSet = (scopes: readonly string[]): ReadonlySet<string> =>
+  new Set(scopes.map((scope) => canonicalOAuthScope(scope.trim())).filter(Boolean));
+
+const missingGrantedOAuthScopes = (
+  requestedScopes: readonly string[],
+  recordedScope: string | null,
+): readonly string[] => {
+  const granted = normalizedOAuthScopeSet(recordedScope?.split(/\s+/).filter(Boolean) ?? []);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of requestedScopes) {
+    const scope = canonicalOAuthScope(raw.trim());
+    if (scope.length === 0 || informationalOAuthScopes.has(scope) || seen.has(scope)) continue;
+    seen.add(scope);
+    if (!granted.has(scope)) out.push(scope);
+  }
+  return out;
 };
 
 const decodeJsonPayload = Schema.decodeUnknownOption(Schema.UnknownFromJsonString);
@@ -1278,6 +1307,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         yield* provider.set(ProviderItemId.make(refreshItemId), token.refresh_token);
       }
 
+      const oauthScope = recordedOAuthScope(token, requestedScopes);
       return yield* deps.mintOAuthConnection({
         owner: target.owner,
         name: target.name,
@@ -1294,7 +1324,11 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // Microsoft, issue a refresh token for `offline_access` but omit that
         // non-resource scope from the token `scope` string, so preserve it when
         // the refresh token proves it was granted.
-        oauthScope: recordedOAuthScope(token, requestedScopes),
+        oauthScope,
+        missingOAuthScopes:
+          client.grant === "authorization_code"
+            ? missingGrantedOAuthScopes(requestedScopes, oauthScope)
+            : [],
         oauthTokenUrl,
       });
     });

@@ -550,6 +550,15 @@ const rowToIntegrationRecord = (
 const decodeLastHealth = Schema.decodeUnknownOption(HealthCheckResult);
 const decodeHealthCheckSpec = Schema.decodeUnknownOption(HealthCheckSpec);
 
+const missingOAuthScopesFromProviderState = (value: unknown): readonly string[] => {
+  const decoded = decodeJsonColumn(value);
+  if (decoded == null || typeof decoded !== "object" || Array.isArray(decoded)) return [];
+  const scopes = (decoded as Record<string, unknown>).missingOAuthScopes;
+  return Array.isArray(scopes)
+    ? scopes.filter((scope): scope is string => typeof scope === "string")
+    : [];
+};
+
 const rowToConnection = (row: ConnectionRow): Connection => {
   const owner = row.owner as Owner;
   const integration = IntegrationSlug.make(row.integration);
@@ -568,6 +577,7 @@ const rowToConnection = (row: ConnectionRow): Connection => {
     oauthClientOwner:
       row.oauth_client_owner == null ? null : (String(row.oauth_client_owner) as Owner),
     oauthScope: row.oauth_scope == null ? null : String(row.oauth_scope),
+    missingOAuthScopes: missingOAuthScopesFromProviderState(row.provider_state),
     lastHealth: Option.getOrNull(decodeLastHealth(row.last_health)),
   };
 };
@@ -2447,6 +2457,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
+              provider_state:
+                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
+                  ? { missingOAuthScopes: input.missingOAuthScopes }
+                  : null,
               updated_at: now,
             };
             if (existing) {
@@ -2479,7 +2493,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 expires_at: input.expiresAt,
                 oauth_scope: input.oauthScope,
                 oauth_token_url: input.oauthTokenUrl ?? null,
-                provider_state: null,
+                provider_state:
+                  input.missingOAuthScopes && input.missingOAuthScopes.length > 0
+                    ? { missingOAuthScopes: input.missingOAuthScopes }
+                    : null,
                 created_at: now,
                 updated_at: now,
               });
@@ -2513,7 +2530,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               expires_at: input.expiresAt,
               oauth_scope: input.oauthScope,
               oauth_token_url: input.oauthTokenUrl ?? null,
-              provider_state: null,
+              provider_state:
+                input.missingOAuthScopes && input.missingOAuthScopes.length > 0
+                  ? { missingOAuthScopes: input.missingOAuthScopes }
+                  : null,
               created_at: now,
               updated_at: now,
             } as ConnectionRow);
@@ -2688,6 +2708,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             }),
           );
 
+    const healthFromCredentialResolutionFailure = (
+      failure: StorageFailure | CredentialResolutionError,
+    ): HealthCheckResult =>
+      Predicate.isTagged("CredentialResolutionError")(failure) && failure.reauthRequired === true
+        ? {
+            status: "expired",
+            checkedAt: Date.now(),
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: CredentialResolutionError carries a typed `message` field
+            detail: failure.message,
+          }
+        : {
+            status: "degraded",
+            checkedAt: Date.now(),
+            // oxlint-disable-next-line executor/no-unknown-error-message -- boundary: failures here carry typed safe messages
+            detail: failure.message,
+          };
+
+    const oauthCredentialHealthWithoutProbe = (
+      row: ConnectionRow,
+    ): Effect.Effect<HealthCheckResult, never> =>
+      resolveConnectionValues(row).pipe(
+        Effect.as({
+          status: "healthy" as const,
+          checkedAt: Date.now(),
+          detail: "Credential resolved (no probe configured).",
+        }),
+        Effect.catch((failure) => Effect.succeed(healthFromCredentialResolutionFailure(failure))),
+      );
+
     // Resolve an in-flight credential's value map (key-first validation) without
     // saving anything. Mirrors `resolveConnectionValues` for the saved-row path:
     // pasted `value`/`values` are used directly; `from` origins resolve through
@@ -2747,6 +2796,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const runtime = runtimes.get(integrationRow.plugin_id);
         const check = runtime?.plugin.checkHealth;
         if (!runtime || !check) return unknownHealth();
+        const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
+        if (spec === undefined && connectionRow.oauth_client != null) {
+          const result = yield* oauthCredentialHealthWithoutProbe(connectionRow);
+          yield* persistHealthResult(ref, result);
+          return result;
+        }
 
         const result = yield* Effect.gen(function* () {
           const values = yield* resolveConnectionValues(connectionRow);
@@ -2765,7 +2820,6 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           };
           // Core resolves the declared spec (its own column) and hands it to the
           // plugin; plugins no longer read it out of their config.
-          const spec = describeHealthCheckForRow(integrationRow) ?? undefined;
           return yield* foldPluginFailure(
             check({ ctx: runtime.ctx, integration: record, credential, spec }),
             `Health check for connection "${ref.name}" failed.`,

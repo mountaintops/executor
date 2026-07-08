@@ -274,3 +274,78 @@ scenario(
     );
   }),
 );
+
+scenario(
+  "Google · OAuth catalog connection without a health check is healthy from the grant",
+  { timeout: 300_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const browser = yield* Browser;
+    const { client: makeClient } = yield* Api;
+    const identity = yield* target.newIdentity();
+    const client = yield* makeClient(api, identity);
+    const emulator = yield* createGoogleEmulator;
+    const slug = IntegrationSlug.make("google_sheets");
+    const oauthClient = OAuthClientSlug.make(unique("google_sheets_oauth"));
+
+    yield* Effect.ensuring(
+      Effect.gen(function* () {
+        yield* addGooglePresetFromCatalog(browser, identity, "Google Sheets", String(slug));
+
+        const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
+        expect(stored, "Google Sheets catalog preset declares no health check").toBeNull();
+
+        yield* connectGoogleAccount({
+          client,
+          emulator: emulator.client,
+          emulatorBaseUrl: emulator.baseUrl,
+          target,
+          integration: slug,
+          oauthClient,
+        });
+
+        const connections = yield* client.connections.list({
+          query: { owner: "org", integration: slug },
+        });
+        const connected = connections.find((connection) => connection.name === CONNECTION);
+        expect(
+          connected?.identityLabel,
+          "Google Sheets stores grant identity before any probe is configured",
+        ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+        expect(
+          connected?.lastHealth,
+          "Google Sheets has not run a health check before the explicit check",
+        ).toBeNull();
+
+        const health = yield* client.connections.checkHealth({
+          params: { owner: "org", integration: slug, name: CONNECTION },
+          query: { ifStaleMs: 0 },
+        });
+        expect(
+          health.status,
+          `Google Sheets no-probe health is healthy: ${JSON.stringify(health)}`,
+        ).toBe("healthy");
+        expect(health.detail).toBe("Credential resolved (no probe configured).");
+
+        const refreshed = yield* client.connections.list({
+          query: { owner: "org", integration: slug },
+        });
+        expect(
+          refreshed.find((connection) => connection.name === CONNECTION)?.identityLabel,
+          "Google Sheets still shows the OAuth grant identity after no-probe health",
+        ).toBe(GOOGLE_EMULATOR_ACCOUNT_EMAIL);
+      }),
+      Effect.gen(function* () {
+        yield* client.connections
+          .remove({
+            params: { owner: "org", integration: slug, name: CONNECTION },
+          })
+          .pipe(Effect.ignore);
+        yield* client.oauth
+          .removeClient({ params: { slug: oauthClient }, payload: { owner: "org" } })
+          .pipe(Effect.ignore);
+        yield* client.openapi.removeSpec({ params: { slug } }).pipe(Effect.ignore);
+      }),
+    );
+  }),
+);
