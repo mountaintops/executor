@@ -1,6 +1,15 @@
 /* oxlint-disable executor/no-try-catch-or-throw -- boundary: plugin source config validation is converted into the extension Effect failure channel */
 import { Data, Effect, Predicate, Result } from "effect";
-import { ToolName, ToolResult, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ToolName,
+  ToolResult,
+  definePlugin,
+  type PluginCtx,
+  type ToolDef,
+} from "@executor-js/sdk";
 
 import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
 import type { BundleBackend } from "../pipeline/bundle";
@@ -26,8 +35,9 @@ import { fetchLocalDirectoryAppSource } from "../source/local-directory-source";
 import type { AppSourceSnapshot } from "../source/app-source";
 import type { PublishError } from "../pipeline/publish";
 
-const APPS_INTEGRATION = "apps";
-const APPS_CONNECTION = "published";
+const APPS_INTEGRATION = IntegrationSlug.make("apps");
+const APPS_CONNECTION = ConnectionName.make("published");
+const APPS_NO_AUTH = AuthTemplateSlug.make("none");
 
 class AppPluginError extends Data.TaggedError("AppPluginError")<{
   readonly message: string;
@@ -132,6 +142,36 @@ const sourceConfig = (input: CreateAppSourceInput): AppSourceConfig => {
 const fetchSource = (config: AppSourceConfig): Effect.Effect<AppSourceSnapshot, unknown> =>
   config.kind === "github" ? fetchGitHubAppSource(config) : fetchLocalDirectoryAppSource(config);
 
+const ensureAppsCatalogConnection = (ctx: PluginCtx<AppsStore>): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    yield* ctx.core.integrations.register({
+      slug: APPS_INTEGRATION,
+      name: "Apps",
+      description: "Published app tools",
+      config: {},
+    });
+    const existing = yield* ctx.connections.get({
+      owner: "org",
+      integration: APPS_INTEGRATION,
+      name: APPS_CONNECTION,
+    });
+    if (existing) {
+      yield* ctx.connections.refresh({
+        owner: "org",
+        integration: APPS_INTEGRATION,
+        name: APPS_CONNECTION,
+      });
+      return;
+    }
+    yield* ctx.connections.create({
+      owner: "org",
+      integration: APPS_INTEGRATION,
+      name: APPS_CONNECTION,
+      template: APPS_NO_AUTH,
+      values: {},
+    });
+  });
+
 const makeAppsExtension = (
   ctx: PluginCtx<AppsStore>,
   options?: Pick<AppsPluginOptions, "executor" | "bundler" | "sourceKinds">,
@@ -206,6 +246,7 @@ const makeAppsExtension = (
             updatedAt: now(),
           };
           yield* ctx.storage.putSource(updated, "org");
+          yield* ensureAppsCatalogConnection(ctx);
           return { status: "up-to-date", sourceRef: snapshot.sourceRef, tools };
         }
         const published = yield* publish(
@@ -249,6 +290,7 @@ const makeAppsExtension = (
           },
           "org",
         );
+        yield* ensureAppsCatalogConnection(ctx);
         return {
           status: published.success.noop ? "up-to-date" : "published",
           sourceRef: snapshot.sourceRef,
