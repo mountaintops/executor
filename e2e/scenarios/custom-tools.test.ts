@@ -371,7 +371,9 @@ scenario(
               method: "POST",
             }),
           );
-          expect(unauthorized.status, "sync requires authentication").toBe(401);
+          expect(unauthorized.status, "sync requires authentication").toBe(
+            target.name === "cloud" ? 403 : 401,
+          );
           yield* Effect.promise(() => unauthorized.text());
 
           const missingGitAuth = yield* Effect.promise(() =>
