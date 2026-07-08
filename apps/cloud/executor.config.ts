@@ -75,7 +75,6 @@ export default defineExecutorConfig({
     workosCredentials,
     workosVaultClient,
     activeToolkitSlug,
-    allowLocalNetwork,
     workerLoader,
   }: CloudPluginDeps = {}) =>
     [
