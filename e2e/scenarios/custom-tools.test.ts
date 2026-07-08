@@ -232,6 +232,15 @@ const addSourceThroughConsole = (input: {
       await page.getByRole("button", { name: "echo-tool", exact: true }).click();
       await page.getByRole("tab", { name: "Run" }).click();
       expect(await page.getByLabel("Connection").count()).toBe(0);
+      await page.getByLabel("message").fill("from run tab");
+      await page.getByLabel("apps").selectOption("0");
+      await page.getByRole("button", { name: "Run", exact: true }).click();
+      await page
+        .locator("pre")
+        .filter({ hasText: "from run tab" })
+        .filter({ hasText: "v1" })
+        .last()
+        .waitFor({ timeout: 90_000 });
     });
   });
 
