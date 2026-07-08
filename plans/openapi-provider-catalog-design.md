@@ -51,6 +51,7 @@ export interface SpecFormatAdapter {
 ```
 
 Two adapters exist, both already written:
+
 - `google-discovery`: `convertGoogleDiscoveryBundleToOpenApi` (discovery.ts) +
   the derived-identity rules from the parked stack (b14985d7)
 - `microsoft-graph`: the 37MB Graph structural split (graph.ts). Fetch stays
@@ -74,7 +75,7 @@ IntegrationPreset[]`, `googleDiscoveryAdapter`, `microsoftCatalog`,
 openapiPlugin({
   presets: [...googleCatalog, ...microsoftCatalog],
   specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
-})
+});
 ```
 
 Deleted entirely: AddGoogleSource.tsx, AddMicrosoftSource.tsx,
