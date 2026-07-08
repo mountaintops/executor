@@ -232,6 +232,8 @@ const stableId = (...parts: readonly string[]): string => {
 const operationKeyPrefix = (integration: string): string =>
   `${operationStorageKey(integration, "").split(".").slice(0, 2).join(".")}.%`;
 
+const rowKey = (...parts: readonly string[]): string => parts.join("\u0000");
+
 export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
   if (org.completed) return;
   if (org.hardErrors.length > 0) {
@@ -323,74 +325,103 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
       );
     }
 
+    // Batched serving-state copy: the naive per-tool loop costs 2-3 WAN
+    // round-trips per operation (~200k total across prod), which stalls the
+    // per-org transaction for hours. Fetch the org's operation rows once,
+    // group them in JS (storageDataRecord tolerates both jsonb-object and
+    // json-string data shapes, matching the planner), bulk-insert the
+    // re-keyed copies in chunks, and clone tool rows set-based.
+    const operationRowsBySource = new Map<
+      string,
+      Map<string, { readonly data: unknown; readonly created_at: string }>
+    >();
+    {
+      const orgOperationRows = await tx.unsafe<
+        {
+          readonly plugin_id: string;
+          readonly data: unknown;
+          readonly created_at: string;
+        }[]
+      >(
+        `
+          SELECT plugin_id, data, created_at::text
+          FROM plugin_storage
+          WHERE tenant = $1
+            AND owner = 'org'
+            AND subject = ''
+            AND plugin_id IN ('google', 'microsoft')
+            AND collection = 'operation'
+        `,
+        [org.tenant],
+      );
+      for (const row of orgOperationRows) {
+        const record = storageDataRecord(row);
+        const sourceIntegration = record.integration;
+        const toolName = record.toolName;
+        if (typeof sourceIntegration !== "string" || typeof toolName !== "string") continue;
+        const key = rowKey(row.plugin_id, sourceIntegration);
+        const byTool = operationRowsBySource.get(key) ?? new Map();
+        byTool.set(toolName, row);
+        operationRowsBySource.set(key, byTool);
+      }
+    }
+
     for (const integration of org.integrations) {
       for (const contribution of integration.sourceContributions) {
-        for (const toolName of contribution.operationToolNames) {
-          const [operation] = await tx.unsafe<
-            {
-              readonly data: unknown;
-              readonly created_at: string;
-              readonly updated_at: string;
-            }[]
-          >(
-            `
-            SELECT data, created_at::text, updated_at::text
-            FROM plugin_storage
-            WHERE tenant = $1
-              AND owner = 'org'
-              AND subject = ''
-              AND plugin_id = $2
-              AND collection = 'operation'
-              AND (
-                key = $3
-                OR (
-                  data::jsonb ->> 'integration' = $4
-                  AND data::jsonb ->> 'toolName' = $5
-                )
-              )
-            LIMIT 1
-          `,
-            [
-              org.tenant,
-              contribution.source.plugin_id,
-              operationStorageKey(contribution.source.slug, toolName),
-              contribution.source.slug,
-              toolName,
-            ],
+        if (contribution.operationToolNames.length === 0) continue;
+        const byToolName =
+          operationRowsBySource.get(
+            rowKey(contribution.source.plugin_id, contribution.source.slug),
+          ) ?? new Map<string, { readonly data: unknown; readonly created_at: string }>();
+        const missing = contribution.operationToolNames.filter((name) => !byToolName.has(name));
+        if (missing.length > 0) {
+          throw new Error(
+            `Missing operation row for ${tenantHash(org.tenant)}/${contribution.source.slug}/${missing[0]}`,
           );
-          if (!operation) {
-            throw new Error(
-              `Missing operation row for ${tenantHash(org.tenant)}/${contribution.source.slug}/${toolName}`,
-            );
-          }
+        }
+
+        const CHUNK = 200;
+        for (let start = 0; start < contribution.operationToolNames.length; start += CHUNK) {
+          const chunk = contribution.operationToolNames.slice(start, start + CHUNK);
+          const params: unknown[] = [];
+          const rowsSql = chunk
+            .map((toolName) => {
+              const operation = byToolName.get(toolName)!;
+              const base = params.length;
+              params.push(
+                integration.target.pluginId,
+                operationStorageKey(integration.target.slug, toolName),
+                JSON.stringify(
+                  scrubJson({
+                    ...storageDataRecord(operation),
+                    integration: integration.target.slug,
+                    toolName,
+                  }),
+                ),
+                operation.created_at,
+                now,
+                stableId("operation", org.tenant, integration.target.slug, toolName),
+                org.tenant,
+              );
+              return `($${base + 1}, 'operation', $${base + 2}, $${base + 3}::json, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, 'org', '')`;
+            })
+            .join(", ");
           await tx.unsafe(
             `
             INSERT INTO plugin_storage (
               plugin_id, collection, key, data, created_at, updated_at, row_id,
               tenant, owner, subject
             )
-            VALUES ($1, 'operation', $2, $3::json, $4, $5, $6, $7, 'org', '')
+            VALUES ${rowsSql}
             ON CONFLICT (tenant, owner, subject, plugin_id, collection, key)
             DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
           `,
-            [
-              integration.target.pluginId,
-              operationStorageKey(integration.target.slug, toolName),
-              JSON.stringify(
-                scrubJson({
-                  ...storageDataRecord(operation),
-                  integration: integration.target.slug,
-                  toolName,
-                }),
-              ),
-              operation.created_at,
-              now,
-              stableId("operation", org.tenant, integration.target.slug, toolName),
-              org.tenant,
-            ],
+            params,
           );
-          await tx.unsafe(
-            `
+        }
+
+        await tx.unsafe(
+          `
             INSERT INTO tool (
               integration, connection, plugin_id, name, description, input_schema, output_schema,
               annotations, created_at, updated_at, row_id, tenant, owner, subject
@@ -398,20 +429,19 @@ export const applyOrg = async (sql: SqlClient, org: OrgPlan): Promise<void> => {
             SELECT $1, connection, $2, name, description, input_schema, output_schema,
               annotations, created_at, $3, concat($4::text, '_', row_id), tenant, owner, subject
             FROM tool
-            WHERE tenant = $5 AND integration = $6 AND name = $7
+            WHERE tenant = $5 AND integration = $6 AND name = ANY($7::text[])
             ON CONFLICT (tenant, owner, subject, integration, connection, name) DO NOTHING
           `,
-            [
-              integration.target.slug,
-              integration.target.pluginId,
-              now,
-              stableId("tool", org.tenant, integration.target.slug),
-              org.tenant,
-              contribution.source.slug,
-              toolName,
-            ],
-          );
-        }
+          [
+            integration.target.slug,
+            integration.target.pluginId,
+            now,
+            stableId("tool", org.tenant, integration.target.slug),
+            org.tenant,
+            contribution.source.slug,
+            contribution.operationToolNames,
+          ],
+        );
       }
     }
 
