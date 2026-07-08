@@ -777,7 +777,6 @@
       "version": "0.0.1",
       "dependencies": {
         "@executor-js/codemode-core": "workspace:*",
-        "@executor-js/runtime-dynamic-worker": "workspace:*",
         "effect": "catalog:",
         "workerd": "1.20260708.1",
       },
@@ -792,6 +791,7 @@
       "name": "@executor-js/plugin-apps",
       "version": "0.1.0",
       "dependencies": {
+        "@executor-js/runtime-workerd-subprocess": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "esbuild": "^0.27.3",
         "zod": "4.3.6",
