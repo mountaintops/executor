@@ -112,18 +112,13 @@ const readDatabaseInput = (
           OR slug IN ('google', 'microsoft')
           OR tenant IN (
             SELECT tenant FROM integration
-            WHERE (plugin_id = 'google' AND slug = 'google')
-               OR (plugin_id = 'microsoft' AND slug = 'microsoft')
+            WHERE plugin_id IN ('google', 'microsoft')
           )
        ORDER BY tenant, slug`,
     );
     const monolithTenants = new Set(
       integrations.rows
-        .filter(
-          (row) =>
-            (row.plugin_id === "google" && row.slug === "google") ||
-            (row.plugin_id === "microsoft" && row.slug === "microsoft"),
-        )
+        .filter((row) => row.plugin_id === "google" || row.plugin_id === "microsoft")
         .map((row) => String(row.tenant)),
     );
     if (monolithTenants.size === 0) {
@@ -154,7 +149,6 @@ const readDatabaseInput = (
         input_schema, output_schema, annotations, CAST(created_at AS TEXT) AS created_at,
         CAST(updated_at AS TEXT) AS updated_at, row_id
        FROM tool
-       WHERE integration IN ('google', 'microsoft')
        ORDER BY tenant, integration, connection, name`,
     );
     const pluginStorage = yield* execute(
@@ -379,9 +373,10 @@ const applyOrg = (
     }
 
     for (const integration of org.integrations) {
-      for (const toolName of integration.servingState.operationToolNames) {
-        const operation = yield* execute(client, {
-          sql: `SELECT data, created_at, updated_at
+      for (const contribution of integration.sourceContributions) {
+        for (const toolName of contribution.operationToolNames) {
+          const operation = yield* execute(client, {
+            sql: `SELECT data, created_at, updated_at
             FROM plugin_storage
             WHERE tenant = ?
               AND owner = 'org'
@@ -396,63 +391,64 @@ const applyOrg = (
                 )
               )
             LIMIT 1`,
-          args: [
-            org.tenant,
-            integration.source.plugin_id,
-            operationStorageKey(integration.source.slug, toolName),
-            integration.source.slug,
-            toolName,
-          ],
-        });
-        const source = operation.rows[0];
-        if (!source) {
-          return yield* new DataMigrationError({
-            migration: MIGRATION_NAME,
-            cause: new Error(
-              `Missing operation row for ${tenantHash(org.tenant)}/${integration.source.slug}/${toolName}`,
-            ),
+            args: [
+              org.tenant,
+              contribution.source.plugin_id,
+              operationStorageKey(contribution.source.slug, toolName),
+              contribution.source.slug,
+              toolName,
+            ],
           });
-        }
-        yield* execute(client, {
-          sql: `INSERT INTO plugin_storage
+          const source = operation.rows[0];
+          if (!source) {
+            return yield* new DataMigrationError({
+              migration: MIGRATION_NAME,
+              cause: new Error(
+                `Missing operation row for ${tenantHash(org.tenant)}/${contribution.source.slug}/${toolName}`,
+              ),
+            });
+          }
+          yield* execute(client, {
+            sql: `INSERT INTO plugin_storage
             (plugin_id, collection, key, data, created_at, updated_at, row_id, tenant, owner, subject)
             VALUES (?, 'operation', ?, ?, ?, ?, ?, ?, 'org', '')
             ON CONFLICT(tenant, owner, subject, plugin_id, collection, key)
             DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-          args: [
-            integration.target.pluginId,
-            operationStorageKey(integration.target.slug, toolName),
-            JSON.stringify(
-              scrubJson({
-                ...storageDataRecord({ data: parseJsonLike(source.data) }),
-                integration: integration.target.slug,
-                toolName,
-              }),
-            ),
-            source.created_at,
-            now,
-            stableId("operation", org.tenant, integration.target.slug, toolName),
-            org.tenant,
-          ],
-        });
-        yield* execute(client, {
-          sql: `INSERT OR IGNORE INTO tool
+            args: [
+              integration.target.pluginId,
+              operationStorageKey(integration.target.slug, toolName),
+              JSON.stringify(
+                scrubJson({
+                  ...storageDataRecord({ data: parseJsonLike(source.data) }),
+                  integration: integration.target.slug,
+                  toolName,
+                }),
+              ),
+              source.created_at,
+              now,
+              stableId("operation", org.tenant, integration.target.slug, toolName),
+              org.tenant,
+            ],
+          });
+          yield* execute(client, {
+            sql: `INSERT OR IGNORE INTO tool
             (integration, connection, plugin_id, name, description, input_schema, output_schema,
              annotations, created_at, updated_at, row_id, tenant, owner, subject)
             SELECT ?, connection, ?, name, description, input_schema, output_schema,
               annotations, created_at, ?, ? || '_' || row_id, tenant, owner, subject
             FROM tool
             WHERE tenant = ? AND integration = ? AND name = ?`,
-          args: [
-            integration.target.slug,
-            integration.target.pluginId,
-            now,
-            stableId("tool", org.tenant, integration.target.slug),
-            org.tenant,
-            integration.source.slug,
-            toolName,
-          ],
-        });
+            args: [
+              integration.target.slug,
+              integration.target.pluginId,
+              now,
+              stableId("tool", org.tenant, integration.target.slug),
+              org.tenant,
+              contribution.source.slug,
+              toolName,
+            ],
+          });
+        }
       }
     }
 

@@ -166,18 +166,27 @@ export interface ServiceTarget {
 
 export interface PlannedIntegration {
   readonly source: Pick<IntegrationRow, "tenant" | "slug" | "plugin_id" | "name">;
+  readonly sourceContributions: readonly {
+    readonly source: IntegrationRow;
+    readonly specHash?: string;
+    readonly operationsToBuild: number;
+    readonly operationToolNames: readonly string[];
+    readonly specBlobPresent: boolean;
+    readonly defsBlobPresent: boolean;
+  }[];
   readonly target: ServiceTarget;
   readonly action: "create" | "skip_existing";
   readonly config: unknown;
   readonly healthCheck?: unknown;
   readonly servingState: {
-    readonly specHash: string;
+    readonly specHash?: string;
     readonly specSource: string;
     readonly blobBackend: "database" | "external";
     readonly specBlobPresent: boolean;
     readonly defsBlobPresent: boolean;
     readonly operationsToBuild: number;
     readonly operationToolNames: readonly string[];
+    readonly expectedZeroOperations: boolean;
   };
 }
 
@@ -270,7 +279,8 @@ const GOOGLE_TOOL_PREFIX_TO_PRESET_ID: ReadonlyMap<string, string> = new Map([
   ["searchconsole", "google-search-console"],
   ["webmasters", "google-search-console"],
   ["classroom", "google-classroom"],
-  ["admin", "google-admin-directory"],
+  ["directory", "google-admin-directory"],
+  ["reports", "google-admin-reports"],
   ["script", "google-apps-script"],
   ["bigquery", "google-bigquery"],
   ["cloudresourcemanager", "google-cloud-resource-manager"],
@@ -385,38 +395,62 @@ const googlePresetIdsFromConfig = (integration: IntegrationRow): readonly string
 
 const microsoftPresetIdsFromConfig = (integration: IntegrationRow): readonly string[] => {
   const config = configRecord(integration);
-  const configured = stringArray(config.microsoftGraphPresetIds);
+  const configured = [
+    ...stringArray(config.microsoftGraphPresetIds),
+    ...stringArray(config.microsoftGraphScopePresetIds),
+  ];
   if (configured.length > 0) return unique(configured);
   throw new Error(
     `Microsoft monolith ${tenantHash(integration.tenant)}/${integration.slug} has no stored microsoftGraphPresetIds; refusing to fabricate ${MICROSOFT_GRAPH_DEFAULT_PRESET_IDS.length} default workloads`,
   );
 };
 
-const googlePresetIdForTool = (toolName: string): string | undefined =>
-  GOOGLE_TOOL_PREFIX_TO_PRESET_ID.get(toolName.split(".")[0] ?? "");
-
-const microsoftPresetIdForTool = (toolName: string): string | undefined => {
-  const first = toolName.split(".")[0] ?? "";
-  if (/^(me|users).*Message|^meMail|^usersMail|^meMailbox|^meOutlook|^usersOutlook/.test(first)) {
-    return "mail";
+export const googlePresetIdForTool = (toolName: string): string | undefined => {
+  const [first, second] = toolName.split(".");
+  if (first === "admin") {
+    return second === "channels" ? "google-admin-reports" : "google-admin-directory";
   }
-  if (/Calendar|Event|Reminder|findMeetingTimes/.test(first)) return "calendar";
-  if (/Contact|Person/.test(first)) return "contacts";
-  if (/Todo/.test(first)) return "tasks";
-  if (/Planner/.test(first)) return "planner";
-  if (/Drive|drives|shares/.test(first)) return "files";
-  if (/Workbook|Excel/.test(first)) return "excel";
-  if (/sites|Site|List|SharePoint/.test(first)) return "sites";
-  if (/Onenote/.test(first)) return "onenote";
-  if (/chats|Chat/.test(first)) return "teams-chat";
-  if (/teams|Team|teamwork|Channel/.test(first)) return "teams-channels";
-  if (/communications|OnlineMeeting|Call|Presence/.test(first)) return "meetings-calls";
-  if (/^meUser|^usersUser|ProfilePhoto/.test(first)) return "profile";
-  return undefined;
+  return GOOGLE_TOOL_PREFIX_TO_PRESET_ID.get(first ?? "");
 };
 
-const presetIdForTool = (pluginId: MonolithPluginId, toolName: string): string | undefined =>
-  pluginId === "google" ? googlePresetIdForTool(toolName) : microsoftPresetIdForTool(toolName);
+const microsoftPresetIdsForTool = (toolName: string): readonly string[] => {
+  const segments = toolName.split(".");
+  const first = segments[0] ?? "";
+  const presetIds: string[] = [];
+  const add = (presetId: string) => {
+    if (!presetIds.includes(presetId)) presetIds.push(presetId);
+  };
+
+  if (/^me/.test(first)) add("me-surface");
+  if (/^users/.test(first)) add("users");
+  if (/^groups/.test(first)) add("groups");
+  if (/^(me|users).*Message|^meMail|^usersMail|^meMailbox|^meOutlook|^usersOutlook/.test(first)) {
+    add("mail");
+  }
+  if (/Calendar|Event|Reminder|findMeetingTimes/.test(first)) add("calendar");
+  if (/Contact|Person/.test(first)) add("contacts");
+  if (/Todo/.test(first)) add("tasks");
+  if (/Planner/.test(first)) add("planner");
+  if (/Drive|drives|shares/.test(first)) add("files");
+  if (segments.some((segment) => /workbook/i.test(segment)) || /Workbook|Excel/.test(first)) {
+    if (/^(me|users|groups)/.test(first) || /Drive|drives/.test(first)) add("files");
+    add("excel");
+  }
+  if (/sites|Site|List|SharePoint/.test(first)) add("sites");
+  if (/onenote/i.test(first) || segments.some((segment) => /onenote/i.test(segment))) {
+    add("onenote");
+  }
+  if (/chats|Chat/.test(first)) add("teams-chat");
+  if (/teams|Team|teamwork|Channel/.test(first)) add("teams-channels");
+  if (/communications|OnlineMeeting|Call|Presence/.test(first)) add("meetings-calls");
+  if (/^meUser|^usersUser|ProfilePhoto/.test(first)) add("profile");
+  return presetIds;
+};
+
+const presetIdsForTool = (pluginId: MonolithPluginId, toolName: string): readonly string[] => {
+  const presetId = pluginId === "google" ? googlePresetIdForTool(toolName) : undefined;
+  return pluginId === "google" ? (presetId ? [presetId] : []) : microsoftPresetIdsForTool(toolName);
+};
 
 const deriveServices = (
   integration: IntegrationRow,
@@ -428,7 +462,19 @@ const deriveServices = (
     pluginId === "google"
       ? googlePresetIdsFromConfig(integration)
       : microsoftPresetIdsFromConfig(integration);
-  const fromTools = unique(tools.flatMap((tool) => presetIdForTool(pluginId, tool.name) ?? []));
+  const fromTools = unique(
+    tools.flatMap((tool) => {
+      const presetIds = presetIdsForTool(pluginId, tool.name);
+      if (
+        pluginId === "microsoft" &&
+        fromConfig.length > 0 &&
+        presetIds.some((presetId) => fromConfig.includes(presetId))
+      ) {
+        return [];
+      }
+      return presetIds;
+    }),
+  );
   const missingToolPresetIds = fromTools.filter((presetId) => !fromConfig.includes(presetId));
   if (
     fromConfig.length > 0 &&
@@ -538,17 +584,34 @@ const operationRowsForService = (
     ]).includes(target.slug);
   });
 
+const operationRowsForMonolith = (
+  monolith: IntegrationRow,
+  rows: readonly PluginStorageRow[],
+): readonly PluginStorageRow[] =>
+  rows.filter((row) => {
+    if (row.tenant !== monolith.tenant) return false;
+    if (row.plugin_id !== monolith.plugin_id) return false;
+    if (row.collection !== "operation") return false;
+    return operationIntegration(row) === monolith.slug;
+  });
+
+const isConfigOnlyMonolith = (input: {
+  readonly tools: readonly ToolRow[];
+  readonly connections: readonly ConnectionRow[];
+  readonly operations: readonly PluginStorageRow[];
+}): boolean =>
+  input.tools.length === 0 && input.connections.length === 0 && input.operations.length === 0;
+
 const serviceForMatchedTool = (
   pluginId: MonolithPluginId,
   toolName: string,
   services: readonly ServiceTarget[],
 ): readonly string[] => {
-  const presetId = presetIdForTool(pluginId, toolName);
-  if (presetId) {
+  const presetIds = presetIdsForTool(pluginId, toolName);
+  return presetIds.flatMap((presetId) => {
     const slug = serviceSlugForPreset(pluginId, presetId);
     return slug && services.some((service) => service.slug === slug) ? [slug] : [];
-  }
-  return [];
+  });
 };
 
 const allServiceSlugs = (services: readonly ServiceTarget[]): readonly string[] =>
@@ -561,13 +624,11 @@ const serviceSlugsForToolPattern = (
 ): readonly string[] => {
   const firstToolSegment = toolSegments[0];
   if (!firstToolSegment || firstToolSegment === "*") return allServiceSlugs(services);
-  const presetId =
-    pluginId === "google"
-      ? GOOGLE_TOOL_PREFIX_TO_PRESET_ID.get(firstToolSegment)
-      : microsoftPresetIdForTool(firstToolSegment);
-  if (!presetId) return [];
-  const slug = serviceSlugForPreset(pluginId, presetId);
-  return slug && services.some((service) => service.slug === slug) ? [slug] : [];
+  const presetIds = presetIdsForTool(pluginId, toolSegments.join("."));
+  return presetIds.flatMap((presetId) => {
+    const slug = serviceSlugForPreset(pluginId, presetId);
+    return slug && services.some((service) => service.slug === slug) ? [slug] : [];
+  });
 };
 
 const serviceSlugsForPolicyPattern = (
@@ -759,9 +820,7 @@ export const verifyPolicyRewriteNeverWidens = (
 export const planMigration = (input: MigrationInput): MigrationPlan => {
   const completed = new Set(input.completedTenants ?? []);
   const monoliths = input.integrations.filter(
-    (row) =>
-      (row.plugin_id === "google" && row.slug === "google") ||
-      (row.plugin_id === "microsoft" && row.slug === "microsoft"),
+    (row) => row.plugin_id === "google" || row.plugin_id === "microsoft",
   );
   const tenants = [...unique(monoliths.map((row) => row.tenant))].sort();
   const trafficLastTenant = input.trafficLastTenant;
@@ -785,17 +844,21 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
     const orgTools = input.tools.filter((row) => row.tenant === tenant);
     const orgStorage = input.pluginStorage?.filter((row) => row.tenant === tenant) ?? [];
     const orgBlobs = input.blobs?.filter((row) => row.namespace.startsWith(`o:${tenant}/`)) ?? [];
-    const orgIntegrations: PlannedIntegration[] = [];
     const orgConnections: PlannedConnection[] = [];
     const orgPolicies: PlannedPolicyRewrite[] = [];
     const orgBlobCopies: PlannedBlobCopy[] = [];
     const plannedBlobCopyKeys = new Set<string>();
     const hardErrors: string[] = [];
+    const plannedIntegrationsBySlug = new Map<string, PlannedIntegration>();
     let clonedToolRows = 0;
     let operationsToBuild = 0;
 
     for (const monolith of orgMonoliths) {
       const monolithTools = orgTools.filter((tool) => tool.integration === monolith.slug);
+      const monolithConnections = input.connections.filter(
+        (connection) => connection.tenant === tenant && connection.integration === monolith.slug,
+      );
+      const monolithOperations = operationRowsForMonolith(monolith, orgStorage);
       let services: readonly ServiceTarget[];
       try {
         services = deriveServices(
@@ -806,6 +869,15 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       } catch (error) {
         if (!input.collectPolicyErrors) throw error;
         hardErrors.push(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      if (
+        isConfigOnlyMonolith({
+          tools: monolithTools,
+          connections: monolithConnections,
+          operations: monolithOperations,
+        })
+      ) {
         continue;
       }
       const specHash = specHashFor(monolith);
@@ -847,44 +919,88 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
         });
       }
       for (const target of services) {
-        const exists = integrationExists.has(rowKey(tenant, target.slug));
         const serviceOperations = operationRowsForService(monolith, target, orgStorage);
         const operationToolNames = unique(
           serviceOperations.flatMap((row) => operationToolName(row) ?? []),
         );
         operationsToBuild += operationToolNames.length;
-        orgIntegrations.push({
+        const contribution = {
           source: monolith,
-          target,
-          action: exists ? "skip_existing" : "create",
-          config: configForService(monolith, target),
-          ...(target.healthCheck ? { healthCheck: target.healthCheck } : {}),
-          servingState: {
-            specHash,
-            specSource: `${monolith.plugin_id}/${monolith.slug}`,
-            blobBackend,
-            specBlobPresent,
-            defsBlobPresent,
-            operationsToBuild: operationToolNames.length,
-            operationToolNames,
-          },
-        });
+          specHash,
+          operationsToBuild: operationToolNames.length,
+          operationToolNames,
+          specBlobPresent,
+          defsBlobPresent,
+        };
+        const existing = plannedIntegrationsBySlug.get(target.slug);
+        if (existing) {
+          const sourceContributions = [...existing.sourceContributions, contribution];
+          const winner = sourceContributions.reduce((best, candidate) =>
+            candidate.operationsToBuild > best.operationsToBuild ? candidate : best,
+          );
+          const mergedOperationToolNames = unique(
+            sourceContributions.flatMap((item) => item.operationToolNames),
+          );
+          const next: PlannedIntegration = {
+            ...existing,
+            sourceContributions,
+            source: winner.source,
+            config: configForService(winner.source, target),
+            servingState: {
+              specHash: winner.specHash,
+              specSource: `${winner.source.plugin_id}/${winner.source.slug}`,
+              blobBackend,
+              specBlobPresent: winner.specBlobPresent,
+              defsBlobPresent: winner.defsBlobPresent,
+              operationsToBuild: mergedOperationToolNames.length,
+              operationToolNames: mergedOperationToolNames,
+              expectedZeroOperations: false,
+            },
+          };
+          plannedIntegrationsBySlug.set(target.slug, next);
+        } else {
+          const exists = integrationExists.has(rowKey(tenant, target.slug));
+          const planned: PlannedIntegration = {
+            source: monolith,
+            sourceContributions: [contribution],
+            target,
+            action: exists ? "skip_existing" : "create",
+            config: configForService(monolith, target),
+            ...(target.healthCheck ? { healthCheck: target.healthCheck } : {}),
+            servingState: {
+              specHash,
+              specSource: `${monolith.plugin_id}/${monolith.slug}`,
+              blobBackend,
+              specBlobPresent,
+              defsBlobPresent,
+              operationsToBuild: operationToolNames.length,
+              operationToolNames,
+              expectedZeroOperations: false,
+            },
+          };
+          plannedIntegrationsBySlug.set(target.slug, planned);
+        }
       }
 
-      const monolithConnections = input.connections.filter(
-        (connection) => connection.tenant === tenant && connection.integration === monolith.slug,
-      );
       for (const connection of monolithConnections) {
         for (const target of services) {
-          const exists = connectionExists.has(
-            rowKey(tenant, connection.owner, connection.subject, target.slug, connection.name),
+          const key = rowKey(
+            tenant,
+            connection.owner,
+            connection.subject,
+            target.slug,
+            connection.name,
           );
+          const exists = connectionExists.has(key);
           orgConnections.push({
             source: connection,
             targetIntegration: target.slug,
             action: exists ? "skip_existing" : "clone",
             tokenReuse: "copy_item_ids_and_oauth_columns",
           });
+          if (!exists) {
+            connectionExists.add(key);
+          }
           clonedToolRows += monolithTools.filter((tool) =>
             serviceForMatchedTool(monolith.plugin_id as MonolithPluginId, tool.name, [
               target,
@@ -910,7 +1026,7 @@ export const planMigration = (input: MigrationInput): MigrationPlan => {
       tenant,
       tenantHash: tenantHash(tenant),
       completed: completed.has(tenant),
-      integrations: orgIntegrations,
+      integrations: [...plannedIntegrationsBySlug.values()],
       connections: orgConnections,
       policies: orgPolicies,
       blobCopies: orgBlobCopies,
@@ -987,6 +1103,13 @@ export const renderOrgDiff = (org: OrgPlan): string => {
     lines.push(
       `  serving: operations to build: ${row.servingState.operationsToBuild} / spec source: ${row.servingState.specSource} / blob backend: ${row.servingState.blobBackend} / specHash: ${row.servingState.specHash} / spec blob: ${row.servingState.specBlobPresent ? "present" : "missing"} / defs blob: ${row.servingState.defsBlobPresent ? "present" : "missing"}`,
     );
+    if (row.sourceContributions.length > 1) {
+      for (const contribution of row.sourceContributions) {
+        lines.push(
+          `  contribution: ${contribution.source.plugin_id}/${contribution.source.slug} / operations: ${contribution.operationsToBuild} / specHash: ${contribution.specHash ?? "none"}`,
+        );
+      }
+    }
     lines.push(`  config: ${printableJson(row.config).replaceAll("\n", "\n  ")}`);
   }
   for (const row of org.deleteMonoliths) {

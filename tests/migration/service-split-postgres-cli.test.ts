@@ -213,7 +213,115 @@ const seedMonolith = async (sql: SqlClient): Promise<void> => {
   );
 };
 
+const seedNonCanonicalGoogleMonolith = async (sql: SqlClient): Promise<void> => {
+  await sql.unsafe(
+    `
+      INSERT INTO integration (
+        slug, plugin_id, name, description, config, health_check, config_revised_at,
+        can_remove, can_refresh, created_at, updated_at, row_id, tenant
+      )
+      VALUES ('google_photos_youtube', 'google', 'Google Photos YouTube', 'Google APIs',
+        $1::json, NULL, NULL, true, true, $2, $2, 'google_photos_youtube_row', 'org_1')
+    `,
+    [
+      JSON.stringify({
+        googleDiscoveryUrls: ["https://www.googleapis.com/discovery/v1/apis/youtube/v3/rest"],
+        specHash: "youtube-hash",
+      }),
+      now,
+    ],
+  );
+  await sql.unsafe(
+    `
+      INSERT INTO connection (
+        integration, name, template, provider, item_ids, identity_label, description,
+        last_health, tools_synced_at, oauth_client, oauth_client_owner, refresh_item_id,
+        expires_at, oauth_scope, oauth_token_url, provider_state, created_at, updated_at,
+        row_id, tenant, owner, subject
+      )
+      VALUES ('google_photos_youtube', 'main', 'googleOAuth', 'vault', '{}'::json,
+        'person@example.test', NULL, NULL, 1, 'google', 'org', 'refresh_item', 2,
+        'youtube', 'https://oauth2.googleapis.com/token', '{}'::json, $1, $1,
+        'conn_google_photos_youtube', 'org_1', 'org', '')
+    `,
+    [now],
+  );
+  await sql.unsafe(
+    `
+      INSERT INTO tool (
+        integration, connection, plugin_id, name, description, input_schema, output_schema,
+        annotations, created_at, updated_at, row_id, tenant, owner, subject
+      )
+      VALUES ('google_photos_youtube', 'main', 'google', 'youtube.channels.list', 'tool',
+        '{}'::json, '{}'::json, '{}'::json, $1, $1, 'tool_youtube_channels_list',
+        'org_1', 'org', '')
+    `,
+    [now],
+  );
+  await sql.unsafe(
+    `
+      INSERT INTO plugin_storage (
+        plugin_id, collection, key, data, created_at, updated_at, row_id, tenant, owner, subject
+      )
+      VALUES ('google', 'operation', $1, $2::jsonb, $3, $3, 'op_youtube_channels_list',
+        'org_1', 'org', '')
+    `,
+    [
+      operationStorageKey("google_photos_youtube", "youtube.channels.list"),
+      JSON.stringify({
+        integration: "google_photos_youtube",
+        toolName: "youtube.channels.list",
+      }),
+      now,
+    ],
+  );
+  await sql.unsafe(
+    `INSERT INTO blob (id, namespace, key, value, row_id)
+     VALUES
+      ($1, 'o:org_1/google', 'spec/youtube-hash', 'spec text', 'spec_youtube_row'),
+      ($2, 'o:org_1/google', 'defs/youtube-hash', 'defs text', 'defs_youtube_row')`,
+    [
+      JSON.stringify(["o:org_1/google", "spec/youtube-hash"]),
+      JSON.stringify(["o:org_1/google", "defs/youtube-hash"]),
+    ],
+  );
+};
+
 describe("service-split-postgres-cli", () => {
+  it("reads non-canonical provider monolith slugs from Postgres input", async () => {
+    const pglite = await PGlite.create("memory://");
+    const server = new PGLiteSocketServer({
+      db: pglite,
+      port: 0,
+      host: "127.0.0.1",
+    });
+    await server.start();
+    const port = Number(server.getServerConn().split(":").at(1));
+    const sql = postgres(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, {
+      max: 1,
+      prepare: false,
+    }) as SqlClient;
+
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: test cleans up pglite/postgres resources after assertions
+    try {
+      await createSchema(sql);
+      await seedNonCanonicalGoogleMonolith(sql);
+
+      const input = await readDatabaseInput(sql, false, "database");
+      const plan = planMigration(input);
+
+      expect(input.integrations.map((row) => row.slug)).toContain("google_photos_youtube");
+      expect(input.tools.map((row) => row.integration)).toEqual(["google_photos_youtube"]);
+      expect(plan.orgs[0]?.integrations.map((row) => row.target.slug)).toEqual([
+        "google_youtube_data",
+      ]);
+    } finally {
+      await sql.end({ timeout: 0 });
+      await server.stop();
+      await pglite.close();
+    }
+  });
+
   it("applies a synthetic monolith split through the Postgres runner and stamps the ledger", async () => {
     const pglite = await PGlite.create("memory://");
     const server = new PGLiteSocketServer({

@@ -8,6 +8,11 @@ import {
 } from "@executor-js/plugin-openapi";
 
 import { microsoftGraphKeepPathItem } from "./graph";
+import {
+  microsoftGraphExactPathsForPresetIds,
+  microsoftGraphPathPrefixesForPresetIds,
+  microsoftGraphTagPrefixesForPresetIds,
+} from "./presets";
 
 // Mirrors the verbatim shape of the real Microsoft Graph v1.0 spec: every
 // success response uses the OpenAPI wildcard status key `2XX` (the real spec
@@ -220,6 +225,29 @@ paths:
 components: {}
 `;
 
+const driveAndWorkbookFixture = `
+openapi: 3.0.4
+info:
+  title: Microsoft Graph Fixture
+  version: v1.0
+servers:
+  - url: https://graph.microsoft.com/v1.0
+paths:
+  /drives/{drive-id}/items/{driveItem-id}:
+    get:
+      operationId: drives.GetItems
+      responses:
+        "200":
+          description: OK
+  /drives/{drive-id}/items/{driveItem-id}/workbook/worksheets:
+    get:
+      operationId: drives.GetItemsWorkbookWorksheets
+      responses:
+        "200":
+          description: OK
+components: {}
+`;
+
 const fullGraphSelection = {
   coversFullGraph: true,
   presetIds: [],
@@ -266,6 +294,36 @@ const keptIdentityFixturePaths = (
   }
 
   return kept;
+};
+
+const presetSelection = (presetIds: readonly string[]): MicrosoftGraphKeepPathItemSelection => ({
+  coversFullGraph: false,
+  presetIds,
+  customScopes: [],
+  exactPaths: microsoftGraphExactPathsForPresetIds(presetIds),
+  pathPrefixes: microsoftGraphPathPrefixesForPresetIds(presetIds),
+  tagPrefixes: microsoftGraphTagPrefixesForPresetIds(presetIds),
+});
+
+const keptOperationIds = (
+  fixture: string,
+  selection: MicrosoftGraphKeepPathItemSelection,
+): readonly string[] => {
+  const structure = structuralSplit(fixture);
+  expect(structure).not.toBeNull();
+  const keepPathItem = microsoftGraphKeepPathItem(selection);
+
+  return structure!.pathItems.flatMap((range) => {
+    const entry = parseEntry(structure!.text, range, 2);
+    expect(entry).not.toBeNull();
+    const [path, rawPathItem] = entry!;
+    const pathItem = keepPathItem(path, rawPathItem as Record<string, unknown>);
+    if (!pathItem) return [];
+    return Object.values(pathItem as Record<string, unknown>).flatMap((operation) => {
+      const operationId = (operation as { readonly operationId?: unknown }).operationId;
+      return typeof operationId === "string" ? [operationId] : [];
+    });
+  });
 };
 
 const keptPathItem = (fixture: string): Record<string, unknown> => {
@@ -336,6 +394,16 @@ it("keeps all /me operations when profile selects the path", () => {
 
   expect(kept.get("/me")?.get).toMatchObject({ operationId: "me.GetUser" });
   expect(kept.get("/me")?.patch).toMatchObject({ operationId: "me.UpdateUser" });
+});
+
+it("matches fresh-add ownership for overlapping files and excel drive paths", () => {
+  expect(keptOperationIds(driveAndWorkbookFixture, presetSelection(["files"]))).toEqual([
+    "drives.GetItems",
+    "drives.GetItemsWorkbookWorksheets",
+  ]);
+  expect(keptOperationIds(driveAndWorkbookFixture, presetSelection(["excel"]))).toEqual([
+    "drives.GetItemsWorkbookWorksheets",
+  ]);
 });
 
 it("keeps already-binary drive content responses untouched", () => {
