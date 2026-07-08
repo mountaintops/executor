@@ -8,6 +8,7 @@ import { createServer as createNetServer, type Server as NetServer } from "node:
 import type { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { rootCertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -303,9 +304,19 @@ const buildConfig = (input: {
       return `( name = ${capnpString(name)}, ${field} = embed ${capnpString(name)} )`;
     })
     .join(",\n    ");
+  // workerd's built-in `internet` service relies on the platform TLS trust
+  // store, which kj/tls cannot read on Windows ("unable to get local issuer
+  // certificate"). Declaring our own internet service with the runtime's
+  // bundled Mozilla roots gives every platform the same trust behavior.
+  const trustedCertificates = rootCertificates.map(capnpString).join(",\n      ");
   const services = [
     '( name = "main", worker = .mainWorker )',
     '( name = "blocked", worker = .blockedWorker )',
+    ...(input.globalOutbound === "internet"
+      ? [
+          `( name = "internet", network = ( allow = ["public"], tlsOptions = ( trustedCertificates = [\n      ${trustedCertificates}\n    ] ) ) )`,
+        ]
+      : []),
     ...(input.hostPort === null
       ? []
       : [`( name = "host", external = ( address = "127.0.0.1:${input.hostPort}", http = () ) )`]),
@@ -504,7 +515,10 @@ export const createWorkerdModuleRunner = (
       });
       proc.stderr.setEncoding("utf8");
       proc.stdout.resume();
-      proc.stderr.resume();
+      let stderrTail = "";
+      proc.stderr.on("data", (chunk: string) => {
+        stderrTail = (stderrTail + chunk).slice(-4000);
+      });
       proc.on("exit", (code, signal) => {
         lastExitAt = Date.now();
         if (processState?.proc === proc) {
@@ -522,7 +536,10 @@ export const createWorkerdModuleRunner = (
         await waitReady(listenPort, token, startupTimeoutMs);
       } catch (cause) {
         await disposeState(true);
-        throw cause;
+        const detail = stderrTail.trim();
+        throw detail.length === 0
+          ? cause
+          : new Error(`${normalizeError(cause).message}\nworkerd stderr:\n${detail}`);
       }
     })();
 

@@ -81,6 +81,10 @@ export default {
       if (code === null) {
         return json({ ok: false, message: "worker-bundler did not return JavaScript for " + result.mainModule });
       }
+      const installFailure = (result.warnings ?? []).find((warning) => /failed to install/i.test(String(warning)));
+      if (installFailure) {
+        return json({ ok: false, message: String(installFailure) });
+      }
       for (const [path, module] of Object.entries(result.modules)) {
         const source = moduleCode(module) ?? "";
         if (/\\.node(?:$|[?#])|node-gyp|prebuild-install|node-pre-gyp/.test(path) || /\\.node(?:$|[?#])|node-gyp|prebuild-install|node-pre-gyp/.test(source)) {
