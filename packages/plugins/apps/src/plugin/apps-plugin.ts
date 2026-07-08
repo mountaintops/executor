@@ -564,11 +564,14 @@ export const projectAppsToolSchema = (
     const required = Array.isArray(schema.required)
       ? schema.required.filter((field) => !projectedFields.has(String(field)))
       : undefined;
+    // Rebuild without the `required` key rather than setting it to undefined:
+    // an explicit undefined is not a JSON value and fails response encoding.
+    const { required: _dropped, ...rest } = schema;
     return {
       inputSchema: {
-        ...schema,
+        ...rest,
         properties,
-        ...(required && required.length > 0 ? { required } : { required: undefined }),
+        ...(required && required.length > 0 ? { required } : {}),
       },
       outputSchema,
     };
