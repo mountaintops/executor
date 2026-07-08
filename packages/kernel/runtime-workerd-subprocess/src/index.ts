@@ -363,9 +363,11 @@ export const createWorkerdModuleRunner = (
     const state = processState;
     processState = undefined;
     if (!state) return;
-    if (kill && !state.proc.killed) {
+    if (kill && state.proc.exitCode === null && state.proc.signalCode === null) {
       // workerd serve ignores SIGTERM in this version. SIGKILL is the verified immediate shutdown path.
+      const exited = new Promise<void>((resolve) => state.proc.once("exit", () => resolve()));
       state.proc.kill("SIGKILL");
+      await exited;
     }
     await closeServer(state.hostServer).catch(() => undefined);
     await rm(state.tmp, { recursive: true, force: true }).catch(() => undefined);

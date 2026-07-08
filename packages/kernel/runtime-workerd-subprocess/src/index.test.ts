@@ -93,9 +93,12 @@ const pidIsGone = (pid: number): boolean => {
 };
 
 const waitUntilGone = async (pid: number): Promise<boolean> => {
-  for (let index = 0; index < 100; index += 1) {
+  // kill(pid, 0) still succeeds for an exited-but-unreaped child, so poll on a
+  // real timer long enough for Node to reap it after the exit event.
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
     if (pidIsGone(pid)) return true;
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return pidIsGone(pid);
 };

@@ -45,5 +45,8 @@
     "effect": "catalog:",
     "tsup": "catalog:",
     "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "effect": "catalog:"
   }
 }

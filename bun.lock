@@ -808,6 +808,9 @@
         "tsup": "catalog:",
         "vitest": "catalog:",
       },
+      "peerDependencies": {
+        "effect": "catalog:",
+      },
     },
     "packages/plugins/desktop-settings": {
       "name": "@executor-js/plugin-desktop-settings",
