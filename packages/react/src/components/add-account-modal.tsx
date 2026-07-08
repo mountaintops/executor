@@ -1930,7 +1930,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       organizationId,
     );
     if (connectionNameTaken(connectionOwner, connectionName)) {
-      oauthPopup.setError(connectionExistsMessage(identityLabel));
+      toast.error(connectionExistsMessage(identityLabel));
       return;
     }
     const payload = {
