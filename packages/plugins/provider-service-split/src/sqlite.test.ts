@@ -1,18 +1,18 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { collectTables } from "../../packages/core/sdk/src/executor";
 import {
+  collectTables,
   DataMigrationError,
   runSqliteDataMigrations,
   type SqliteDataMigrationClient,
-} from "../../packages/core/sdk/src/sqlite-data-migrations";
-import { createSqliteTestFumaDb } from "../../packages/core/sdk/src/sqlite-test-db";
+} from "@executor-js/sdk";
+import { createSqliteTestFumaDb } from "@executor-js/sdk/testing";
 
-import { operationStorageKey } from "../../scripts/migration/service-split-planner";
+import { operationStorageKey } from "./planner";
 import {
   providerServiceSplitDataMigration,
   runSqliteProviderServiceSplitMigration,
-} from "../../scripts/migration/service-split-sqlite";
+} from "./sqlite";
 
 const now = 1_780_000_000_000;
 const parseJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));

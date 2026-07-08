@@ -1,8 +1,6 @@
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-error-constructor, executor/no-json-parse -- boundary: one-shot provider service split data migration preserves legacy SQLite row coercion and typed DataMigrationError wrapping */
 import { Effect } from "effect";
-import {
-  DataMigrationError,
-  type SqliteDataMigrationClient,
-} from "../../packages/core/sdk/src/sqlite-data-migrations";
+import { DataMigrationError, type SqliteDataMigrationClient } from "@executor-js/sdk";
 
 import {
   operationStorageKey,
@@ -17,7 +15,7 @@ import {
   type PluginStorageRow,
   type ToolPolicyRow,
   type ToolRow,
-} from "./service-split-planner";
+} from "./planner";
 
 const MIGRATION_NAME = "2026-07-08-provider-service-split";
 const LEDGER_TABLE = "provider_service_split_org_migration";

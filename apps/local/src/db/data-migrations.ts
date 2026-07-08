@@ -19,7 +19,7 @@ import {
 import { graphqlIntrospectionBlobDataMigration } from "@executor-js/plugin-graphql";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
 
-import { providerServiceSplitDataMigration } from "../../../../scripts/migration/service-split-sqlite";
+import { providerServiceSplitDataMigration } from "@executor-js/plugin-provider-service-split";
 import { authConfigTransforms } from "./auth-config-migration";
 import { LOCAL_V1_V2_LEDGER_NAME } from "./v1-v2-migration";
 

@@ -10,6 +10,7 @@
         "@effect/language-service": "^0.85.1",
         "@effect/tsgo": "^0.5.2",
         "@effect/vitest": "catalog:",
+        "@executor-js/plugin-provider-service-split": "workspace:*",
         "@typescript/native-preview": "^7.0.0-dev.20260410.1",
         "@vitest/expect": "catalog:",
         "@vitest/mocker": "catalog:",
@@ -181,6 +182,7 @@
         "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-microsoft": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -230,6 +232,7 @@
         "@executor-js/plugin-mcp": "workspace:*",
         "@executor-js/plugin-microsoft": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -283,6 +286,7 @@
         "@executor-js/plugin-microsoft": "workspace:*",
         "@executor-js/plugin-onepassword": "workspace:*",
         "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/plugin-provider-service-split": "workspace:*",
         "@executor-js/plugin-toolkits": "workspace:*",
         "@executor-js/react": "workspace:*",
         "@executor-js/runtime-quickjs": "workspace:*",
@@ -1095,6 +1099,25 @@
         "react",
       ],
     },
+    "packages/plugins/provider-service-split": {
+      "name": "@executor-js/plugin-provider-service-split",
+      "version": "0.0.0",
+      "dependencies": {
+        "@executor-js/plugin-google": "workspace:*",
+        "@executor-js/plugin-microsoft": "workspace:*",
+        "@executor-js/plugin-openapi": "workspace:*",
+        "@executor-js/sdk": "workspace:*",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@effect/vitest": "catalog:",
+        "@types/node": "catalog:",
+        "bun-types": "catalog:",
+        "tsup": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
     "packages/plugins/toolkits": {
       "name": "@executor-js/plugin-toolkits",
       "version": "1.5.21",
@@ -1796,6 +1819,8 @@
     "@executor-js/plugin-onepassword": ["@executor-js/plugin-onepassword@workspace:packages/plugins/onepassword"],
 
     "@executor-js/plugin-openapi": ["@executor-js/plugin-openapi@workspace:packages/plugins/openapi"],
+
+    "@executor-js/plugin-provider-service-split": ["@executor-js/plugin-provider-service-split@workspace:packages/plugins/provider-service-split"],
 
     "@executor-js/plugin-toolkits": ["@executor-js/plugin-toolkits@workspace:packages/plugins/toolkits"],
 

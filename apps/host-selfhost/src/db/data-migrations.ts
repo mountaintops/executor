@@ -14,7 +14,7 @@ import {
 import { graphqlIntrospectionBlobDataMigration } from "@executor-js/plugin-graphql";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google";
 
-import { providerServiceSplitDataMigration } from "../../../../scripts/migration/service-split-sqlite";
+import { providerServiceSplitDataMigration } from "@executor-js/plugin-provider-service-split";
 import { authConfigTransforms } from "./auth-config-migration";
 
 export const selfHostDataMigrations: readonly SqliteDataMigration[] = [

@@ -6,7 +6,6 @@ import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
   MICROSOFT_AUTHORIZATION_URL,
-  MICROSOFT_GRAPH_DEFAULT_PRESET_IDS,
   MICROSOFT_GRAPH_OPENAPI_URL,
   MICROSOFT_TOKEN_URL,
   microsoftCatalog,
@@ -32,17 +31,17 @@ type ToolView = {
 };
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
+const MICROSOFT_FILES_PRESET_ID = "files";
 
-// Compiling the ~37MB Graph spec inside dev workerd needs more headroom than
-// GitHub's 2-core runners have: /api/microsoft/graph 500s and the dev stack is
-// dead for every scenario after it in the shard. Local runs (and the
-// production Workers streaming path) are unaffected — CI-only quarantine.
+// Compiling the Graph spec inside dev workerd needs more headroom than GitHub's
+// 2-core runners have. Local runs and the production Workers streaming path are
+// unaffected, so CI keeps this narrow catalog scenario quarantined.
 const CI_GRAPH_SPEC_SKIP = process.env.CI
   ? "compiling the full Microsoft Graph spec exhausts the 2-core CI runner and kills the dev stack for the rest of the shard"
   : undefined;
 
 scenario(
-  "Microsoft Graph: default add stores common Microsoft 365 workloads",
+  "Microsoft Graph: catalog add stores the OneDrive files service",
   { timeout: 180_000, skip: CI_GRAPH_SPEC_SKIP },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -50,7 +49,7 @@ scenario(
     const identity = yield* target.newIdentity();
     const client = yield* makeApiClient(api, identity);
 
-    const integration = unique("msgraph_default");
+    const integration = unique("msgraph_files");
     const connection = ConnectionName.make("main");
     const oauthClient = OAuthClientSlug.make(unique("msgraph_app"));
 
@@ -60,10 +59,10 @@ scenario(
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_GRAPH_DEFAULT_PRESET_IDS[0]}`,
+              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
             },
             slug: integration,
-            name: "Microsoft Graph Defaults",
+            name: "Microsoft Graph Files",
             family: "microsoft",
             specFormat: "microsoft-graph",
           },
@@ -71,8 +70,8 @@ scenario(
         expect(added.slug, "the Microsoft Graph source keeps the requested slug").toBe(integration);
         expect(
           added.toolCount,
-          "the default Microsoft Graph add extracts common user-facing operations",
-        ).toBeGreaterThan(100);
+          "the Microsoft files catalog preset extracts a focused operation subtree",
+        ).toBeGreaterThan(10);
 
         const config = yield* client.openapi.getConfig({
           params: { slug: integration },
@@ -82,10 +81,9 @@ scenario(
             ? [...template.scopes]
             : [],
         );
-        expect(
-          delegatedScopes,
-          "default delegated OAuth asks for common workload scopes",
-        ).toContain("User.Read");
+        expect(delegatedScopes, "the files delegated OAuth asks for file scopes").toContain(
+          "Files.ReadWrite.All",
+        );
 
         yield* client.oauth.createClient({
           payload: {
@@ -116,11 +114,11 @@ scenario(
         const authorizeUrl = new URL(authorizationUrl || "https://invalid.example");
         expect(
           authorizeUrl.toString().length,
-          "default Microsoft Graph OAuth authorize URLs stay under ordinary proxy limits",
+          "Microsoft files OAuth authorize URLs stay under ordinary proxy limits",
         ).toBeLessThan(2_000);
         expect(
           authorizeUrl.searchParams.get("scope"),
-          "default Microsoft Graph OAuth asks for common workload scopes",
+          "Microsoft files OAuth asks for the focused scope set",
         ).toBe(delegatedScopes?.join(" "));
 
         yield* client.connections.create({
@@ -137,15 +135,15 @@ scenario(
           query: { integration: IntegrationSlug.make(integration), connection },
         });
         const names = tools.map((tool: ToolView) => tool.name);
-        const messageTools = names.filter((name) => name.toLowerCase().includes("message"));
-        const siteTools = names.filter((name) => name.toLowerCase().includes("site"));
-        expect(
-          messageTools,
-          "the retrieved catalog includes Microsoft message operations",
-        ).not.toEqual([]);
-        expect(siteTools, "the retrieved catalog includes SharePoint site operations").not.toEqual(
+        const driveTools = names.filter((name) => name.toLowerCase().includes("drive"));
+        const shareTools = names.filter((name) => name.toLowerCase().includes("share"));
+        expect(driveTools, "the retrieved catalog includes Microsoft drive operations").not.toEqual(
           [],
         );
+        expect(
+          shareTools,
+          "the retrieved catalog includes Microsoft sharing operations",
+        ).not.toEqual([]);
       }),
       Effect.gen(function* () {
         yield* client.connections

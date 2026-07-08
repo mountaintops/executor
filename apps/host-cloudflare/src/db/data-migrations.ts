@@ -12,8 +12,8 @@ import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-google"
 import {
   providerServiceSplitDataMigration,
   runSqliteProviderServiceSplitMigration,
-} from "../../../../scripts/migration/service-split-sqlite";
-import type { BlobRow } from "../../../../scripts/migration/service-split-planner";
+  type BlobRow,
+} from "@executor-js/plugin-provider-service-split";
 
 const TX_CONTROL = new Set(["BEGIN", "BEGIN TRANSACTION", "COMMIT", "ROLLBACK"]);
 

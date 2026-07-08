@@ -22,7 +22,7 @@ import {
   type PluginStorageRow,
   type ToolPolicyRow,
   type ToolRow,
-} from "./service-split-planner";
+} from "@executor-js/plugin-provider-service-split/planner";
 
 export interface SqlClient {
   readonly unsafe: <T extends readonly object[] = readonly Record<string, unknown>[]>(

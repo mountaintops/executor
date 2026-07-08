@@ -316,10 +316,7 @@ const requireOAuthClientCredential = (credential: IssuedCredential) =>
 
 scenario(
   "OAuth client · agent hands off, the human enters the secret in the browser, and the app connects",
-  {
-    skip: "phase 3 will replace this deleted microsoft.addGraph scenario with catalog-driven Microsoft e2e coverage",
-    timeout: 240_000,
-  },
+  { timeout: 240_000 },
   Effect.gen(function* () {
     const target = yield* Target;
     const { client: makeApiClient } = yield* Api;
@@ -361,7 +358,15 @@ scenario(
             name: "Microsoft Graph Emulator",
             baseUrl: emulator.baseUrl,
             family: "microsoft",
-            specFormat: "microsoft-graph",
+            authenticationTemplate: [
+              {
+                slug: template,
+                kind: "oauth2",
+                authorizationUrl: oauth.authorizationUrl,
+                tokenUrl: oauth.tokenUrl,
+                scopes: ["https://graph.microsoft.com/.default"],
+              },
+            ],
           },
         });
 
@@ -420,7 +425,7 @@ scenario(
           });
 
           await step("Register the app", async () => {
-            await page.getByRole("button", { name: "Register app" }).click();
+            await page.getByRole("button", { name: "Register app", exact: true }).click();
             // onCreated returns to the Add-connection view — the register form closes.
             await page
               .getByRole("heading", { name: "Register OAuth app" })

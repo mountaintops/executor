@@ -86,10 +86,7 @@ return { ok: result.ok, path: item.path, result: result.ok ? result.data : resul
 
 scenario(
   "Microsoft · client credentials against the emulator mint a Graph connection and call /users",
-  {
-    skip: "phase 3 will replace this deleted microsoft.addGraph scenario with catalog-driven Microsoft e2e coverage",
-    timeout: 180_000,
-  },
+  { timeout: 180_000 },
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
@@ -115,7 +112,15 @@ scenario(
               name: "Microsoft Graph Emulator",
               baseUrl: emulator.url,
               family: "microsoft",
-              specFormat: "microsoft-graph",
+              authenticationTemplate: [
+                {
+                  slug: MICROSOFT_CLIENT_CREDENTIALS_AUTH_TEMPLATE_SLUG,
+                  kind: "oauth2",
+                  authorizationUrl: oauth.authorizationUrl,
+                  tokenUrl: oauth.tokenUrl,
+                  scopes: ["https://graph.microsoft.com/.default"],
+                },
+              ],
             },
           });
 

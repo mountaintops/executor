@@ -5,8 +5,6 @@ import { Effect } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import {
   MICROSOFT_AUTH_TEMPLATE_SLUG,
-  MICROSOFT_GRAPH_ALL_PRESET_IDS,
-  MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES,
   MICROSOFT_GRAPH_OPENAPI_URL,
   microsoftCatalog,
   microsoftGraphAdapter,
@@ -26,18 +24,21 @@ type ToolView = {
 };
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
+const MICROSOFT_FILES_PRESET_ID = "files";
+const MICROSOFT_FILES_DELEGATED_SCOPES = [
+  "offline_access",
+  "User.Read",
+  "Files.ReadWrite.All",
+  "Sites.ReadWrite.All",
+] as const;
 
-// Adding *every* Graph workload pulls the full Microsoft Graph OpenAPI document
-// (~37MB, ~16.5k operations) and persists a binding per operation. That whole-
-// document path used to 503 on the Cloudflare worker: parsing the spec, and
-// then re-parsing it on every tools/list, each rebuilt a ~300MB JS tree that
-// blew the 128MB isolate. This scenario is the regression guard for both sites
-// at real scale: the add streams the compile + persist, and tools/list serves
-// the catalog back from the persisted bindings (+ the content-addressed defs
-// blob) without ever re-parsing the spec. It drives only the public API, so a
-// green run is evidence the full catalog lands and serves end to end.
+// Adding a catalog service extracts only that service's Microsoft Graph subtree
+// and persists a binding per operation. This is the regression guard for both
+// former worker pressure sites: the add streams compile and persist, and
+// tools/list serves from persisted bindings plus the content-addressed defs blob
+// without re-parsing the Graph spec.
 scenario(
-  "Microsoft Graph: the full catalog adds and serves without re-parsing the spec",
+  "Microsoft Graph: the files catalog service adds and serves without re-parsing the spec",
   { timeout: 300_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -45,30 +46,30 @@ scenario(
     const identity = yield* target.newIdentity();
     const client = yield* makeApiClient(api, identity);
 
-    const integration = unique("msgraph_full");
+    const integration = unique("msgraph_files");
     const connection = ConnectionName.make("main");
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        // Add path (1st former OOM site): the full spec is fetched and
-        // stream-compiled into one persisted binding per operation.
+        // Add path, first former OOM site: the Graph spec is fetched and
+        // stream-compiled into one persisted binding per selected operation.
         const added = yield* client.openapi.addSpec({
           payload: {
             spec: {
               kind: "url",
-              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_GRAPH_ALL_PRESET_IDS[0]}`,
+              url: `${MICROSOFT_GRAPH_OPENAPI_URL}#preset=${MICROSOFT_FILES_PRESET_ID}`,
             },
             slug: integration,
-            name: "Microsoft Graph (full)",
+            name: "Microsoft Graph Files",
             family: "microsoft",
             specFormat: "microsoft-graph",
           },
         });
-        expect(added.slug, "the full Graph source keeps the requested slug").toBe(integration);
+        expect(added.slug, "the Microsoft files source keeps the requested slug").toBe(integration);
         expect(
           added.toolCount,
-          "adding every Graph workload extracts the whole catalog (thousands of operations)",
-        ).toBeGreaterThan(5_000);
+          "adding the files catalog service extracts a focused Graph operation subtree",
+        ).toBeGreaterThan(10);
 
         const config = yield* client.openapi.getConfig({ params: { slug: integration } });
         const delegatedScopes = config?.authenticationTemplate?.flatMap((template) =>
@@ -78,8 +79,8 @@ scenario(
         );
         expect(
           delegatedScopes,
-          "full Graph delegates the app-registration default scope set",
-        ).toEqual([...MICROSOFT_GRAPH_DELEGATED_DEFAULT_SCOPES]);
+          "the files service delegates only the file-service scope set",
+        ).toEqual([...MICROSOFT_FILES_DELEGATED_SCOPES]);
 
         yield* client.connections.create({
           payload: {
@@ -91,24 +92,22 @@ scenario(
           },
         });
 
-        // Serve path (2nd former OOM site): tools/list rebuilds the catalog from
-        // the persisted bindings. The whole catalog must come back, with real
-        // descriptions, and without re-parsing the 37MB spec.
+        // Serve path, second former OOM site: tools/list rebuilds the catalog
+        // from persisted bindings, with real descriptions, and without
+        // re-parsing the Graph spec.
         const tools = yield* client.tools.list({
           query: { integration: IntegrationSlug.make(integration), connection },
         });
         expect(
           tools.length,
-          "the served catalog returns the whole set of operations, not a re-parse failure",
-        ).toBeGreaterThan(5_000);
+          "the served catalog returns the files operation subtree, not a re-parse failure",
+        ).toBeGreaterThan(10);
 
         const names = tools.map((tool: ToolView) => tool.name);
-        const messageTools = names.filter((name) => name.toLowerCase().includes("message"));
-        const siteTools = names.filter((name) => name.toLowerCase().includes("site"));
-        const userTools = names.filter((name) => name.toLowerCase().includes("user"));
-        expect(messageTools, "the served catalog spans mail operations").not.toEqual([]);
-        expect(siteTools, "the served catalog spans SharePoint site operations").not.toEqual([]);
-        expect(userTools, "the served catalog spans directory user operations").not.toEqual([]);
+        const driveTools = names.filter((name) => name.toLowerCase().includes("drive"));
+        const shareTools = names.filter((name) => name.toLowerCase().includes("share"));
+        expect(driveTools, "the served catalog spans drive operations").not.toEqual([]);
+        expect(shareTools, "the served catalog spans sharing operations").not.toEqual([]);
       }),
       Effect.gen(function* () {
         yield* client.connections

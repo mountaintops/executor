@@ -10,7 +10,10 @@ import {
   readDatabaseInput,
   type SqlClient,
 } from "../../scripts/migration/service-split-postgres-cli";
-import { operationStorageKey, planMigration } from "../../scripts/migration/service-split-planner";
+import {
+  operationStorageKey,
+  planMigration,
+} from "@executor-js/plugin-provider-service-split/planner";
 
 const now = "2026-01-01T00:00:00.000Z";
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import {
-  streamOperationBindingsFromStructure,
-  structuralSplit,
-} from "../../packages/plugins/openapi/src/sdk";
+import { streamOperationBindingsFromStructure, structuralSplit } from "@executor-js/plugin-openapi";
 
 import {
   googlePresetIdForTool,
@@ -19,8 +16,8 @@ import {
   type PluginStorageRow,
   type ToolPolicyRow,
   type ToolRow,
-} from "../../scripts/migration/service-split-planner";
-import { googleCatalog } from "../../packages/plugins/google/src/sdk/presets";
+} from "./planner";
+import { googleCatalog } from "@executor-js/plugin-google";
 
 const now = "2026-01-01T00:00:00.000Z";
 
