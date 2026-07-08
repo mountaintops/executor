@@ -584,6 +584,36 @@ describe("apps source sync", () => {
     ),
   );
 
+  it.effect("keeps the app source panel reachable after a source-stage sync failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({
+            plugins: [
+              memoryCredentialsPlugin(),
+              makeAppsPlugin({ sourceKinds: ["local-directory"] }),
+            ] as const,
+          }),
+        );
+        yield* executor.apps.createSource({
+          kind: "local-directory",
+          slug: "missing-source",
+          app: "missing-tools",
+          path: "/definitely/missing/executor-app-source",
+        });
+
+        const result = yield* executor.apps.syncSource("missing-source");
+        expect(result.status).toBe("failed");
+        expect(result.errors?.[0]?.stage).toBe("source");
+        const integration = yield* executor.integrations.get(IntegrationSlug.make("missing-tools"));
+        expect(integration?.kind).toBe("apps");
+        expect(
+          yield* executor.tools.list({ integration: IntegrationSlug.make("missing-tools") }),
+        ).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect("rejects two app sources with the same app slug", () =>
     Effect.scoped(
       Effect.gen(function* () {

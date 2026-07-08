@@ -152,6 +152,23 @@ const appDescription = (record: AppSourceRecord, description?: string): string =
   return `Custom tools from ${record.config.path}`;
 };
 
+const ensureAppIntegration = (
+  ctx: PluginCtx<AppsStore>,
+  record: AppSourceRecord,
+  description?: string,
+): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    const appSlug = IntegrationSlug.make(record.app);
+    const existing = yield* ctx.core.integrations.get(appSlug);
+    if (existing && existing.kind !== "apps") return;
+    yield* ctx.core.integrations.register({
+      slug: appSlug,
+      name: record.app,
+      description: appDescription(record, description),
+      config: {},
+    });
+  });
+
 const ensureAppConnection = (
   ctx: PluginCtx<AppsStore>,
   record: AppSourceRecord,
@@ -159,12 +176,7 @@ const ensureAppConnection = (
 ): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
     const appSlug = IntegrationSlug.make(record.app);
-    yield* ctx.core.integrations.register({
-      slug: appSlug,
-      name: record.app,
-      description: appDescription(record, description),
-      config: {},
-    });
+    yield* ensureAppIntegration(ctx, record, description);
     const existing = yield* ctx.connections.get({
       owner: "org",
       integration: appSlug,
@@ -341,6 +353,7 @@ const makeAppsExtension = (
           updatedAt: now(),
         };
         yield* ctx.storage.putSource(record, "org");
+        yield* ensureAppIntegration(ctx, record);
         return record;
       }),
     deleteSource: (slug: string) =>

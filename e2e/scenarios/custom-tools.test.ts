@@ -12,6 +12,8 @@ import type { Identity, Target as TargetShape } from "../src/target";
 import type { BrowserSurface } from "../src/surfaces/browser";
 
 const textEncoder = new TextEncoder();
+const FIXTURE_GIT_TOKEN = "fixture-token";
+const EXPECTED_GIT_AUTHORIZATION = `Basic ${btoa(`git:${FIXTURE_GIT_TOKEN}`)}`;
 
 const concat = (parts: readonly Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -72,6 +74,18 @@ const fixtureGitServer = Effect.acquireRelease(
     let current = { sha: fixture.sha1, pack: new Uint8Array(fixture.pack1) };
     let packRequests = 0;
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      if (
+        (request.url === "/repo.git/info/refs?service=git-upload-pack" ||
+          request.url === "/repo.git/git-upload-pack") &&
+        request.headers.authorization !== EXPECTED_GIT_AUTHORIZATION
+      ) {
+        response.writeHead(401, {
+          "content-type": "text/plain",
+          "www-authenticate": 'Basic realm="custom-tools-fixture"',
+        });
+        response.end("authentication required");
+        return;
+      }
       if (request.url === "/repo.git/info/refs?service=git-upload-pack") {
         response.writeHead(200, {
           "content-type": "application/x-git-upload-pack-advertisement",
@@ -208,7 +222,7 @@ const addSourceThroughConsole = (input: {
     });
 
     await step("Sync the custom tools source", async () => {
-      await page.locator('input[type="password"]').fill("fixture-token");
+      await page.locator('input[type="password"]').fill(FIXTURE_GIT_TOKEN);
       await page.getByRole("button", { name: "Sync source" }).click();
       await page.waitForURL(/\/integrations\/repo(?:\?|$)/, { timeout: 90_000 });
       await page.getByLabel("Source").getByText("2 tools").waitFor({ timeout: 90_000 });
@@ -218,6 +232,47 @@ const addSourceThroughConsole = (input: {
       await page.getByRole("button", { name: "echo-tool", exact: true }).click();
       await page.getByRole("tab", { name: "Run" }).click();
       expect(await page.getByLabel("Connection").count()).toBe(0);
+    });
+  });
+
+const assertBadTokenFailureThroughConsole = (input: {
+  readonly target: TargetShape;
+  readonly browser: BrowserSurface;
+  readonly identity: Identity;
+  readonly sourceUrl: string;
+}) =>
+  input.browser.session(input.identity, async ({ page, step }) => {
+    await step("Try to sync the custom tools source with a bad token", async () => {
+      await page.goto(new URL("/integrations", input.target.baseUrl).toString(), {
+        waitUntil: "networkidle",
+      });
+      await page.getByRole("button", { name: "Connect", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("textbox").fill(input.sourceUrl);
+      await dialog.getByRole("button", { name: "Detect" }).click();
+      await page.getByRole("heading", { name: "Add custom tools" }).waitFor();
+      await page.locator('input[type="password"]').fill("wrong-token");
+      const syncResponse = page.waitForResponse(
+        (response) =>
+          response.url().includes("/api/apps/sources/repo/sync") && response.status() === 200,
+        { timeout: 90_000 },
+      );
+      await page.getByRole("button", { name: "Sync source" }).click();
+      await syncResponse;
+    });
+
+    await step("See the failed sync on the source panel", async () => {
+      await page.goto(new URL("/integrations/repo?tab=source", input.target.baseUrl).toString(), {
+        waitUntil: "networkidle",
+      });
+      await page.getByText("Last sync failed").waitFor({ timeout: 90_000 });
+      await page.getByText("source: info/refs 401").waitFor({ timeout: 90_000 });
+    });
+
+    await step("Remove the failed source before retrying with the good token", async () => {
+      await page.getByRole("button", { name: "Remove" }).click();
+      await page.getByRole("button", { name: "Remove source" }).click();
+      await page.waitForURL(/\/integrations(?:\?|$)/, { timeout: 90_000 });
     });
   });
 
@@ -278,6 +333,20 @@ scenario(
           );
           expect(unauthorized.status, "sync requires authentication").toBe(401);
           yield* Effect.promise(() => unauthorized.text());
+
+          const missingGitAuth = yield* Effect.promise(() =>
+            fetch(`${git.url}/info/refs?service=git-upload-pack`),
+          );
+          expect(missingGitAuth.status, "fixture git server requires auth").toBe(401);
+          yield* Effect.promise(() => missingGitAuth.text());
+
+          yield* assertBadTokenFailureThroughConsole({
+            target,
+            browser,
+            identity,
+            sourceUrl: git.url,
+          });
+          expect(git.packRequests(), "bad token fails before fetching a pack").toBe(0);
 
           yield* addSourceThroughConsole({ target, browser, identity, sourceUrl: git.url });
 
