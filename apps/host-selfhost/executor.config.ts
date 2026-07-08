@@ -32,10 +32,14 @@ import { resolveSecretKey } from "./src/config";
 
 interface SelfHostPluginDeps {
   readonly activeToolkitSlug?: string;
+  readonly sourceKinds?: readonly ("git" | "local-directory")[];
+  /** Accepted for test-harness parity; the Microsoft Graph URL override moved
+   *  into the OpenAPI provider presets, so the factory no longer reads it. */
+  readonly allowLocalNetwork?: boolean;
 }
 
 export default defineExecutorConfig({
-  plugins: ({ activeToolkitSlug }: SelfHostPluginDeps = {}) =>
+  plugins: ({ activeToolkitSlug, sourceKinds }: SelfHostPluginDeps = {}) =>
     [
       openApiHttpPlugin({
         presets: [...googleCatalog, ...microsoftCatalog],
@@ -46,7 +50,7 @@ export default defineExecutorConfig({
       appsHttpPlugin({
         executor: makeWorkerdAppToolExecutor(),
         bundler: makeWorkerBundlerBackend(),
-        sourceKinds: ["git", "local-directory"],
+        sourceKinds: sourceKinds ?? ["git"],
         allowPrivateGitHosts: true,
       }),
       toolkitsPlugin({ activeToolkitSlug }),

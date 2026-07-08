@@ -1,4 +1,9 @@
 import { defineExecutorConfig } from "@executor-js/sdk";
+import {
+  makeWorkerBundlerBackend,
+  makeWorkerdAppToolExecutor,
+} from "@executor-js/plugin-apps/selfhost";
+import { appsHttpPlugin } from "@executor-js/plugin-apps/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
   googleCatalog,
@@ -38,6 +43,12 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       graphqlHttpPlugin(),
+      appsHttpPlugin({
+        executor: makeWorkerdAppToolExecutor(),
+        bundler: makeWorkerBundlerBackend(),
+        sourceKinds: ["git", "local-directory"],
+        allowPrivateGitHosts: true,
+      }),
       toolkitsPlugin({ activeToolkitSlug }),
       keychainPlugin(),
       fileSecretsPlugin(),
