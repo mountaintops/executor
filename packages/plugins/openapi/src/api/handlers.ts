@@ -44,7 +44,10 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
       capture(
         Effect.gen(function* () {
           const ext = yield* OpenApiExtensionService;
-          const preview = yield* ext.previewSpec({ spec: payload.spec });
+          const preview = yield* ext.previewSpec({
+            spec: payload.spec,
+            specFormat: payload.specFormat,
+          });
           return specPreviewSummary(preview);
         }),
       ),
@@ -61,6 +64,8 @@ export const OpenApiHandlers = HttpApiBuilder.group(ExecutorApiWithOpenApi, "ope
             baseUrl: payload.baseUrl,
             headers: payload.headers ? { ...payload.headers } : undefined,
             queryParams: payload.queryParams ? { ...payload.queryParams } : undefined,
+            specFormat: payload.specFormat,
+            family: payload.family,
             authenticationTemplate: payload.authenticationTemplate,
           });
         }),

@@ -96,6 +96,10 @@ export default function AddOpenApiSource(props: {
   initialPreset?: string;
   initialNamespace?: string;
 }) {
+  const initialPreset = useMemo(
+    () => openApiPresets.find((preset) => preset.id === props.initialPreset) ?? null,
+    [props.initialPreset],
+  );
   const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -166,6 +170,7 @@ export default function AddOpenApiSource(props: {
   const resolvedBaseUrl = baseUrl.trim();
   const resolvedSourceId =
     slugifyNamespace(identity.namespace) ||
+    initialPreset?.defaultSlug ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const resolvedDisplayName =
     identity.name.trim() ||
@@ -271,7 +276,9 @@ export default function AddOpenApiSource(props: {
     setAnalyzing(true);
     setAnalyzeError(null);
     setAddError(null);
-    const exit = await doPreview({ payload: { spec: specUrl } });
+    const exit = await doPreview({
+      payload: { spec: specUrl, specFormat: initialPreset?.specFormat },
+    });
     if (Exit.isFailure(exit)) {
       setAnalyzeError(errorMessageFromExit(exit, "Failed to parse spec"));
       setAnalyzing(false);
@@ -298,6 +305,8 @@ export default function AddOpenApiSource(props: {
           ? { description: resolvedDescription.trim() }
           : {}),
         baseUrl: resolvedBaseUrl,
+        specFormat: initialPreset?.specFormat,
+        family: initialPreset?.family,
         // Always send the edited method list (even empty) when the user has
         // inspected a preview: an explicit [] means "no auth methods", while
         // OMITTING the field tells the server to derive defaults from the
@@ -320,6 +329,8 @@ export default function AddOpenApiSource(props: {
     resolvedDescription,
     resolvedBaseUrl,
     editedAuthenticationTemplate,
+    initialPreset?.family,
+    initialPreset?.specFormat,
   ]);
 
   const handleAdd = async () => {

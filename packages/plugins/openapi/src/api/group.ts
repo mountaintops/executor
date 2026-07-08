@@ -68,17 +68,20 @@ const AuthenticationResponse = Schema.Union([OAuthTemplatePayload, ApiKeyAuthMet
 
 const AddSpecPayload = Schema.Struct({
   spec: OpenApiSpecInputPayload,
-  slug: Schema.String,
+  slug: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
   baseUrl: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  specFormat: Schema.optional(Schema.String),
+  family: Schema.optional(Schema.String),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationPayload)),
 });
 
 const PreviewSpecPayload = Schema.Struct({
   spec: Schema.String,
+  specFormat: Schema.optional(Schema.String),
 });
 
 // The `configure` payload — the new/updated auth methods to merge onto the
