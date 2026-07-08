@@ -67,6 +67,13 @@ const bestDetection = (
 ): IntegrationDetectionResult | undefined =>
   [...results].sort((a, b) => detectionRank[b.confidence] - detectionRank[a.confidence])[0];
 
+// Hosts where a two-segment path (owner/repo) is unambiguously a git remote.
+const GIT_REPO_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"]);
+
+// Deliberately conservative: only claim URLs that are unambiguously git
+// remotes (a `.git` suffix, or owner/repo on a known git host). Anything else
+// falls through to the server-side detection so OpenAPI/MCP/GraphQL URLs keep
+// their existing flows.
 const detectGitRepository = (
   raw: string,
 ): { readonly endpoint: string; readonly slug: string } | null => {
@@ -76,6 +83,11 @@ const detectGitRepository = (
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
   if (parsed.username || parsed.password) return null;
   const segments = parsed.pathname.split("/").filter(Boolean);
+  const knownGitHost =
+    GIT_REPO_HOSTS.has(parsed.hostname.toLowerCase()) &&
+    segments.length === 2 &&
+    parsed.search === "";
+  if (!parsed.pathname.endsWith(".git") && !knownGitHost) return null;
   const name = segments.at(-1)?.replace(/\.git$/, "") ?? "";
   if (!name) return null;
   parsed.hash = "";
