@@ -20,6 +20,7 @@ const MARKETING_PATHS = [
   "/terms",
   "/blog",
   "/changelog",
+  "/changelog.json",
   "/llms.txt",
   "/api/detect",
   "/_astro",
