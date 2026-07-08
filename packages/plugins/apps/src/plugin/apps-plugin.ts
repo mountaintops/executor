@@ -245,20 +245,9 @@ const appRegistrationErrorToDiagnostic = (error: unknown): SyncDiagnostic => {
 const tokenItemId = (slug: string): ProviderItemId =>
   ProviderItemId.make(`apps/source-tokens/${slug}`);
 
-const gitHubConnectionToken = (ctx: PluginCtx<AppsStore>): Effect.Effect<string | null, unknown> =>
-  Effect.gen(function* () {
-    const connections = yield* ctx.connections.list({
-      integration: IntegrationSlug.make("github"),
-    });
-    const connection = connections.find((item) => item.owner === "user") ?? connections[0];
-    if (!connection) return null;
-    return yield* ctx.connections.resolveValue({
-      owner: connection.owner,
-      integration: connection.integration,
-      name: connection.name,
-    });
-  });
-
+// A source authenticates only with its own explicitly provided token. No
+// implicit credential sharing: a stored GitHub connection must never leak
+// into git fetches the user did not tie to it.
 const gitTokenFor = (
   ctx: PluginCtx<AppsStore>,
   config: Extract<AppSourceConfig, { readonly kind: "git" }>,
@@ -270,9 +259,7 @@ const gitTokenFor = (
         ProviderItemId.make(config.tokenItemId),
       );
     }
-    const url = yield* parseGitSourceUrl(config.url).pipe(Effect.result);
-    if (Result.isFailure(url) || url.success.hostname.toLowerCase() !== "github.com") return null;
-    return yield* gitHubConnectionToken(ctx);
+    return null;
   });
 
 const activeToolNamesFor = (
