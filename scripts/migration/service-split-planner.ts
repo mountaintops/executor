@@ -378,6 +378,7 @@ export const microsoftToolFirstSegmentPresetIds: ReadonlyMap<string, readonly st
   ["meGetMailTips", ["mail"]],
   ["meInferenceClassification", ["mail"]],
   ["meJoinedTeams", ["teams-channels"]],
+  ["meMailFolder", ["mail"]],
   ["meMailFolders", ["mail"]],
   ["meMailboxSettings", ["mail"]],
   ["meMessage", ["mail"]],
@@ -421,6 +422,7 @@ export const microsoftToolFirstSegmentPresetIds: ReadonlyMap<string, readonly st
   ["usersEvent", ["calendar"]],
   ["usersEvents", ["calendar"]],
   ["usersFindMeetingTimes", ["calendar"]],
+  ["usersMailFolder", ["mail"]],
   ["usersMailFolders", ["mail"]],
   ["usersMessage", ["mail"]],
   ["usersMessages", ["mail"]],
@@ -433,6 +435,9 @@ export const microsoftToolFirstSegmentPresetIds: ReadonlyMap<string, readonly st
   ["usersReminderView", ["calendar"]],
   ["usersSendMail", ["mail"]],
   ["usersTodo", ["tasks"]],
+  ["usersUser", ["profile"]],
+  ["usersUserActions", ["profile"]],
+  ["usersUserFunctions", ["profile"]],
 ]);
 
 const MICROSOFT_WORKBOOK_FIRST_SEGMENTS = new Set([
