@@ -36,6 +36,7 @@ export {
   type MicrosoftGraphSelectionInput,
   type MicrosoftGraphSpecBuild,
 } from "./graph";
+export { microsoftGraphAdapter } from "./spec-format-adapter";
 export {
   microsoftPlugin,
   type MicrosoftConfigureInput,

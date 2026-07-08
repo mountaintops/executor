@@ -27,6 +27,7 @@ export {
   filterGoogleUserConsentOAuthScopes,
   isGoogleUserConsentOAuthScope,
 } from "./oauth-scopes";
+export { deriveGoogleDiscoveryIdentity, googleDiscoveryAdapter } from "./spec-format-adapter";
 export {
   googleOAuthConsentBatches,
   type GoogleOAuthBatchInput,
