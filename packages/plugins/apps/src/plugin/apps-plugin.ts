@@ -2,14 +2,10 @@ import { Data, Effect } from "effect";
 import { ToolName, definePlugin, type PluginCtx, type ToolDef } from "@executor-js/sdk";
 
 import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
-import { publish, type PublishInput } from "../pipeline/publish";
+import { publish } from "../pipeline/publish";
 import { buildBridge, resolveIntegrationBindings } from "./bindings";
 import { makePluginCtxAppsResolver } from "./resolver";
 import { descriptorCollection, makeAppsStore, toolCollection, type AppsStore } from "./store";
-
-export interface AppsExtension {
-  readonly publish: (input: PublishInput) => Effect.Effect<unknown, unknown>;
-}
 
 const APPS_INTEGRATION = "apps";
 const APPS_CONNECTION = "published";
@@ -23,6 +19,13 @@ interface ProjectedToolSchema {
   readonly outputSchema?: unknown;
 }
 
+const makeAppsExtension = (ctx: PluginCtx<AppsStore>, executor?: AppToolExecutor) => ({
+  publish: (input: Parameters<typeof publish>[1]) =>
+    publish({ store: ctx.storage, executor: executor ?? makeInProcessAppToolExecutor() }, input),
+});
+
+export type AppsExtension = ReturnType<typeof makeAppsExtension>;
+
 export const makeAppsPlugin = (options?: { readonly executor?: AppToolExecutor }) =>
   definePlugin(() => ({
     id: "apps",
@@ -32,13 +35,7 @@ export const makeAppsPlugin = (options?: { readonly executor?: AppToolExecutor }
       [toolCollection.name]: toolCollection,
     },
     storage: ({ blobs, pluginStorage }) => makeAppsStore({ blobs, pluginStorage }),
-    extension: (ctx: PluginCtx<AppsStore>): AppsExtension => ({
-      publish: (input) =>
-        publish(
-          { store: ctx.storage, executor: options?.executor ?? makeInProcessAppToolExecutor() },
-          input,
-        ),
-    }),
+    extension: (ctx: PluginCtx<AppsStore>) => makeAppsExtension(ctx, options?.executor),
     staticSources: () => [
       {
         id: "apps",

@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import type { AppsStore } from "../plugin/store";
 import { makeInProcessAppToolExecutor } from "../executor/app-tool-executor";
 import type { AppDescriptor } from "./descriptor";
-import { discover, PublishError } from "./discover";
+import { discover } from "./discover";
 import { publish } from "./publish";
 
 const encoder = new TextEncoder();
@@ -75,9 +75,10 @@ describe("discover", () => {
         ["skills/guide.md", ""],
       ]),
     );
-    expect(result).toBeInstanceOf(PublishError);
-    if (!(result instanceof PublishError)) return;
-    expect(result.diagnostics[0]?.path).toBe("tools/readme.md");
+    expect(result).toMatchObject({
+      _tag: "PublishError",
+      diagnostics: [{ path: "tools/readme.md" }],
+    });
   });
 });
 
@@ -117,7 +118,7 @@ describe("publish", () => {
   it.effect("rejects nondeterministic factories", () =>
     Effect.gen(function* () {
       const store = makeMemoryStore();
-      const exit = yield* publish(
+      yield* publish(
         { store, executor: makeInProcessAppToolExecutor() },
         {
           app: "crm",
@@ -139,8 +140,7 @@ describe("publish", () => {
             ),
           ],
         },
-      ).pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
+      ).pipe(Effect.flip);
       expect(store.rows.size).toBe(0);
     }),
   );

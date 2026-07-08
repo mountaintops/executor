@@ -104,12 +104,14 @@ export const buildBridge = (input: {
     const decl = input.declared[field ?? ""];
     const connection = input.bindings[field ?? ""];
     if (!field || !decl || !connection || path.length === 0) {
-      return Promise.reject(
-        new BindingError({
-          role: field ?? "",
-          integration: decl?.slug ?? "",
-          message: `undeclared integration call: ${toolPath}`,
-        }),
+      return Effect.runPromise(
+        Effect.fail(
+          new BindingError({
+            role: field ?? "",
+            integration: decl?.slug ?? "",
+            message: `undeclared integration call: ${toolPath}`,
+          }),
+        ),
       );
     }
     return Effect.runPromise(

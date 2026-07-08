@@ -1,12 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 
-import {
-  BindingError,
-  buildBridge,
-  resolveIntegrationBindings,
-  type ClientResolver,
-} from "./bindings";
+import { buildBridge, resolveIntegrationBindings, type ClientResolver } from "./bindings";
 
 const resolver: ClientResolver = {
   listConnections: ({ integration }) =>
@@ -39,25 +34,23 @@ describe("integration bindings", () => {
 
   it.effect("fails unknown connection addresses as BindingError", () =>
     Effect.gen(function* () {
-      const exit = yield* resolveIntegrationBindings(
+      const error = yield* resolveIntegrationBindings(
         { crm: { slug: "dealcloud" } },
         { crm: "tools.dealcloud.org.missing" },
         resolver,
-      ).pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") expect(String(exit.cause)).toContain("BindingError");
+      ).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "BindingError" });
     }),
   );
 
   it.effect("fails mismatched connection integrations as BindingError", () =>
     Effect.gen(function* () {
-      const exit = yield* resolveIntegrationBindings(
+      const error = yield* resolveIntegrationBindings(
         { crm: { slug: "dealcloud" } },
         { crm: "tools.github.org.main" },
         resolver,
-      ).pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") expect(String(exit.cause)).toContain('not "dealcloud"');
+      ).pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining('not "dealcloud"') });
     }),
   );
 
@@ -79,6 +72,8 @@ describe("integration bindings", () => {
       bindings: { crm: "tools.dealcloud.org.main" },
       resolver,
     });
-    await expect(bridge.call("github.repos.get", {})).rejects.toBeInstanceOf(BindingError);
+    await expect(bridge.call("github.repos.get", {})).rejects.toMatchObject({
+      _tag: "BindingError",
+    });
   });
 });

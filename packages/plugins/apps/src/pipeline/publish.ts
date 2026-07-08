@@ -66,11 +66,13 @@ const toPublishError = (
 ): PublishError =>
   new PublishError({
     stage,
+    // oxlint-disable-next-line executor/no-unknown-error-message -- typed AppExecutorError conversion keeps its stable diagnostic message
     message: cause.message,
     diagnostics:
       cause.diagnostics && cause.diagnostics.length > 0
         ? cause.diagnostics
-        : [{ path, message: cause.message }],
+        : // oxlint-disable-next-line executor/no-unknown-error-message -- typed AppExecutorError conversion keeps its stable diagnostic message
+          [{ path, message: cause.message }],
   });
 
 const toolDescriptor = (input: {

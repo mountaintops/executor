@@ -1,3 +1,4 @@
+/* oxlint-disable executor/no-try-catch-or-throw, executor/no-double-cast, executor/no-promise-reject, executor/no-instanceof-tagged-error -- boundary: in-process dynamic-import backing converts JavaScript exceptions into typed AppExecutorError */
 import { Buffer } from "node:buffer";
 import { Data, Effect } from "effect";
 import { z } from "zod";

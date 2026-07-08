@@ -51,16 +51,13 @@ describe("in-process app tool executor", () => {
           },
         });
       `);
-      const exit = yield* makeInProcessAppToolExecutor()
+      const error = yield* makeInProcessAppToolExecutor()
         .collect(bundled.code, {
           fileSlug: "sync-deals",
           sourcePath: "tools/sync-deals.ts",
         })
-        .pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") {
-        expect(String(exit.cause)).toContain("nested.crm");
-      }
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining("nested.crm") });
     }),
   );
 
@@ -106,14 +103,13 @@ describe("in-process app tool executor", () => {
           }),
         };
       `);
-      const exit = yield* makeInProcessAppToolExecutor()
+      const error = yield* makeInProcessAppToolExecutor()
         .collect(bundled.code, {
           fileSlug: "sync-deals",
           sourcePath: "tools/sync-deals.ts",
         })
-        .pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") expect(String(exit.cause)).toContain("collides");
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining("collides") });
     }),
   );
 
@@ -161,7 +157,7 @@ describe("in-process app tool executor", () => {
           handler(input) { return input; },
         });
       `);
-      const exit = yield* makeInProcessAppToolExecutor()
+      const error = yield* makeInProcessAppToolExecutor()
         .invoke(
           bundled.code,
           { toolName: "sync-deals" },
@@ -171,9 +167,8 @@ describe("in-process app tool executor", () => {
             timeoutMs: 1000,
           },
         )
-        .pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") expect(String(exit.cause)).toContain("validation failed");
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining("validation failed") });
     }),
   );
 
@@ -191,7 +186,7 @@ describe("in-process app tool executor", () => {
           },
         });
       `);
-      const exit = yield* makeInProcessAppToolExecutor()
+      const error = yield* makeInProcessAppToolExecutor()
         .invoke(
           bundled.code,
           { toolName: "sync-deals" },
@@ -201,9 +196,8 @@ describe("in-process app tool executor", () => {
             timeoutMs: 1,
           },
         )
-        .pipe(Effect.exit);
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure") expect(String(exit.cause)).toContain("timed out");
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ message: expect.stringContaining("timed out") });
     }),
   );
 });
