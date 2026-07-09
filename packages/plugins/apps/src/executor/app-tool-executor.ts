@@ -54,6 +54,11 @@ export interface InvokeOutcome {
   readonly output: unknown;
 }
 
+export interface AppToolInvokeLimits {
+  readonly timeoutMs: number;
+  readonly isolateKey?: string;
+}
+
 export interface AppToolExecutor {
   readonly collect: (
     bundle: string,
@@ -64,7 +69,7 @@ export interface AppToolExecutor {
     entry: { readonly toolName: string },
     input: unknown,
     bridge: AppToolBridge,
-    limits: { readonly timeoutMs: number },
+    limits: AppToolInvokeLimits,
   ) => Effect.Effect<InvokeOutcome, AppExecutorError>;
 }
 

@@ -19,8 +19,9 @@ type DynamicWorkerDefinition = {
 };
 
 type DynamicWorkerLoader = {
-  readonly get: (
-    name: string,
+  readonly load?: (code: DynamicWorkerDefinition) => { readonly getEntrypoint: () => unknown };
+  readonly get?: (
+    name: string | null,
     factory: () => DynamicWorkerDefinition,
   ) => { readonly getEntrypoint: () => unknown };
 };
@@ -75,6 +76,10 @@ const mapCause = (cause: unknown, kind: AppExecutorError["kind"], message: strin
         message,
         cause,
       });
+
+// Bump this when appWorkerModule() changes so stable Worker Loader IDs do not
+// reuse an isolate running an older driver around byte-identical app bundles.
+export const DRIVER_VERSION = "1";
 
 const appWorkerModule = (): string => `
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -256,21 +261,54 @@ export default class AppExecutor extends WorkerEntrypoint {
 
 const asEntrypoint = (value: unknown): DynamicAppEntrypoint => value as DynamicAppEntrypoint;
 
-const startWorker = (loader: DynamicWorkerLoader, bundle: string): DynamicAppEntrypoint =>
-  asEntrypoint(
-    loader
-      .get(`app-tool-${crypto.randomUUID()}`, () => ({
-        compatibilityDate: "2025-06-01",
-        compatibilityFlags: ["nodejs_compat"],
-        mainModule: "driver.js",
-        modules: {
-          "driver.js": appWorkerModule(),
-          "app.js": bundle,
-        },
-        globalOutbound: null,
-      }))
-      .getEntrypoint(),
-  );
+type StartedDynamicAppWorker = {
+  readonly stub: { readonly getEntrypoint: () => unknown };
+  readonly entrypoint: DynamicAppEntrypoint;
+};
+
+const workerDefinition = (bundle: string): DynamicWorkerDefinition => ({
+  compatibilityDate: "2025-06-01",
+  compatibilityFlags: ["nodejs_compat"],
+  mainModule: "driver.js",
+  modules: {
+    "driver.js": appWorkerModule(),
+    "app.js": bundle,
+  },
+  globalOutbound: null,
+});
+
+const startOneShotWorker = (
+  loader: DynamicWorkerLoader,
+  bundle: string,
+): StartedDynamicAppWorker => {
+  const definition = workerDefinition(bundle);
+  const worker =
+    loader.load !== undefined
+      ? loader.load(definition)
+      : loader.get?.(`app-tool-${crypto.randomUUID()}`, () => definition);
+  if (worker === undefined) {
+    throw new AppExecutorError({
+      kind: "collect",
+      message: "Worker Loader binding does not support load() or get()",
+    });
+  }
+  return { stub: worker, entrypoint: asEntrypoint(worker.getEntrypoint()) };
+};
+
+const startStableWorker = (
+  loader: DynamicWorkerLoader,
+  bundle: string,
+  isolateKey: string,
+): StartedDynamicAppWorker => {
+  const worker = loader.get?.(isolateKey, () => workerDefinition(bundle));
+  if (worker === undefined) {
+    throw new AppExecutorError({
+      kind: "invoke",
+      message: "Worker Loader binding does not support get()",
+    });
+  }
+  return { stub: worker, entrypoint: asEntrypoint(worker.getEntrypoint()) };
+};
 
 export const makeDynamicWorkerAppToolExecutor = (
   options: DynamicWorkerAppToolExecutorOptions,
@@ -278,7 +316,8 @@ export const makeDynamicWorkerAppToolExecutor = (
   collect: (bundle, input) =>
     Effect.tryPromise({
       try: async () => {
-        const response = await startWorker(options.loader, bundle).collect(input);
+        const worker = startOneShotWorker(options.loader, bundle);
+        const response = await worker.entrypoint.collect(input);
         if (!response.ok) throw toAppExecutorError(response, "collect");
         if (!stableStringify(response.value))
           throw new Error(`collect failed for ${input.sourcePath}`);
@@ -289,7 +328,12 @@ export const makeDynamicWorkerAppToolExecutor = (
   invoke: (bundle, entry, input, bridge, limits) =>
     Effect.tryPromise({
       try: async () => {
-        const response = await startWorker(options.loader, bundle).invoke(
+        const worker = startStableWorker(
+          options.loader,
+          bundle,
+          limits.isolateKey ?? `app-tool-${crypto.randomUUID()}`,
+        );
+        const response = await worker.entrypoint.invoke(
           { toolName: entry.toolName, input, timeoutMs: limits.timeoutMs },
           bridge,
         );

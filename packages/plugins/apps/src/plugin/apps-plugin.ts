@@ -40,6 +40,7 @@ import {
 } from "../source/local-directory-source";
 import { AppSourceError, type AppSourceSnapshot } from "../source/app-source";
 import type { PublishError } from "../pipeline/publish";
+import { DRIVER_VERSION } from "../executor/dynamic-worker-app-tool-executor";
 
 const APPS_CONNECTION = ConnectionName.make("published");
 const APPS_NO_AUTH = AuthTemplateSlug.make("none");
@@ -620,13 +621,19 @@ export const makeAppsPlugin = (options?: AppsPluginOptions) =>
           resolver,
           invokeOptions,
         });
+        // Tenant-scoped isolate key: bundleKey is content-addressed, so two
+        // orgs publishing byte-identical bundles would otherwise share a warm
+        // isolate and module-level state could cross tenants.
         const result = yield* (options?.executor ?? makeInProcessAppToolExecutor())
           .invoke(
             bundle,
             { toolName: tool.name },
             { ...bindings.input, ...bindings.bindings },
             bridge,
-            { timeoutMs: 30_000 },
+            {
+              timeoutMs: 30_000,
+              isolateKey: `${ctx.owner.tenant}:${tool.bundleKey}:${DRIVER_VERSION}`,
+            },
           )
           .pipe(
             Effect.catch((cause: unknown) => {

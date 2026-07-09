@@ -10,7 +10,8 @@ import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testin
 
 import { FLUSH, pktLine } from "../git-client/pktline";
 import { bundleEntry } from "../pipeline/bundle";
-import { makeInProcessAppToolExecutor } from "../executor/app-tool-executor";
+import { makeInProcessAppToolExecutor, type AppToolExecutor } from "../executor/app-tool-executor";
+import { DRIVER_VERSION } from "../executor/dynamic-worker-app-tool-executor";
 import type { AppDescriptor } from "../pipeline/descriptor";
 import { makeAppsPlugin, projectAppsToolSchema } from "./apps-plugin";
 import type { AppSourceRecord, AppsStore } from "./store";
@@ -211,6 +212,7 @@ const fixtureFetch = async () => {
 
 const makeInvokeStore = (input: {
   readonly bundle: string;
+  readonly bundleKey?: string;
   readonly integrations: AppDescriptor["tools"][number]["integrations"];
 }): AppsStore => ({
   putBlob: () => Effect.succeed("bundle"),
@@ -223,7 +225,7 @@ const makeInvokeStore = (input: {
     Effect.succeed({
       app: "crm",
       name: "sync",
-      bundleKey: "bundle",
+      bundleKey: input.bundleKey ?? "bundle",
       description: "Sync",
       integrations: input.integrations,
     }),
@@ -231,7 +233,7 @@ const makeInvokeStore = (input: {
     Effect.succeed({
       app: "crm",
       name: "sync",
-      bundleKey: "bundle",
+      bundleKey: input.bundleKey ?? "bundle",
       description: "Sync",
       integrations: input.integrations,
     }),
@@ -243,11 +245,14 @@ const makeInvokeStore = (input: {
 
 const invokeCtx = (input: {
   readonly bundle: string;
+  readonly bundleKey?: string;
   readonly execute: (address: string, args: unknown) => Effect.Effect<unknown, unknown>;
 }) =>
   ({
+    owner: { tenant: "tenant-a", subject: null },
     storage: makeInvokeStore({
       bundle: input.bundle,
+      ...(input.bundleKey ? { bundleKey: input.bundleKey } : {}),
       integrations: { crm: { slug: "dealcloud", mode: "one" } },
     }),
     connections: {
@@ -702,6 +707,32 @@ describe("apps source sync", () => {
 });
 
 describe("apps plugin invocation", () => {
+  it.effect("passes a tenant-scoped stable isolate key to the app tool executor", () =>
+    Effect.gen(function* () {
+      let capturedIsolateKey: string | undefined;
+      const executor: AppToolExecutor = {
+        collect: () => Effect.succeed({ tools: [] }),
+        invoke: (_bundle, _entry, _input, _bridge, limits) => {
+          capturedIsolateKey = limits.isolateKey;
+          return Effect.succeed({ output: { ok: true } });
+        },
+      };
+      const plugin = makeAppsPlugin({ executor });
+      const result = yield* plugin.invokeTool!({
+        ctx: invokeCtx({
+          bundle: "export default {};",
+          bundleKey: "apps/test-bundle",
+          execute: () => Effect.succeed({}),
+        }),
+        toolRow: { integration: "crm", name: "sync" },
+        args: { crm: "tools.dealcloud.org.main" },
+      } as never);
+
+      expect(result).toEqual({ ok: true });
+      expect(capturedIsolateKey).toBe(`tenant-a:apps/test-bundle:${DRIVER_VERSION}`);
+    }),
+  );
+
   it.effect("surfaces uncaught inner tool failures without binding_error", () =>
     Effect.gen(function* () {
       const bundled = yield* bundle(`
