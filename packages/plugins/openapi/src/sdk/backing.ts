@@ -34,6 +34,7 @@ import { OpenApiExtractionError, OpenApiInvocationError, OpenApiParseError } fro
 import {
   buildInputSchema,
   extract,
+  outputSchemaFromResponseBody,
   streamOperationBindings,
   streamOperationBindingsFromStructure,
 } from "./extract";
@@ -416,7 +417,7 @@ const toolDefFromStoredOperation = (op: StoredOperation): ToolDef => {
       : Option.match(binding.responseBody, {
           onNone: () => undefined,
           onSome: (responseBody) =>
-            normalizeOpenApiRefs(Option.getOrUndefined(responseBody.schema)),
+            normalizeOpenApiRefs(outputSchemaFromResponseBody(responseBody)),
         }),
     annotations: annotationsForOperation(binding.method, binding.pathTemplate),
   };

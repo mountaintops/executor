@@ -126,4 +126,9 @@ export {
   unwrapOpenApiTransportEnvelope,
 } from "./output-schema-migration";
 
+export {
+  openApiNdjsonOutputDataMigration,
+  runSqliteNdjsonOutputMigration,
+} from "./ndjson-output-migration";
+
 export { openApiSpecBlobDataMigration } from "./spec-blob-migration";

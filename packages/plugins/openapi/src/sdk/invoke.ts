@@ -3,7 +3,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import type { ToolFileValue } from "@executor-js/sdk/core";
 
 import { OpenApiInvocationError } from "./errors";
-import { resolveServerUrl } from "./openapi-utils";
+import { isNdjsonMediaType, NDJSON_MEDIA_TYPES, resolveServerUrl } from "./openapi-utils";
 import {
   type EncodingObject,
   type OperationFileHint,
@@ -178,12 +178,7 @@ const formatTimeout = (timeoutMs: number): string =>
 const responseHeadersTimeoutMessage = (timeoutMs: number): string =>
   `Upstream returned no response headers within ${formatTimeout(timeoutMs)}. The endpoint may be a live stream with no data to send (for example, runtime logs of an idle deployment); the request was aborted. Retry when the resource has activity, or use a non-streaming endpoint.`;
 
-const STREAMING_RESPONSE_CONTENT_TYPES = new Set([
-  "application/stream+json",
-  "application/x-ndjson",
-  "application/jsonl",
-  "text/event-stream",
-]);
+const STREAMING_RESPONSE_CONTENT_TYPES = new Set([...NDJSON_MEDIA_TYPES, "text/event-stream"]);
 
 const isStreamingResponseContentType = (ct: string | null | undefined): boolean =>
   STREAMING_RESPONSE_CONTENT_TYPES.has(normalizeContentType(ct));
@@ -247,20 +242,11 @@ const parseStreamingJsonLines = (text: string, truncated: boolean): unknown => {
   return rows;
 };
 
-const NDJSON_CONTENT_TYPES = new Set([
-  "application/stream+json",
-  "application/x-ndjson",
-  "application/jsonl",
-]);
-
 const decodeStreamingResponseBody = (
   contentType: string | null,
   text: string,
   truncated: boolean,
-): unknown =>
-  NDJSON_CONTENT_TYPES.has(normalizeContentType(contentType))
-    ? parseStreamingJsonLines(text, truncated)
-    : text;
+): unknown => (isNdjsonMediaType(contentType) ? parseStreamingJsonLines(text, truncated) : text);
 
 export const collectStreamingBody = (
   stream: Stream.Stream<Uint8Array, unknown, never>,

@@ -7,6 +7,7 @@ import {
   type SqliteDataMigration,
   type SqliteDataMigrationClient,
 } from "@executor-js/sdk";
+import { openApiNdjsonOutputDataMigration } from "@executor-js/plugin-openapi";
 import { googleOpenApiOwnershipDataMigration } from "@executor-js/plugin-openapi/providers/google";
 
 import {
@@ -242,6 +243,9 @@ const cloudflareDataMigrations = (bucket: R2Bucket | undefined): readonly Sqlite
         }).pipe(Effect.asVoid);
       }),
   },
+  // Stale-mark connections whose operations return NDJSON so their tool rows
+  // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
+  openApiNdjsonOutputDataMigration,
 ];
 
 export const runCloudflareDataMigrations = (

@@ -8,6 +8,7 @@
 import { sqliteDataMigration, type SqliteDataMigration } from "@executor-js/sdk";
 import { runSqliteAuthConfigMigration } from "@executor-js/sdk/http-auth";
 import {
+  openApiNdjsonOutputDataMigration,
   openApiOutputSchemaDataMigration,
   openApiSpecBlobDataMigration,
 } from "@executor-js/plugin-openapi";
@@ -33,4 +34,7 @@ export const selfHostDataMigrations: readonly SqliteDataMigration[] = [
   graphqlIntrospectionBlobDataMigration,
   googleOpenApiOwnershipDataMigration,
   providerServiceSplitDataMigration,
+  // Stale-mark connections whose operations return NDJSON so their tool rows
+  // rebuild with array-wrapped output schemas (mirrors cloud's drizzle 0010).
+  openApiNdjsonOutputDataMigration,
 ];

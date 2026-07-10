@@ -71,6 +71,13 @@
       "when": 1783025157233,
       "tag": "0009_true_lake",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783660669921,
+      "tag": "0010_ndjson_output_arrays",
+      "breakpoints": true
     }
   ]
 }

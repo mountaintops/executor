@@ -14,6 +14,8 @@ import {
 import {
   declaredContents,
   DocResolver,
+  isNdjsonMediaType,
+  ndjsonArrayOutputSchema,
   preferredResponseContent,
   type OperationObject,
   type ParameterObject,
@@ -257,6 +259,22 @@ const extractResponseBody = (
   }
 
   return undefined;
+};
+
+/**
+ * Derive an operation's output schema from its response body. NDJSON bodies
+ * (`application/stream+json` and friends) are spec'd per LINE but returned by
+ * the invoke path as an array of parsed lines, so the advertised schema wraps
+ * the line schema in an array — otherwise describe previews promise a single
+ * object that invocations never return. Used by both the whole-tree extract
+ * and the serve path's stored-binding rebuild so the two stay in lockstep.
+ */
+export const outputSchemaFromResponseBody = (
+  responseBody: OperationResponseBody,
+): unknown | undefined => {
+  const schema = Option.getOrUndefined(responseBody.schema);
+  if (schema === undefined) return undefined;
+  return isNdjsonMediaType(responseBody.contentType) ? ndjsonArrayOutputSchema(schema) : schema;
 };
 
 // ---------------------------------------------------------------------------
@@ -508,7 +526,7 @@ export const extract = Effect.fn("OpenApi.extract")(function* (doc: ParsedDocume
       const responseBody = extractResponseBody(operation, r);
       const servers = operationServers(pathItem, operation, docServers);
       const inputSchema = buildInputSchema(parameters, requestBody, servers);
-      const outputSchema = responseBody ? Option.getOrUndefined(responseBody.schema) : undefined;
+      const outputSchema = responseBody ? outputSchemaFromResponseBody(responseBody) : undefined;
       const tags = (operation.tags ?? []).filter((t) => t.trim().length > 0);
       const operationPathTemplate = explicitPathTemplate(operation) ?? pathTemplate;
 
