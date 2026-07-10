@@ -581,6 +581,17 @@ const rowToConnection = (row: ConnectionRow): Connection => {
   };
 };
 
+/** Parse a connection row's `oauth_scope` (space-delimited, as echoed by the
+ *  token endpoint) into the credential's `grantedScopes`. Undefined when the
+ *  row carries none, so scope comparisons downstream fail open. */
+const grantedScopesFromRow = (row: {
+  readonly oauth_scope?: unknown;
+}): readonly string[] | undefined => {
+  if (row.oauth_scope == null) return undefined;
+  const scopes = String(row.oauth_scope).split(/\s+/).filter(Boolean);
+  return scopes.length > 0 ? scopes : undefined;
+};
+
 /** The canonical credential variable for a single-secret connection. OAuth tokens
  *  and the primary apiKey value resolve through it. */
 const PRIMARY_INPUT_VARIABLE = "token";
@@ -2832,6 +2843,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             integrationRow,
             describeAuthMethodsForRow(integrationRow),
           );
+          const grantedScopes = grantedScopesFromRow(connectionRow);
           const credential: ToolInvocationCredential = {
             owner: connectionRow.owner as Owner,
             integration: ref.integration,
@@ -2840,6 +2852,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             value: values[PRIMARY_INPUT_VARIABLE] ?? null,
             values,
             config: record.config,
+            ...(grantedScopes ? { grantedScopes } : {}),
           };
           // Core resolves the declared spec (its own column) and hands it to the
           // plugin; plugins no longer read it out of their config.
@@ -3768,6 +3781,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // the primary `token` for single-input + OAuth callers.
         const values = yield* resolveConnectionValues(connectionRow);
         const integrationRow = yield* findIntegrationRow(parsed.integration);
+        const grantedScopes = grantedScopesFromRow(connectionRow);
         const credential: ToolInvocationCredential = {
           owner: parsed.owner,
           integration: parsed.integration,
@@ -3776,6 +3790,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           value: values[PRIMARY_INPUT_VARIABLE] ?? null,
           values,
           config: integrationRow ? decodeJsonColumn(integrationRow.config) : undefined,
+          ...(grantedScopes ? { grantedScopes } : {}),
         };
 
         return yield* wrapInvocationError(

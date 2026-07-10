@@ -281,6 +281,18 @@ scenario(
             scopeFailure.error?.message ?? "",
             "the message says re-authenticating will not help",
           ).toContain("Re-authenticating with the same grant");
+          // Google's 403 body names no scope; the operation's own declared
+          // scope (carried through extraction into the stored binding) and
+          // the connection's granted scope (from its oauth_scope) fill in
+          // exactly what is missing versus what is held.
+          expect(
+            scopeFailure.error?.message ?? "",
+            "the message names the scope the operation requires, from the binding",
+          ).toContain("files.read");
+          expect(
+            scopeFailure.error?.message ?? "",
+            "the message names the scope the grant holds, from the connection",
+          ).toContain("mail.read");
           expect(
             scopeFailure.error?.details?.recovery?.startOAuthTool,
             "no oauth.start recovery hint",

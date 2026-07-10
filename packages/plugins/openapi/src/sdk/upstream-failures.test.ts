@@ -304,6 +304,52 @@ describe("OpenAPI upstream failure modes", () => {
       }),
   );
 
+  it.effect("scope-insufficient 403 names the operation's declared scopes from the binding", () =>
+    Effect.gen(function* () {
+      // The upstream signals only the CLASS of failure (Google's ErrorInfo
+      // carries no scope name); the operation's own `security` declaration —
+      // extracted into the stored binding — fills in what the operation
+      // needs, so the agent can tell the user exactly what to grant.
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}',
+      }));
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      // Declare the operation's scope in the spec blob before registering it,
+      // so the extracted binding carries requiredScopes.
+      const SpecJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
+      const parsed = yield* Schema.decodeUnknownEffect(SpecJson)(server.specJson);
+      const paths = parsed.paths as Record<string, Record<string, Record<string, unknown>>>;
+      paths["/things"]!.get!.security = [{ oauth: ["things.read"] }];
+      yield* executor.openapi.addSpec({
+        spec: { kind: "blob", value: yield* Schema.encodeEffect(SpecJson)(parsed) },
+        slug: "f",
+        baseUrl: server.baseUrl,
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("f"),
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "token",
+      });
+
+      const result = yield* executor.execute(
+        ToolAddress.make(`tools.f.org.main.${LIST_THINGS}`),
+        {},
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "oauth_scope_insufficient",
+          message: expect.stringContaining("things.read"),
+        },
+      });
+    }),
+  );
+
   it.effect("ordinary 403 without a scope signal stays connection_rejected", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
