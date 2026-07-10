@@ -1,6 +1,6 @@
 -- Extraction used to persist an NDJSON operation's PER-LINE response schema
 -- as the tool's output schema, while the invoke path returns an ARRAY of
--- parsed lines — so describe previews promised a single object invocations
+-- parsed lines, so describe previews promised a single object invocations
 -- never returned. The producer now wraps those schemas in an array. Persisted
 -- `tool` rows can't be recognized as NDJSON-derived from their schema alone,
 -- but the stored operation bindings kept the response content type, so the

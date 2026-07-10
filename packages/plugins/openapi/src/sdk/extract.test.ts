@@ -93,7 +93,7 @@ describe("OpenAPI extract response bodies", () => {
       // NDJSON endpoints (e.g. Vercel's runtime-logs) declare the schema of
       // ONE line under application/stream+json; the invoke path returns an
       // array of parsed lines, so the advertised output schema must be that
-      // array — not the per-line object.
+      // array, not the per-line object.
       const lineSchema = {
         type: "object",
         properties: { level: { type: "string" }, message: { type: "string" } },

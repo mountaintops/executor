@@ -3,7 +3,7 @@
 //
 // Extraction used to persist an NDJSON operation's PER-LINE response schema as
 // the tool's output schema, while the invoke path returns an ARRAY of parsed
-// lines — so describe previews promised a single object that invocations never
+// lines, so describe previews promised a single object that invocations never
 // returned. The producer now wraps those schemas in an array; the per-line
 // shape can't be recognized from a persisted `tool` row alone (it's just a
 // JSON schema), but the stored operation bindings kept the response content
@@ -52,7 +52,7 @@ const tableExists = (client: SqliteDataMigrationClient, table: string) =>
 /** Stale-mark every connection whose integration has at least one stored
  *  operation binding with an NDJSON response, so the next read rebuilds its
  *  tool rows (with array-wrapped output schemas). Returns the number of
- *  connections marked. Fresh databases may lack either table — nothing to
+ *  connections marked. Fresh databases may lack either table; nothing to
  *  migrate. */
 export const runSqliteNdjsonOutputMigration = (
   client: SqliteDataMigrationClient,

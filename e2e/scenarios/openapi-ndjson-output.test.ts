@@ -4,7 +4,7 @@
 // NDJSON endpoints (Vercel's getRuntimeLogs is the motivating real case) are
 // spec'd with a PER-LINE schema under `application/stream+json`: the schema
 // describes one log line, the body is many of them. Executor's invoke path
-// already understands this — it collects the stream and returns an ARRAY of
+// already understands this: it collects the stream and returns an ARRAY of
 // parsed rows. But extraction stores the per-line schema as the operation's
 // outputSchema unchanged, so `tools.schema` / `tools.describe.tool()` advertise
 // `data: { level; message; ... }` (a single object) while the runtime value is
@@ -31,7 +31,7 @@ const api = composePluginApi([openApiHttpPlugin()] as const);
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
-// Three real-shaped runtime-log lines, one JSON document per line — exactly
+// Three real-shaped runtime-log lines, one JSON document per line, exactly
 // what Vercel's runtime-logs endpoint sends over application/stream+json.
 const LOG_LINES = [
   { level: "info", message: "build started", rowId: "r1", timestampInMs: 1_700_000_000_000 },
@@ -63,7 +63,7 @@ const serveNdjsonLogs = Effect.acquireRelease(
   (server) => Effect.sync(server.close),
 );
 
-// The response declares the schema of ONE line under application/stream+json —
+// The response declares the schema of ONE line under application/stream+json,
 // the same convention Vercel's spec uses for getRuntimeLogs.
 const runtimeLogsSpec = (baseUrl: string): string =>
   JSON.stringify({
@@ -219,7 +219,7 @@ scenario(
 
           // THE CONTRACT UNDER TEST: the advertised type must describe that
           // array. Today extraction stores the per-line schema unwrapped, so
-          // the typedef claims `data` is a single log-line object — the exact
+          // the typedef claims `data` is a single log-line object, the exact
           // mismatch that pushes agents into JSON.stringify shape-probing.
           const advertised = schema.outputTypeScript ?? "";
           expect(
@@ -229,7 +229,7 @@ scenario(
               `  runtime:    Array<{ level; message; rowId; timestampInMs }> (${rows.length} rows)`,
           ).toBe(true);
 
-          // And the sandbox's describe.tool must tell the same story — it is
+          // And the sandbox's describe.tool must tell the same story: it is
           // the surface agents actually consult before writing code.
           const sandboxAdvertised = String(invoked.outputTypeScript ?? "");
           expect(
@@ -238,7 +238,7 @@ scenario(
               `  advertised: ${sandboxAdvertised}`,
           ).toBe(true);
         }),
-        // Selfhost shares one workspace identity — leaked connections fail
+        // Selfhost shares one workspace identity; leaked connections fail
         // other scenarios' zero-state assertions.
         Effect.gen(function* () {
           yield* executeJson(session, removeConnectionsCode(slug)).pipe(Effect.ignore);

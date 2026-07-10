@@ -138,7 +138,7 @@ export const normalizeMediaType = (mediaType: string | null | undefined): string
 
 /** Media types whose bodies are newline-delimited JSON documents. The invoke
  *  path collects these streams and returns an ARRAY of parsed lines, so every
- *  schema surface must describe that array — the spec convention is to declare
+ *  schema surface must describe that array: the spec convention is to declare
  *  the schema of ONE line (e.g. Vercel's runtime-logs endpoint). */
 export const NDJSON_MEDIA_TYPES: ReadonlySet<string> = new Set([
   "application/stream+json",

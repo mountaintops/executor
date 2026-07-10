@@ -265,7 +265,7 @@ const extractResponseBody = (
  * Derive an operation's output schema from its response body. NDJSON bodies
  * (`application/stream+json` and friends) are spec'd per LINE but returned by
  * the invoke path as an array of parsed lines, so the advertised schema wraps
- * the line schema in an array — otherwise describe previews promise a single
+ * the line schema in an array; otherwise describe previews promise a single
  * object that invocations never return. Used by both the whole-tree extract
  * and the serve path's stored-binding rebuild so the two stay in lockstep.
  */

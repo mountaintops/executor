@@ -279,7 +279,7 @@ describe("OpenAPI streaming responses", () => {
       // The spec declares the schema of ONE line (Vercel's runtime-logs
       // convention); the runtime returns an array of parsed lines. The
       // advertised output schema must describe that array on BOTH serve
-      // paths — the add-time compile and the stored-binding rebuild — or
+      // paths (the add-time compile and the stored-binding rebuild) or
       // agents write code against a shape that never comes back.
       const lineSchema = {
         type: "object",
