@@ -192,9 +192,13 @@ function AccountRow(props: {
           </CardStackEntryDescription>
         ) : null}
         {misconfigured && probe?.detail ? (
-          <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">
+          // Not CardStackEntryDescription: that truncates to one line, and this
+          // text IS the remediation (the enable-API console link must stay
+          // visible in full). Wrap instead; break anywhere so the long URL
+          // cannot overflow the row.
+          <p className="mt-1 whitespace-normal text-xs text-muted-foreground [overflow-wrap:anywhere]">
             <DetailWithLinks text={probe.detail} />
-          </CardStackEntryDescription>
+          </p>
         ) : null}
         {needsReconsent ? (
           <CardStackEntryDescription className="mt-1 text-xs text-muted-foreground">

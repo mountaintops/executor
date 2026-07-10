@@ -304,7 +304,8 @@ scenario(
           await step(
             "The row carries Google's own instruction, console link included",
             async () => {
-              await connections.getByText(/has not been used in project/).waitFor();
+              const detail = connections.getByText(/has not been used in project/);
+              await detail.waitFor();
               const consoleLink = connections.getByRole("link", {
                 name: /console\.developers\.google\.com/,
               });
@@ -313,6 +314,22 @@ scenario(
                 await consoleLink.getAttribute("href"),
                 "the enable-API console link is clickable",
               ).toContain("console.developers.google.com");
+              // Visible in FULL, not just present in the DOM: a one-line
+              // truncate keeps the link in the tree while clipping it from
+              // view, which is exactly the regression this guards against.
+              // A clipped element overflows horizontally; a wrapped one
+              // grows taller instead.
+              const clipped = await detail.evaluate(
+                (el) =>
+                  el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1,
+              );
+              expect(clipped, "the remediation text wraps instead of clipping").toBe(false);
+              const linkVisible = await consoleLink.evaluate((el) => {
+                const rect = el.getBoundingClientRect();
+                const detailRect = el.closest("p")?.getBoundingClientRect();
+                return detailRect ? rect.right <= detailRect.right + 1 : false;
+              });
+              expect(linkVisible, "the console link sits inside the visible detail box").toBe(true);
             },
           );
 
