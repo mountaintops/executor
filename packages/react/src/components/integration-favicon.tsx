@@ -129,12 +129,12 @@ export function integrationInferredUrl(integration: {
   return null;
 }
 
+// Exact equality only: substring containment matched unrelated brands that
+// merely share a fragment ("ClickHouse Cloud" ⊂ "Cloudflare" via "cloud"). A
+// missed match is recoverable (the cascade falls through to the domain-derived
+// integrations.sh favicon); a wrong-brand icon is not.
 const tokenMatches = (integrationValue: string, presetValue: string): boolean =>
-  presetValue.length > 0 &&
-  integrationValue.length > 0 &&
-  (integrationValue === presetValue ||
-    integrationValue.includes(presetValue) ||
-    presetValue.includes(integrationValue));
+  presetValue.length > 0 && integrationValue === presetValue;
 
 export function integrationPresetIconUrl(
   integration: {

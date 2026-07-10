@@ -273,6 +273,27 @@ describe("IntegrationFavicon", () => {
     ).toBe("https://example.com/spotify.png");
   });
 
+  it("does not match a different brand sharing a word fragment (ClickHouse Cloud vs Cloudflare)", () => {
+    expect(
+      integrationPresetIconUrl({ id: "clickhouse", kind: "mcp", name: "ClickHouse Cloud" }, [
+        {
+          key: "mcp",
+          label: "MCP",
+          add: () => null,
+          edit: () => null,
+          presets: [
+            {
+              id: "cloudflare",
+              name: "Cloudflare",
+              summary: "Workers, KV, D1, R2, and DNS management via MCP.",
+              icon: "https://integrations.sh/logo/cloudflare.com",
+            },
+          ],
+        },
+      ]),
+    ).toBeNull();
+  });
+
   it("infers favicon URLs from migrated host-shaped MCP names and slugs", () => {
     expect(integrationInferredUrl({ id: "mcp_posthog_com", name: "mcp.posthog.com" })).toBe(
       "https://mcp.posthog.com",
