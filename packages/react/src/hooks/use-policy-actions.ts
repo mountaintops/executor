@@ -1,8 +1,12 @@
 import { useCallback, useMemo } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
-import { generateKeyBetween } from "fractional-indexing";
-import { PolicyId, type Owner, type ToolPolicyAction } from "@executor-js/sdk/shared";
+import {
+  PolicyId,
+  positionForNewPattern,
+  type Owner,
+  type ToolPolicyAction,
+} from "@executor-js/sdk/shared";
 
 import {
   createPolicyOptimistic,
@@ -12,24 +16,6 @@ import {
 } from "../api/atoms";
 import { policyWriteKeys } from "../api/reactivity-keys";
 import { trackEvent } from "../api/analytics";
-
-// Specificity score for ordering. Higher = more specific = should sit at a
-// lower position-key (higher precedence). New rules are auto-placed below
-// any more-specific existing rules so a freshly-added group rule never
-// silently shadows an existing leaf rule.
-//   `*`            → 0
-//   `vercel.*`     → 2  (1 literal segment, wildcard)
-//   `vercel.dns.*` → 4  (2 literal segments, wildcard)
-//   `vercel.dns`   → 5  (2 literal segments, exact — beats same-prefix wildcard)
-//   `vercel.dns.create` → 7  (3 literal segments, exact)
-const specificity = (pattern: string): number => {
-  if (pattern === "*") return 0;
-  if (pattern.endsWith(".*")) {
-    const prefix = pattern.slice(0, -2);
-    return prefix.split(".").length * 2;
-  }
-  return pattern.split(".").length * 2 + 1;
-};
 
 export interface PolicyAction {
   /** Set the action on a pattern. If a user rule with this exact pattern
@@ -83,20 +69,15 @@ export const usePolicyActions = (owner: Owner = "org"): PolicyAction => {
 
   const busy = policies.waiting;
 
+  // Specificity-aware placement (below any more-specific rule) via the shared
+  // sdk helper — the same computation the server applies when no position is
+  // sent. Computing it here too keeps the optimistic UI's final order stable;
+  // if this client's list is stale, the server default is the backstop.
   const computePosition = useCallback(
     (newPattern: string): string | undefined => {
       const committed = sorted.filter((r) => r.position !== "");
       if (committed.length === 0) return undefined;
-      const newScore = specificity(newPattern);
-      // Walk down the list (most-precedent first); place the new rule
-      // just before the first existing rule whose specificity is <= the
-      // new one. That way more-specific rules stay above us, and we win
-      // against everything equally or less specific.
-      let idx = committed.findIndex((r) => specificity(r.pattern) <= newScore);
-      if (idx === -1) idx = committed.length; // append at bottom
-      const prev = idx === 0 ? null : committed[idx - 1]!.position;
-      const next = idx === committed.length ? null : committed[idx]!.position;
-      return generateKeyBetween(prev, next);
+      return positionForNewPattern(newPattern, committed);
     },
     [sorted],
   );
