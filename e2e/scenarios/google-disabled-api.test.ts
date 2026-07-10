@@ -1,22 +1,21 @@
-// Repro: a Google 403 for a DISABLED API reads as an expired credential.
+// A Google 403 for a DISABLED API must NOT read as an expired credential.
 //
 // Production case (2026-07-10): a user's "Personal Google" connection showed
 // the red Expired badge although its OAuth token was alive and refreshing.
 // The org's Google OAuth client lives in a GCP project without the Gmail /
 // Drive / Calendar APIs enabled, so the health probe gets Google's
 // SERVICE_DISABLED 403 ("Gmail API has not been used in project ... or it is
-// disabled"). `classifyHttpStatus` maps every 401/403 to "expired", so a
-// perfectly healthy credential renders as Expired and the UI tells the user
-// to reconnect - which cannot fix a disabled upstream API.
+// disabled"). The old status-only classifier mapped every 401/403 to
+// "expired", so a healthy credential rendered as Expired and the UI told the
+// user to reconnect - advice that cannot fix a disabled upstream API.
 //
 // The scenario replays that exact journey against the Google emulator: a real
 // OAuth grant probes healthy; then the upstream starts answering the probe
 // operation with Google's real SERVICE_DISABLED body (fault injection - the
-// token stays valid, exactly like prod); the connection now reads Expired on
-// screen with the reconnect toast. The assertions pin today's (wrong)
-// classification on purpose: when the classifier learns to tell "API disabled
-// in the project" from "credential expired", this scenario is the one that
-// must change.
+// token stays valid, exactly like prod). The fixed classifier reads the error
+// body and reports "misconfigured": on screen that is the amber "API
+// disabled" badge with Google's own remediation text (including the console
+// link that enables the API), and no reconnect prompt.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
@@ -205,7 +204,7 @@ const connectGoogleAccount = (input: {
   });
 
 scenario(
-  "Google · repro: a disabled upstream API reads as an expired connection (SERVICE_DISABLED 403)",
+  "Google · a disabled upstream API reads as API disabled with the enable link, not Expired",
   { timeout: 300_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -259,16 +258,16 @@ scenario(
         );
         yield* Effect.promise(() => emulator.client.ledger.clear());
 
-        // THE BUG, pinned: a 403 that means "enable this API in your GCP
-        // project" classifies as an expired credential.
+        // The fix under test: a 403 that means "enable this API in your GCP
+        // project" classifies as misconfigured, not as a dead credential.
         const verdict = yield* client.connections.checkHealth({
           params: { owner: "org", integration: slug, name: CONNECTION },
           query: { ifStaleMs: 0 },
         });
         expect(
           verdict.status,
-          "BUG: the SERVICE_DISABLED 403 classifies as an expired credential",
-        ).toBe("expired");
+          `the SERVICE_DISABLED 403 classifies as misconfigured: ${JSON.stringify(verdict)}`,
+        ).toBe("misconfigured");
         expect(verdict.httpStatus, "the probe observed the 403").toBe(403);
         expect(
           verdict.detail,
@@ -287,24 +286,49 @@ scenario(
           });
 
           await step(
-            "The healthy-yesterday connection now shows Expired, with no clicks",
+            "The connection shows the amber API disabled badge - not Expired - with no clicks",
             async () => {
               await page.goto(`/integrations/${slug}`, { waitUntil: "networkidle" });
-              await connections.getByText("Expired", { exact: true }).waitFor({ timeout: 30_000 });
-              await connections.getByLabel("Status: Expired").waitFor();
+              await connections
+                .getByText("API disabled", { exact: true })
+                .waitFor({ timeout: 30_000 });
+              await connections.getByLabel("Status: API disabled").waitFor();
+              // The dead-credential story must be gone entirely.
+              expect(
+                await connections.getByText("Expired", { exact: true }).count(),
+                "no Expired badge on a misconfigured connection",
+              ).toBe(0);
             },
           );
 
           await step(
-            "Check now tells the user to reconnect - advice that cannot fix a disabled API",
+            "The row carries Google's own instruction, console link included",
+            async () => {
+              await connections.getByText(/has not been used in project/).waitFor();
+              const consoleLink = connections.getByRole("link", {
+                name: /console\.developers\.google\.com/,
+              });
+              await consoleLink.waitFor();
+              expect(
+                await consoleLink.getAttribute("href"),
+                "the enable-API console link is clickable",
+              ).toContain("console.developers.google.com");
+            },
+          );
+
+          await step(
+            "Check now explains the disabled API instead of prescribing reconnect",
             async () => {
               await connections.locator('button[aria-haspopup="menu"]').click();
               await page.getByRole("menuitem", { name: "Check now" }).click();
-              // The misleading UX in one line: the toast prescribes reconnecting
-              // while the upstream error says "enable the API in your project".
               await page
-                .getByText("Connection expired, reconnect to restore access")
+                .getByText(/has not been used in project/)
+                .first()
                 .waitFor({ timeout: 30_000 });
+              expect(
+                await page.getByText("Connection expired, reconnect to restore access").count(),
+                "the reconnect toast never fires for a configuration 403",
+              ).toBe(0);
             },
           );
         });
