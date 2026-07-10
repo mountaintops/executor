@@ -8,6 +8,7 @@ import {
   ToolResult,
   authToolFailure,
   classifyHttpStatus,
+  detectInsufficientScope,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
   extractResponseFields,
@@ -722,6 +723,28 @@ export const invokeOpenApiBackedTool = (input: {
     const ok = result.status >= 200 && result.status < 300;
     if (!ok) {
       if (result.status === 401 || result.status === 403) {
+        // A 403 naming a scope shortfall (RFC 6750 insufficient_scope,
+        // Google's ACCESS_TOKEN_SCOPE_INSUFFICIENT) cannot be fixed by
+        // re-running the same grant, so it gets its own code and recovery
+        // guidance instead of the re-authenticate loop.
+        const insufficientScope =
+          result.status === 403
+            ? detectInsufficientScope({ body: result.error, headers: result.headers })
+            : null;
+        if (insufficientScope) {
+          const required = insufficientScope.requiredScopes;
+          return openApiAuthToolFailure({
+            code: "oauth_scope_insufficient",
+            status: result.status,
+            message: `The connection "${input.credential.connection}" for "${integration}" is authorized, but its grant does not cover the scope this operation requires${required.length > 0 ? ` (${required.join(" ")})` : ""}. Re-authenticating with the same grant will return the same error; reconnect with broader access.`,
+            owner: input.credential.owner,
+            integration,
+            connection: String(input.credential.connection),
+            credentialKind: "oauth",
+            credentialLabel: "Upstream authorization",
+            details: result.error,
+          });
+        }
         return openApiAuthToolFailure({
           code: "connection_rejected",
           status: result.status,

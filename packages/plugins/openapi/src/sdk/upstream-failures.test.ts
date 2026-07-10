@@ -219,6 +219,109 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
+  // A 403 that names a scope shortfall is unfixable by re-running the same
+  // grant: it must NOT be connection_rejected (whose recovery tells the agent
+  // to oauth.start the identical grant and loop on the identical 403).
+  it.effect(
+    "scope-insufficient 403 (Google ErrorInfo) is classified as oauth_scope_insufficient",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* startScriptedServer(() => ({
+          status: 403,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: {
+              code: 403,
+              message: "Request had insufficient authentication scopes.",
+              status: "PERMISSION_DENIED",
+              details: [
+                {
+                  "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                  reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+                  domain: "googleapis.com",
+                  metadata: { service: "drive.googleapis.com" },
+                },
+              ],
+            },
+          }),
+        }));
+        const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+        const result = yield* executor.execute(address, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_scope_insufficient",
+            status: 403,
+            message: expect.stringContaining("does not cover the scope"),
+            details: {
+              category: "authentication",
+              upstream: { status: 403 },
+            },
+          },
+        });
+        const recovery = (
+          result as {
+            error: { details: { recovery: Record<string, string> } };
+          }
+        ).error.details.recovery;
+        expect(
+          recovery.startOAuthTool,
+          "no oauth.start hint: re-running the identical grant cannot satisfy the scope",
+        ).toBeUndefined();
+        expect(recovery.scopeInstructions).toBeDefined();
+      }),
+  );
+
+  it.effect(
+    "scope-insufficient 403 (RFC 6750 WWW-Authenticate challenge) is classified as oauth_scope_insufficient",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* startScriptedServer(() => ({
+          status: 403,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate":
+              'Bearer realm="api", error="insufficient_scope", scope="files.read"',
+          },
+          body: '{"message":"forbidden"}',
+        }));
+        const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+        const result = yield* executor.execute(address, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "oauth_scope_insufficient",
+            status: 403,
+            // The challenge names the missing scope; the message carries it so
+            // the agent can tell the user exactly what to grant.
+            message: expect.stringContaining("files.read"),
+          },
+        });
+      }),
+  );
+
+  it.effect("ordinary 403 without a scope signal stays connection_rejected", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"error":{"status":"PERMISSION_DENIED","message":"Caller lacks permission"}}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "connection_rejected", status: 403 },
+      });
+    }),
+  );
+
   it.effect("upstream returns malformed JSON despite Content-Type: application/json", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
