@@ -351,9 +351,11 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   // error), which used to misclassify an expired token as a generic
   // connection failure. Propagate it as-is instead.
   return connectStreamableHttp.pipe(
-    Effect.catch((error) => {
-      if (Predicate.isTagged(error, "McpOAuthReauthorizationRequired")) return Effect.fail(error);
-      if (error.httpStatus === 401 || error.httpStatus === 403) return Effect.fail(error);
+    Effect.catch((failure) => {
+      if (Predicate.isTagged(failure, "McpOAuthReauthorizationRequired")) {
+        return Effect.fail(failure);
+      }
+      if (failure.httpStatus === 401 || failure.httpStatus === 403) return Effect.fail(failure);
       // When the fallback ALSO fails, the streamable-http failure is the
       // interesting one: most modern servers don't serve legacy SSE at all
       // (GET → 405), so reporting only "Failed connecting via sse" points
@@ -362,16 +364,16 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
       return connectSse.pipe(
         Effect.catch(
           (
-            sseError,
+            sseFailure,
           ): Effect.Effect<never, McpConnectionError | McpOAuthReauthorizationRequired> => {
-            if (Predicate.isTagged(sseError, "McpOAuthReauthorizationRequired")) {
-              return Effect.fail(sseError);
+            if (Predicate.isTagged(sseFailure, "McpOAuthReauthorizationRequired")) {
+              return Effect.fail(sseFailure);
             }
             return Effect.fail(
               new McpConnectionError({
                 transport: "streamable-http",
-                message: `${error.message}; SSE fallback also failed: ${sseError.message}`,
-                ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+                message: `${failure.message}; SSE fallback also failed: ${sseFailure.message}`,
+                ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }),
               }),
             );
           },

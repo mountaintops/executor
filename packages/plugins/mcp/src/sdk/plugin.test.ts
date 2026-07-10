@@ -408,18 +408,17 @@ describe("mcpPlugin", () => {
           ),
         );
 
-        const error = yield* createMcpConnector({
+        const failure = yield* createMcpConnector({
           transport: "remote",
           endpoint: "https://internal.example/mcp",
           httpClientLayer,
         }).pipe(Effect.flip);
 
-        if (!Predicate.isTagged(error, "McpConnectionError")) {
-          throw new TypeError(`expected McpConnectionError, got ${error._tag}`);
-        }
-        expect(error.message).toContain("streamable-http");
-        expect(error.message).toContain("SSE fallback also failed");
-        expect(error.httpStatus).toBe(500);
+        expect(Predicate.isTagged(failure, "McpConnectionError")).toBe(true);
+        if (!Predicate.isTagged(failure, "McpConnectionError")) return;
+        expect(failure.message).toContain("streamable-http");
+        expect(failure.message).toContain("SSE fallback also failed");
+        expect(failure.httpStatus).toBe(500);
       }),
   );
 
