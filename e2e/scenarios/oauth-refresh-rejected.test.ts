@@ -30,7 +30,7 @@ import {
 import { serveOAuthTestServer } from "@executor-js/sdk/testing";
 
 import { scenario } from "../src/scenario";
-import { Api, Target } from "../src/services";
+import { Api, Mcp, Target } from "../src/services";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
@@ -129,6 +129,7 @@ scenario(
     Effect.gen(function* () {
       const target = yield* Target;
       const { client: makeClient } = yield* Api;
+      const mcp = yield* Mcp;
       const identity = yield* target.newIdentity();
       const client = yield* makeClient(api, identity);
       const upstream = yield* serveUpstream();
@@ -218,11 +219,24 @@ scenario(
             .find((addr) => addr.endsWith("listIssues"));
           expect(address, "the listIssues tool is in the catalog").toBeDefined();
 
-          const executed = yield* client.executions.execute({
-            payload: { code: invokeByAddressCode(address!, {}), autoApprove: true },
+          // Call through the real MCP surface — the exact channel the prod
+          // regression hid the failure on — so the assertion covers the whole
+          // path an MCP client sees: dispatch, classification, rendering.
+          const session = mcp.session(identity);
+          let called = yield* session.call("execute", {
+            code: invokeByAddressCode(address!, {}),
           });
-          expect(executed.status, "the sandbox execution completed").toBe("completed");
-          const failure = JSON.parse(executed.text) as ToolEnvelope;
+          // Approval-gated tools pause the execution once per gated call.
+          let guard = 0;
+          while (called.text.includes("executionId:") && guard < 10) {
+            called = yield* session.approvePaused(called.text);
+            guard += 1;
+          }
+          expect(
+            called.ok,
+            `the MCP execute call itself completed (got: ${called.text.slice(0, 400)})`,
+          ).toBe(true);
+          const failure = JSON.parse(called.text) as ToolEnvelope;
 
           // THE guarantee: the AS's definitive rejection reaches the agent
           // as an auth failure with the AS's own verdict in the message.
