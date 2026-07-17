@@ -16,6 +16,7 @@ import {
   type AuthMethodDescriptor,
   type Integration,
   type IntegrationConfig,
+  type IntegrationPreset,
   type IntegrationRecord,
   type PluginCtx,
   type StorageFailure,
@@ -39,7 +40,7 @@ import {
   type SpecPreview,
 } from "./preview";
 import { deriveAuthenticationTemplateFromPreview, firstBaseUrlForPreview } from "./derive-auth";
-import { openApiPresets, type OpenApiPreset } from "./presets";
+import { openApiPresets } from "./presets";
 import { makeDefaultOpenapiStore, type OpenapiStore } from "./store";
 import {
   resolveSpecFormatAdapter,
@@ -62,7 +63,12 @@ import {
 } from "./backing";
 import type { InvokeOptions } from "./invoke";
 import { resolveServerUrl } from "./openapi-utils";
-import { applySpecOverrides, SpecOverridesSchema, type SpecOverrides } from "./spec-overrides";
+import {
+  applySpecOverrides,
+  decodeOpenApiSpecOverrides,
+  SpecOverridesSchema,
+  type SpecOverrides,
+} from "./spec-overrides";
 
 const encodeJsonText = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
@@ -608,7 +614,7 @@ export interface OpenApiPluginOptions {
   readonly httpClientLayer?: Layer.Layer<HttpClient.HttpClient, never, never>;
   readonly invokeOptions?: InvokeOptions;
   readonly specFormats?: readonly SpecFormatAdapter[];
-  readonly presets?: readonly OpenApiPreset[];
+  readonly presets?: readonly IntegrationPreset[];
 }
 
 export const openApiPlugin = definePlugin<
@@ -687,19 +693,23 @@ export const openApiPlugin = definePlugin<
     id: "openapi" as const,
     packageName: "@executor-js/plugin-openapi",
     clientConfig: options?.presets ? { presets: options.presets } : undefined,
-    integrationPresets: [...openApiPresets, ...(options?.presets ?? [])].map((preset) => ({
-      id: preset.id,
-      name: preset.name,
-      summary: preset.summary,
-      ...(preset.url ? { url: preset.url } : {}),
-      ...(preset.icon ? { icon: preset.icon } : {}),
-      ...(preset.featured ? { featured: preset.featured } : {}),
-      ...(preset.family ? { family: preset.family } : {}),
-      ...(preset.specFormat ? { specFormat: preset.specFormat } : {}),
-      ...(preset.defaultSlug ? { defaultSlug: preset.defaultSlug } : {}),
-      ...(preset.authTemplate ? { authTemplate: preset.authTemplate } : {}),
-      ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
-    })),
+    integrationPresets: [...openApiPresets, ...(options?.presets ?? [])].map((preset) => {
+      const specOverrides = decodeOpenApiSpecOverrides(preset.specOverrides);
+      return {
+        id: preset.id,
+        name: preset.name,
+        summary: preset.summary,
+        ...(preset.url ? { url: preset.url } : {}),
+        ...(preset.icon ? { icon: preset.icon } : {}),
+        ...(preset.featured ? { featured: preset.featured } : {}),
+        ...(preset.family ? { family: preset.family } : {}),
+        ...(preset.specFormat ? { specFormat: preset.specFormat } : {}),
+        ...(preset.defaultSlug ? { defaultSlug: preset.defaultSlug } : {}),
+        ...(specOverrides ? { specOverrides } : {}),
+        ...(preset.authTemplate ? { authTemplate: preset.authTemplate } : {}),
+        ...(preset.healthCheck ? { healthCheck: preset.healthCheck } : {}),
+      };
+    }),
     storage: (deps): OpenapiStore => makeDefaultOpenapiStore(deps),
 
     extension: (ctx: PluginCtx<OpenapiStore>) => {

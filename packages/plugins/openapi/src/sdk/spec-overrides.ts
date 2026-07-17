@@ -1,4 +1,4 @@
-import { Data, Effect, Exit, Match, Schema } from "effect";
+import { Data, Effect, Exit, Match, Option, Schema } from "effect";
 
 import { OpenApiSpecOverrideError } from "./errors";
 
@@ -42,10 +42,15 @@ export type SpecOverrides = typeof SpecOverridesSchema.Type;
 const decodeSpecOverridesText = Schema.decodeUnknownExit(
   Schema.fromJsonString(SpecOverridesSchema),
 );
+const decodeSpecOverrides = Schema.decodeUnknownOption(SpecOverridesSchema);
 
 export type SpecOverridesTextResult =
   | { readonly ok: true; readonly value: SpecOverrides }
   | { readonly ok: false; readonly message: string };
+
+/** Decode preset or persisted override data at a plugin boundary. */
+export const decodeOpenApiSpecOverrides = (value: unknown): SpecOverrides | undefined =>
+  decodeSpecOverrides(value).pipe(Option.getOrUndefined);
 
 /** Decode user-authored JSON Patch text into the persisted override contract. */
 export const parseSpecOverridesText = (text: string): SpecOverridesTextResult => {

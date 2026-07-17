@@ -10,7 +10,7 @@ import {
   type HealthCheckCandidate,
   type HealthCheckSpec,
 } from "@executor-js/sdk/shared";
-import { useIntegrationPlugins } from "@executor-js/sdk/client";
+import { useIntegrationPlugins, type IntegrationPreset } from "@executor-js/sdk/client";
 import { integrationWriteKeys, healthCheckWriteKeys } from "@executor-js/react/api/reactivity-keys";
 import { setIntegrationHealthCheck } from "@executor-js/react/api/atoms";
 import {
@@ -49,7 +49,11 @@ import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
 import { detectedAuthenticationTemplates } from "../sdk/derive-auth";
-import { parseSpecOverridesText } from "../sdk/spec-overrides";
+import {
+  decodeOpenApiSpecOverrides,
+  formatSpecOverridesText,
+  parseSpecOverridesText,
+} from "../sdk/spec-overrides";
 import { SpecOverridesEditor } from "./SpecOverridesEditor";
 
 const normalizePresetUrl = (url: string): string => {
@@ -59,6 +63,22 @@ const normalizePresetUrl = (url: string): string => {
   parsed.hash = "";
   parsed.searchParams.sort();
   return parsed.toString().replace(/\/$/, "");
+};
+
+/** Resolve catalog defaults from an explicit preset id or a matching spec URL. */
+export const resolveOpenApiPreset = (
+  presets: readonly IntegrationPreset[] | undefined,
+  initialPresetId: string | undefined,
+  specUrl: string,
+): IntegrationPreset | null => {
+  const explicitPreset = presets?.find((preset) => preset.id === initialPresetId);
+  if (explicitPreset) return explicitPreset;
+  if (specUrl.trim().length === 0) return null;
+  const normalizedSpecUrl = normalizePresetUrl(specUrl);
+  return (
+    presets?.find((preset) => preset.url && normalizePresetUrl(preset.url) === normalizedSpecUrl) ??
+    null
+  );
 };
 
 const specInputForAdd = (input: string) => {
@@ -154,11 +174,14 @@ export default function AddOpenApiIntegration(props: {
   const integrationPlugins = useIntegrationPlugins();
   const openApiPlugin = integrationPlugins.find((plugin) => plugin.key === "openapi");
   const openApiPresets = openApiPlugin?.presets;
-  const initialPreset = openApiPresets?.find((preset) => preset.id === props.initialPreset) ?? null;
   const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
-  const [specOverridesText, setSpecOverridesText] = useState("");
+  const [specOverridesDraft, setSpecOverridesDraft] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+
+  const activePreset = resolveOpenApiPreset(openApiPresets, props.initialPreset, specUrl);
+  const presetSpecOverrides = decodeOpenApiSpecOverrides(activePreset?.specOverrides);
+  const specOverridesText = specOverridesDraft ?? formatSpecOverridesText(presetSpecOverrides);
 
   // After analysis
   const [preview, setPreview] = useState<SpecPreviewSummary | null>(null);
@@ -167,7 +190,7 @@ export default function AddOpenApiIntegration(props: {
   // until the user types (null = untouched, keep deriving from the preview).
   const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
   const identityFallbackName =
-    initialPreset?.name ?? (preview ? Option.getOrElse(preview.title, () => "") : "");
+    activePreset?.name ?? (preview ? Option.getOrElse(preview.title, () => "") : "");
   const identity = useIntegrationIdentity({
     fallbackName: identityFallbackName,
     fallbackNamespace: props.initialNamespace,
@@ -219,14 +242,11 @@ export default function AddOpenApiIntegration(props: {
   const firstServerUrl = firstServer
     ? resolveServerUrl(firstServer.url, Option.getOrUndefined(firstServer.variables), {})
     : "";
-  const previewPresetIcon =
-    openApiPresets?.find(
-      (preset) => preset.url && normalizePresetUrl(preset.url) === normalizePresetUrl(specUrl),
-    )?.icon ?? null;
+  const previewPresetIcon = activePreset?.icon ?? null;
 
   const resolvedBaseUrl = baseUrl.trim();
   const resolvedIntegrationId =
-    initialPreset?.defaultSlug ||
+    activePreset?.defaultSlug ||
     slugifyNamespace(identity.namespace) ||
     (preview ? Option.getOrElse(preview.title, () => "openapi") : "openapi");
   const resolvedDisplayName =
@@ -245,8 +265,8 @@ export default function AddOpenApiIntegration(props: {
   // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
   // freshly-allocated `?? []` fallback arrays.
   const authenticationTemplate: readonly Authentication[] = useMemo(() => {
-    if (initialPreset?.authTemplate) {
-      return initialPreset.authTemplate.flatMap((template): readonly Authentication[] =>
+    if (activePreset?.authTemplate) {
+      return activePreset.authTemplate.flatMap((template): readonly Authentication[] =>
         template.kind === "oauth2"
           ? [
               {
@@ -263,7 +283,7 @@ export default function AddOpenApiIntegration(props: {
       preview?.oauth2Presets ?? [],
       resolvedBaseUrl,
     );
-  }, [initialPreset?.authTemplate, preview, resolvedBaseUrl]);
+  }, [activePreset?.authTemplate, preview, resolvedBaseUrl]);
 
   // Editable auth methods, seeded from the spec-detected templates. The add flow
   // registers EVERY method (P6), so this is a LIST, preserving multi-method
@@ -359,7 +379,7 @@ export default function AddOpenApiIntegration(props: {
     const exit = await doPreview({
       payload: {
         spec: specUrl,
-        specFormat: initialPreset?.specFormat,
+        specFormat: activePreset?.specFormat,
         ...(parsedSpecOverrides.value.length > 0
           ? { specOverrides: parsedSpecOverrides.value }
           : {}),
@@ -391,9 +411,9 @@ export default function AddOpenApiIntegration(props: {
           ? { description: resolvedDescription.trim() }
           : {}),
         baseUrl: resolvedBaseUrl,
-        specFormat: initialPreset?.specFormat,
-        family: initialPreset?.family,
-        healthCheck: initialPreset?.healthCheck,
+        specFormat: activePreset?.specFormat,
+        family: activePreset?.family,
+        healthCheck: activePreset?.healthCheck,
         ...(parsedSpecOverrides.ok && parsedSpecOverrides.value.length > 0
           ? { specOverrides: parsedSpecOverrides.value }
           : {}),
@@ -422,9 +442,9 @@ export default function AddOpenApiIntegration(props: {
     resolvedBaseUrl,
     editedAuthenticationTemplate,
     parsedSpecOverrides,
-    initialPreset?.family,
-    initialPreset?.healthCheck,
-    initialPreset?.specFormat,
+    activePreset?.family,
+    activePreset?.healthCheck,
+    activePreset?.specFormat,
   ]);
 
   const handleAdd = async () => {
@@ -565,7 +585,7 @@ export default function AddOpenApiIntegration(props: {
       <SpecOverridesEditor
         value={specOverridesText}
         onChange={(value) => {
-          setSpecOverridesText(value);
+          setSpecOverridesDraft(value);
           setAnalyzeError(null);
           setPreview(null);
           setBaseUrl("");
@@ -583,7 +603,7 @@ export default function AddOpenApiIntegration(props: {
 
       {preview ? (
         <AddOpenApiHealthCheckSection
-          presetHealthCheck={initialPreset?.healthCheck}
+          presetHealthCheck={activePreset?.healthCheck}
           candidates={healthCheckCandidates}
           selected={hcSelected}
           operation={hcOperation}
