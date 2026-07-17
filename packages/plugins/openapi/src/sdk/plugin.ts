@@ -22,8 +22,13 @@ import {
 } from "@executor-js/sdk/core";
 
 import { decodeOpenApiIntegrationConfig, type OpenApiIntegrationConfig } from "./config";
-import { OpenApiExtractionError, OpenApiOAuthError, OpenApiParseError } from "./errors";
-import { parse, resolveSpecText } from "./parse";
+import {
+  OpenApiExtractionError,
+  OpenApiOAuthError,
+  OpenApiParseError,
+  OpenApiSpecOverrideError,
+} from "./errors";
+import { parse, parseSpecObject, resolveSpecText } from "./parse";
 import { extract } from "./extract";
 import {
   OAuth2AuthorizationCodeFlow,
@@ -57,6 +62,9 @@ import {
 } from "./backing";
 import type { InvokeOptions } from "./invoke";
 import { resolveServerUrl } from "./openapi-utils";
+import { applySpecOverrides, SpecOverridesSchema, type SpecOverrides } from "./spec-overrides";
+
+const encodeJsonText = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 // ---------------------------------------------------------------------------
 // Extension input shapes
@@ -67,6 +75,7 @@ export type OpenApiSpecInput = typeof OpenApiSpecInputSchema.Type;
 export interface OpenApiPreviewInput {
   readonly spec: string;
   readonly specFormat?: string;
+  readonly specOverrides?: SpecOverrides;
 }
 
 /** Add an OpenAPI integration to the catalog. The integration is the API
@@ -87,6 +96,8 @@ export interface OpenApiSpecConfig {
   /** Static query params applied to every request. */
   readonly queryParams?: Record<string, string>;
   readonly specFormat?: string;
+  /** Ordered RFC 6902 operations applied after fetching/conversion and before parsing. */
+  readonly specOverrides?: SpecOverrides;
   readonly family?: string;
   readonly healthCheck?: HealthCheckSpec;
   /** Auth methods a connection's value renders through - canonical
@@ -124,6 +135,8 @@ export interface OpenApiUpdateSpecInput {
   /** New spec source. Omit to re-fetch from the integration's stored
    *  `specUrl`. */
   readonly spec?: OpenApiSpecInput;
+  /** Replacement override list. Omit to keep existing overrides; pass [] to clear them. */
+  readonly specOverrides?: SpecOverrides;
 }
 
 export interface OpenApiPluginExtension {
@@ -131,7 +144,11 @@ export interface OpenApiPluginExtension {
     input: string | OpenApiPreviewInput,
   ) => Effect.Effect<
     SpecPreview,
-    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError | StorageFailure
+    | OpenApiParseError
+    | OpenApiExtractionError
+    | OpenApiOAuthError
+    | OpenApiSpecOverrideError
+    | StorageFailure
   >;
   readonly addSpec: (
     config: OpenApiSpecConfig,
@@ -140,6 +157,7 @@ export interface OpenApiPluginExtension {
     | OpenApiParseError
     | OpenApiExtractionError
     | OpenApiOAuthError
+    | OpenApiSpecOverrideError
     | IntegrationAlreadyExistsError
     | StorageFailure
   >;
@@ -154,6 +172,7 @@ export interface OpenApiPluginExtension {
     | OpenApiParseError
     | OpenApiExtractionError
     | OpenApiOAuthError
+    | OpenApiSpecOverrideError
     | IntegrationNotFoundError
     | StorageFailure
   >;
@@ -179,6 +198,7 @@ export interface OpenApiPluginExtension {
 const PreviewSpecInputSchema = Schema.Struct({
   spec: Schema.String,
   specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
 });
 
 const StaticPreviewServerVariableSchema = Schema.Struct({
@@ -282,6 +302,7 @@ const AddIntegrationInputSchema = Schema.Struct({
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   queryParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   specFormat: Schema.optional(Schema.String),
+  specOverrides: Schema.optional(SpecOverridesSchema),
   family: Schema.optional(Schema.String),
   healthCheck: Schema.optional(HealthCheckSpec),
   authenticationTemplate: Schema.optional(Schema.Array(AuthenticationSchema)),
@@ -596,10 +617,36 @@ export const openApiPlugin = definePlugin<
   OpenapiStore,
   OpenApiPluginOptions
 >((options?: OpenApiPluginOptions) => {
+  interface ResolvedSpec extends ConvertedSpec {
+    readonly sourceSpecText: string;
+  }
+
+  const applyOverridesToResolvedSpec = Effect.fn("OpenApi.applyOverridesToResolvedSpec")(function* (
+    resolved: ConvertedSpec,
+    overrides: SpecOverrides | undefined,
+  ) {
+    if (!overrides || overrides.length === 0) {
+      return { ...resolved, sourceSpecText: resolved.specText } satisfies ResolvedSpec;
+    }
+    const document = yield* parseSpecObject(resolved.specText);
+    const patched = yield* applySpecOverrides(document, overrides);
+    return {
+      ...resolved,
+      sourceSpecText: resolved.specText,
+      specText: encodeJsonText(patched),
+    } satisfies ResolvedSpec;
+  });
+
   const resolveSpecForInput = (
-    config: Pick<OpenApiSpecConfig, "spec" | "specFormat" | "headers" | "queryParams" | "baseUrl">,
+    config: Pick<
+      OpenApiSpecConfig,
+      "spec" | "specFormat" | "specOverrides" | "headers" | "queryParams" | "baseUrl"
+    >,
     httpClientLayer: Layer.Layer<HttpClient.HttpClient, never, never>,
-  ): Effect.Effect<ConvertedSpec, OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError> =>
+  ): Effect.Effect<
+    ResolvedSpec,
+    OpenApiParseError | OpenApiExtractionError | OpenApiOAuthError | OpenApiSpecOverrideError
+  > =>
     Effect.gen(function* () {
       const adapter = yield* resolveSpecFormatAdapter(
         options?.specFormats ?? [],
@@ -611,7 +658,7 @@ export const openApiPlugin = definePlugin<
             message: "Spec format adapters require a URL spec input",
           });
         }
-        return yield* adapter.fetch({
+        const resolved = yield* adapter.fetch({
           urls: [config.spec.url],
           credentials: {
             ...(config.headers ? { headers: config.headers } : {}),
@@ -619,14 +666,21 @@ export const openApiPlugin = definePlugin<
           },
           httpClientLayer,
         });
+        return yield* applyOverridesToResolvedSpec(resolved, config.specOverrides);
       }
       if (config.spec.kind === "url") {
         const specText = yield* resolveSpecText(config.spec.url).pipe(
           Effect.provide(httpClientLayer),
         );
-        return { specText, specUrl: config.spec.url };
+        return yield* applyOverridesToResolvedSpec(
+          { specText, specUrl: config.spec.url },
+          config.specOverrides,
+        );
       }
-      return { specText: config.spec.value };
+      return yield* applyOverridesToResolvedSpec(
+        { specText: config.spec.value },
+        config.specOverrides,
+      );
     });
 
   return {
@@ -768,6 +822,10 @@ export const openApiPlugin = definePlugin<
           }
 
           const specHash = yield* sha256Hex(resolved.specText);
+          const sourceSpecHash =
+            config.specOverrides && config.specOverrides.length > 0
+              ? yield* sha256Hex(resolved.sourceSpecText)
+              : undefined;
 
           const integrationConfig: OpenApiIntegrationConfig = {
             ...(resolved.config ?? {}),
@@ -783,6 +841,9 @@ export const openApiPlugin = definePlugin<
             ...(config.queryParams ? { queryParams: config.queryParams } : {}),
             ...(config.specFormat ? { specFormat: config.specFormat } : {}),
             ...(config.family ? { family: config.family } : {}),
+            ...(config.specOverrides && config.specOverrides.length > 0
+              ? { specOverrides: config.specOverrides, sourceSpecHash }
+              : {}),
             // Prefer the caller's explicit template; otherwise derive from the
             // spec's declared security schemes.
             ...(config.authenticationTemplate
@@ -801,6 +862,9 @@ export const openApiPlugin = definePlugin<
           // leaves only an unreferenced blob behind - while blob backends like
           // R2 couldn't roll back with the transaction anyway.
           yield* ctx.storage.putSpec(specHash, resolved.specText);
+          if (sourceSpecHash) {
+            yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
+          }
           // The content-addressed defs blob lets the serve path resolve the
           // shared `definitions` without re-parsing the spec. Same idempotent,
           // outside-the-transaction rationale as the spec blob.
@@ -870,8 +934,21 @@ export const openApiPlugin = definePlugin<
           // The new spec source: explicit input wins; otherwise re-fetch from
           // where the spec originally came from. A pasted-blob integration has
           // no origin, so updating it requires a new input.
+          const nextOverrides = input?.specOverrides ?? current.specOverrides ?? [];
+          const storedSourceHash = current.sourceSpecHash ?? current.specHash;
+          const storedSourceText =
+            input?.spec === undefined && !current.specUrl && input?.specOverrides !== undefined
+              ? storedSourceHash
+                ? yield* ctx.storage.getSpec(storedSourceHash)
+                : null
+              : null;
           const specInput: OpenApiSpecInput | null =
-            input?.spec ?? (current.specUrl ? { kind: "url", url: current.specUrl } : null);
+            input?.spec ??
+            (current.specUrl
+              ? { kind: "url", url: current.specUrl }
+              : storedSourceText
+                ? { kind: "blob", value: storedSourceText }
+                : null);
           if (specInput === null) {
             return yield* new OpenApiParseError({
               message:
@@ -885,6 +962,7 @@ export const openApiPlugin = definePlugin<
             {
               spec: specInput,
               specFormat: current.specFormat,
+              specOverrides: nextOverrides,
               headers: current.headers,
               queryParams: current.queryParams,
               baseUrl: current.baseUrl,
@@ -903,17 +981,28 @@ export const openApiPlugin = definePlugin<
           // the blob outside the transaction - re-puts are idempotent and an
           // aborted config update just leaves an unreferenced blob.
           const specHash = yield* sha256Hex(resolved.specText);
+          const sourceSpecHash =
+            nextOverrides.length > 0 ? yield* sha256Hex(resolved.sourceSpecText) : undefined;
           yield* ctx.storage.putSpec(specHash, resolved.specText);
+          if (sourceSpecHash) {
+            yield* ctx.storage.putSpec(sourceSpecHash, resolved.sourceSpecText);
+          }
           if (compiled) {
             yield* ctx.storage.putDefs(specHash, JSON.stringify(compiled.hoistedDefs));
           }
 
+          const {
+            sourceSpecHash: _currentSourceSpecHash,
+            specOverrides: _currentSpecOverrides,
+            ...currentWithoutOverrides
+          } = current;
           const nextConfig: OpenApiIntegrationConfig = {
-            ...current,
+            ...currentWithoutOverrides,
             specHash,
             ...((resolved.specUrl ?? specInputToSpecUrl(specInput)) !== undefined
               ? { specUrl: resolved.specUrl ?? specInputToSpecUrl(specInput) }
               : {}),
+            ...(nextOverrides.length > 0 ? { specOverrides: nextOverrides, sourceSpecHash } : {}),
           };
 
           yield* ctx.transaction(
@@ -985,7 +1074,11 @@ export const openApiPlugin = definePlugin<
               ? { kind: "url" as const, url: previewInput.spec.trim() }
               : { kind: "blob" as const, value: previewInput.spec };
             const resolved = yield* resolveSpecForInput(
-              { spec, specFormat: previewInput.specFormat },
+              {
+                spec,
+                specFormat: previewInput.specFormat,
+                specOverrides: previewInput.specOverrides,
+              },
               httpClientLayer,
             );
             const preview = yield* previewSpecText(resolved.specText);
@@ -1093,6 +1186,8 @@ export const openApiPlugin = definePlugin<
                     Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
                   OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
                     Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                  OpenApiSpecOverrideError: ({ message }) =>
+                    Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
                 }),
               ),
           }),
@@ -1117,6 +1212,7 @@ export const openApiPlugin = definePlugin<
                   headers: input.headers,
                   queryParams: input.queryParams,
                   specFormat: input.specFormat,
+                  specOverrides: input.specOverrides,
                   family: input.family,
                   healthCheck: input.healthCheck,
                   authenticationTemplate: input.authenticationTemplate as
@@ -1137,6 +1233,8 @@ export const openApiPlugin = definePlugin<
                       Effect.succeed(openApiToolFailure("openapi_extraction_failed", message)),
                     OpenApiOAuthError: ({ message }: OpenApiOAuthError) =>
                       Effect.succeed(openApiToolFailure("openapi_oauth_failed", message)),
+                    OpenApiSpecOverrideError: ({ message }) =>
+                      Effect.succeed(openApiToolFailure("openapi_spec_override_failed", message)),
                     IntegrationAlreadyExistsError: ({ slug }: IntegrationAlreadyExistsError) =>
                       Effect.succeed(
                         openApiToolFailure(

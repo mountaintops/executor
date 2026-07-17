@@ -49,6 +49,8 @@ import type { SpecPreviewSummary } from "../sdk/preview";
 import { type Authentication } from "../sdk/types";
 import { resolveServerUrl } from "../sdk/openapi-utils";
 import { detectedAuthenticationTemplates } from "../sdk/derive-auth";
+import { parseSpecOverridesText } from "../sdk/spec-overrides";
+import { SpecOverridesEditor } from "./SpecOverridesEditor";
 
 const normalizePresetUrl = (url: string): string => {
   const trimmed = url.trim();
@@ -154,6 +156,7 @@ export default function AddOpenApiIntegration(props: {
   const openApiPresets = openApiPlugin?.presets;
   const initialPreset = openApiPresets?.find((preset) => preset.id === props.initialPreset) ?? null;
   const [specUrl, setSpecUrl] = useState(props.initialUrl ?? "");
+  const [specOverridesText, setSpecOverridesText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
@@ -233,6 +236,10 @@ export default function AddOpenApiIntegration(props: {
       : resolvedIntegrationId);
   const resolvedDescription =
     descriptionDraft ?? (preview ? Option.getOrElse(preview.description, () => "") : "");
+  const parsedSpecOverrides = useMemo(
+    () => parseSpecOverridesText(specOverridesText),
+    [specOverridesText],
+  );
 
   // Register EVERY spec-detected auth method, not just a single selected one.
   // Keyed off `preview` (stable per analysis) so the memo doesn't re-run on the
@@ -333,6 +340,7 @@ export default function AddOpenApiIntegration(props: {
   // args filled (an empty draft, `hcOperation === ""`, imposes no constraint).
   const canAdd =
     preview !== null &&
+    parsedSpecOverrides.ok &&
     !slugAlreadyExists &&
     (!previewHasNoServers || resolvedBaseUrl.length > 0) &&
     !(hcOperation.length > 0 && hcMissingRequired);
@@ -343,8 +351,19 @@ export default function AddOpenApiIntegration(props: {
     setAnalyzing(true);
     setAnalyzeError(null);
     setAddError(null);
+    if (!parsedSpecOverrides.ok) {
+      setAnalyzeError(parsedSpecOverrides.message);
+      setAnalyzing(false);
+      return;
+    }
     const exit = await doPreview({
-      payload: { spec: specUrl, specFormat: initialPreset?.specFormat },
+      payload: {
+        spec: specUrl,
+        specFormat: initialPreset?.specFormat,
+        ...(parsedSpecOverrides.value.length > 0
+          ? { specOverrides: parsedSpecOverrides.value }
+          : {}),
+      },
     });
     if (Exit.isFailure(exit)) {
       setAnalyzeError(errorMessageFromExit(exit, "Failed to parse spec"));
@@ -375,6 +394,9 @@ export default function AddOpenApiIntegration(props: {
         specFormat: initialPreset?.specFormat,
         family: initialPreset?.family,
         healthCheck: initialPreset?.healthCheck,
+        ...(parsedSpecOverrides.ok && parsedSpecOverrides.value.length > 0
+          ? { specOverrides: parsedSpecOverrides.value }
+          : {}),
         // Always send the edited method list (even empty) when the user has
         // inspected a preview: an explicit [] means "no auth methods", while
         // OMITTING the field tells the server to derive defaults from the
@@ -399,6 +421,7 @@ export default function AddOpenApiIntegration(props: {
     resolvedDescription,
     resolvedBaseUrl,
     editedAuthenticationTemplate,
+    parsedSpecOverrides,
     initialPreset?.family,
     initialPreset?.healthCheck,
     initialPreset?.specFormat,
@@ -538,6 +561,17 @@ export default function AddOpenApiIntegration(props: {
           faviconUrl={resolvedBaseUrl || firstServerUrl}
         />
       ) : null}
+
+      <SpecOverridesEditor
+        value={specOverridesText}
+        onChange={(value) => {
+          setSpecOverridesText(value);
+          setAnalyzeError(null);
+          setPreview(null);
+          setBaseUrl("");
+        }}
+        disabled={analyzing || adding}
+      />
 
       {preview && (
         <AuthMethodListEditor
