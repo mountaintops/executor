@@ -1,6 +1,7 @@
-import { Effect, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Deferred, Effect, Exit, Schema } from "effect";
 
 import {
   definePlugin,
@@ -71,13 +72,29 @@ const resolveAuthLocation = (config: FileSecretsPluginConfig | undefined): AuthL
 const FlatAuthFile = Schema.Record(Schema.String, Schema.String);
 const decodeFlatAuthFile = Schema.decodeUnknownEffect(Schema.fromJsonString(FlatAuthFile));
 
+class AuthFileDecodeError extends Schema.TaggedErrorClass<AuthFileDecodeError>()(
+  "AuthFileDecodeError",
+  {
+    filePath: Schema.String,
+    cause: Schema.Defect,
+  },
+  {
+    description:
+      "The auth file was readable but its contents were not a valid flat credential map. The caller must surface the failure or explicitly treat malformed legacy data as non-migratable.",
+  },
+) {
+  override get message(): string {
+    return `Failed to parse auth file: ${this.filePath}`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // File I/O with restricted permissions
 //
-// These helpers keep real I/O and decode failures in the Effect error
-// channel as `StorageError`. Missing files are still treated as an empty
-// auth file, but malformed JSON, schema decode failures, and permission
-// errors no longer collapse into "empty file".
+// These helpers keep real I/O and decode failures distinct internally, then
+// project both to `StorageError` at the provider boundary. Missing files are
+// still treated as an empty auth file; malformed content and permission errors
+// do not collapse into "empty file" during ordinary provider reads.
 // ---------------------------------------------------------------------------
 
 const isFileNotFoundCause = (cause: unknown): cause is NodeJS.ErrnoException =>
@@ -88,7 +105,9 @@ const toStorageError =
   (cause: unknown): StorageError =>
     new StorageError({ message, cause });
 
-const readAll = (filePath: string): Effect.Effect<Record<string, string>, StorageError> => {
+const readAuthFile = (
+  filePath: string,
+): Effect.Effect<Record<string, string>, StorageError | AuthFileDecodeError> => {
   if (!fs.existsSync(filePath)) return Effect.succeed({});
   return Effect.try({
     try: () => fs.readFileSync(filePath, "utf-8"),
@@ -102,18 +121,25 @@ const readAll = (filePath: string): Effect.Effect<Record<string, string>, Storag
       raw === ""
         ? Effect.succeed<Record<string, string>>({})
         : decodeFlatAuthFile(raw).pipe(
-            Effect.mapError(toStorageError("Failed to parse auth file")),
+            Effect.mapError((cause) => new AuthFileDecodeError({ filePath, cause })),
           ),
     ),
   );
 };
+
+const readAll = (filePath: string): Effect.Effect<Record<string, string>, StorageError> =>
+  readAuthFile(filePath).pipe(
+    Effect.catchTag("AuthFileDecodeError", (cause) =>
+      Effect.fail(new StorageError({ message: cause.message, cause })),
+    ),
+  );
 
 const writeAll = (
   filePath: string,
   secrets: Record<string, string>,
 ): Effect.Effect<void, StorageError> => {
   const dir = path.dirname(filePath);
-  const tmp = `${filePath}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   return Effect.gen(function* () {
     if (!fs.existsSync(dir)) {
       yield* Effect.try({
@@ -124,6 +150,8 @@ const writeAll = (
     yield* Effect.try({
       try: () => {
         fs.writeFileSync(tmp, JSON.stringify(secrets, null, 2), { mode: 0o600 });
+        // `mode` only applies when the file is created; chmod afterwards covers
+        // the case where a temporary file with broader permissions already exists.
         fs.chmodSync(tmp, 0o600);
       },
       catch: toStorageError("Failed to write temporary auth file"),
@@ -143,13 +171,11 @@ const migrateLegacyAuthFile = ({
     return Effect.void;
   }
 
-  return readAll(legacyFilePath).pipe(
-    Effect.matchEffect({
-      // A legacy file that cannot be read or decoded must not block startup.
-      // The active data-dir store remains empty and all later I/O uses it only.
-      onFailure: () => Effect.void,
-      onSuccess: (secrets) => writeAll(filePath, secrets),
-    }),
+  return readAuthFile(legacyFilePath).pipe(
+    Effect.flatMap((secrets) => writeAll(filePath, secrets)),
+    // Malformed legacy contents are deliberately skipped. Genuine read I/O
+    // failures stay visible and leave migration eligible for a later retry.
+    Effect.catchTag("AuthFileDecodeError", () => Effect.void),
   );
 };
 
@@ -184,12 +210,21 @@ const FILE_PROVIDER_KEY = ProviderKey.make("file");
 
 const makeFileProvider = (location: AuthLocation): CredentialProvider => {
   let migrationComplete = false;
+  let migrationInFlight: Deferred.Deferred<void, StorageError> | null = null;
   const ensureMigration = Effect.suspend(() => {
     if (migrationComplete) return Effect.void;
+    if (migrationInFlight !== null) return Deferred.await(migrationInFlight);
+
+    // Installing the latch inside Effect.suspend is synchronous, so a peer
+    // fiber can only observe either no attempt or this fully initialized one.
+    const latch = Deferred.makeUnsafe<void, StorageError>();
+    migrationInFlight = latch;
     return migrateLegacyAuthFile(location).pipe(
-      Effect.tap(() =>
-        Effect.sync(() => {
-          migrationComplete = true;
+      Effect.onExit((exit) =>
+        Effect.gen(function* () {
+          if (Exit.isSuccess(exit)) migrationComplete = true;
+          yield* Deferred.done(latch, exit);
+          migrationInFlight = null;
         }),
       ),
     );

@@ -4,13 +4,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Effect } from "effect";
+import { Effect, Predicate, Result } from "effect";
 
 import { ProviderKey } from "@executor-js/sdk";
 import { makeTestWorkspaceHarness } from "@executor-js/sdk/testing";
@@ -130,15 +131,78 @@ describe("file secrets auth location", () => {
   );
 
   it.effect("leaves the new store empty when the legacy file is corrupt", () =>
-    Effect.gen(function* () {
-      vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
-      writeAuthFile(legacyFilePath, "not-json");
+    Effect.scoped(
+      Effect.gen(function* () {
+        vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
+        writeAuthFile(legacyFilePath, "not-json");
+        const workspace = yield* makeTestWorkspaceHarness({
+          plugins: [fileSecretsPlugin()] as const,
+        });
 
-      const inspected = yield* inspectPlugin(fileSecretsPlugin());
+        const initial = yield* workspace.executor.providers.items(FILE_PROVIDER);
+        expect(initial).toEqual([]);
+        expect(existsSync(join(dataDir, "auth.json"))).toBe(false);
+        expect(readFileSync(legacyFilePath, "utf8")).toBe("not-json");
 
-      expect(inspected.itemIds).toEqual([]);
-      expect(existsSync(join(dataDir, "auth.json"))).toBe(false);
-      expect(readFileSync(legacyFilePath, "utf8")).toBe("not-json");
-    }),
+        writeAuthFile(legacyFilePath, '{"repaired-token":"repaired-secret"}');
+        const afterRepair = yield* workspace.executor.providers.items(FILE_PROVIDER);
+        expect(afterRepair).toEqual([]);
+        expect(existsSync(join(dataDir, "auth.json"))).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("retries migration after a legacy read I/O failure", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
+        mkdirSync(legacyFilePath, { recursive: true });
+        const workspace = yield* makeTestWorkspaceHarness({
+          plugins: [fileSecretsPlugin()] as const,
+        });
+
+        const failed = yield* Effect.result(workspace.executor.providers.items(FILE_PROVIDER));
+        expect(Result.isFailure(failed)).toBe(true);
+        if (!Result.isFailure(failed)) return;
+        expect(Predicate.isTagged("StorageError")(failed.failure)).toBe(true);
+
+        rmSync(legacyFilePath, { recursive: true, force: true });
+        writeAuthFile(legacyFilePath, '{"recovered-token":"recovered-secret"}');
+
+        const recovered = yield* workspace.executor.providers.items(FILE_PROVIDER);
+        expect(recovered.map((item) => String(item.id))).toEqual(["recovered-token"]);
+        expect(readFileSync(join(dataDir, "auth.json"), "utf8")).toContain(
+          '"recovered-token": "recovered-secret"',
+        );
+      }),
+    ),
+  );
+
+  it.effect("shares one migration across concurrent first provider operations", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        vi.stubEnv("EXECUTOR_DATA_DIR", dataDir);
+        const legacyContents = '{"legacy-token":"legacy-secret"}';
+        writeAuthFile(legacyFilePath, legacyContents);
+        const workspace = yield* makeTestWorkspaceHarness({
+          plugins: [fileSecretsPlugin()] as const,
+        });
+
+        const results = yield* Effect.all(
+          [
+            workspace.executor.providers.items(FILE_PROVIDER),
+            workspace.executor.providers.items(FILE_PROVIDER),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expect(results.map((items) => items.map((item) => String(item.id)))).toEqual([
+          ["legacy-token"],
+          ["legacy-token"],
+        ]);
+        expect(readdirSync(dataDir)).toEqual(["auth.json"]);
+        expect(readFileSync(legacyFilePath, "utf8")).toBe(legacyContents);
+      }),
+    ),
   );
 });

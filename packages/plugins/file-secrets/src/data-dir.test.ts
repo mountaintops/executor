@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "@effect/vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { join } from "node:path";
 import { Effect } from "effect";
 
 import {
@@ -81,10 +81,7 @@ describe("file secrets data directory", () => {
 
           expect(connection.provider).toBe(ProviderKey.make("file"));
           const authPath = first.executor.fileSecrets.filePath;
-          const pathWithinDataDir = relative(dataDir, authPath);
-          if (pathWithinDataDir.startsWith("..") || isAbsolute(pathWithinDataDir)) {
-            expect(authPath).toBe(join(firstSandboxDataHome, "executor", "auth.json"));
-          }
+          expect(authPath).toBe(join(dataDir, "auth.json"));
           expect(existsSync(authPath)).toBe(true);
           expect(readFileSync(authPath, "utf8")).toContain(
             '"connection:org:durable-secrets:main:token": "secret-token"',
