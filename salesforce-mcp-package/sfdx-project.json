@@ -1,0 +1,19 @@
+{
+  "packageDirectories": [
+    {
+      "versionName": "ver 1.0",
+      "versionNumber": "1.0.0.NEXT",
+      "path": "force-app",
+      "default": true,
+      "package": "Executor-MCP-Managed",
+      "versionDescription": "Executor Cloudflare MCP Managed Package"
+    }
+  ],
+  "name": "salesforce-mcp-package",
+  "namespace": "tubot",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "61.0",
+  "packageAliases": {
+    "Executor-MCP-Managed": "0Hog50000000vuLCAQ"
+  }
+}
