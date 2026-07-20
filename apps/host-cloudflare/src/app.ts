@@ -33,6 +33,8 @@ import { preloadQuickJs } from "./quickjs";
 // so the providers close over it instead of reading process.env.
 // ===========================================================================
 
+import { makeSalesforceOAuthHandler } from "./auth/salesforce-oauth";
+
 export const makeCloudflareApp = async (env: CloudflareEnv) => {
   const config = loadConfig(env);
   const plugins = makeCloudflarePlugins(config.secretKey);
@@ -47,6 +49,7 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
   const identityLayer = cloudflareAccessIdentityLayer(config);
   const mcpAgentHandler = makeCloudflareMcpAgentHandler(config);
   const approvalHandler = makeCloudflareApprovalHandler(config, env);
+  const sfOAuthHandler = makeSalesforceOAuthHandler(config, env);
 
   const { appLayer, toWebHandler } = ExecutorApp.make({
     plugins,
@@ -70,6 +73,8 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
         // reads paused detail (GET) and records the decision (POST .../resume),
         // Access-gated, routed to the owning session's Durable Object.
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(approvalHandler)),
+        // Salesforce Hosted MCP Public Client PKCE OAuth handlers
+        HttpRouter.add("*", "/api/oauth/*", HttpEffect.fromWebHandler(sfOAuthHandler)),
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },
