@@ -1,16 +1,8 @@
 import { makeCloudflareApp } from "./app";
-import type { CloudflareEnv } from "./config";
+import { loadConfig, type CloudflareEnv } from "./config";
+import { makeSalesforceOAuthHandler } from "./auth/salesforce-oauth";
 
-// The MCP Durable Object classes, bound in wrangler.jsonc. They must be exported
-// at the Worker entry module scope for the runtime to find them.
 export { McpExecutionOwnerDirectoryDO, McpSessionDO } from "./mcp";
-
-// ---------------------------------------------------------------------------
-// The Worker fetch entry. Most requests go to `ExecutorApp.make`'s Effect web
-// handler. `/mcp` stays at this edge boundary because `McpAgent.serve()` needs
-// the Cloudflare `ExecutionContext` to pass authenticated session props into the
-// hibernatable Durable Object bridge.
-// ---------------------------------------------------------------------------
 
 let handlerPromise: Promise<{
   readonly app: (request: Request) => Promise<Response>;
@@ -29,10 +21,22 @@ const resolveHandler = (env: CloudflareEnv) => {
 
 export default {
   fetch: async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
-    const serve = await resolveHandler(env);
-    if (new URL(request.url).pathname === "/mcp") {
+    const url = new URL(request.url);
+
+    // Directly intercept all Salesforce OAuth, REST Proxy, MCP Proxy & OpenAPI Spec routes
+    if (url.pathname.includes("/sf") || url.pathname.includes("/oauth")) {
+      const config = loadConfig(env);
+      const sfOAuthHandler = makeSalesforceOAuthHandler(config, env);
+      return sfOAuthHandler(request);
+    }
+
+    if (url.pathname === "/mcp") {
+      const serve = await resolveHandler(env);
       return serve.mcp(request, env, ctx);
     }
+
+    const serve = await resolveHandler(env);
     return serve.app(request);
   },
 };
+
