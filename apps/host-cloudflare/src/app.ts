@@ -49,6 +49,8 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(approvalHandler)),
         HttpRouter.add("*", "/api/oauth/*", HttpEffect.fromWebHandler(sfOAuthHandler)),
         HttpRouter.add("*", "/api/sf/*", HttpEffect.fromWebHandler(sfOAuthHandler)),
+        HttpRouter.add("*", "/webhook", HttpEffect.fromWebHandler(sfOAuthHandler)),
+        HttpRouter.add("*", "/api/webhook", HttpEffect.fromWebHandler(sfOAuthHandler)),
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },

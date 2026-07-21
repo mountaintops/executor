@@ -1,36 +1,148 @@
-# Salesforce Hosted MCP 2GP Unlocked Package
+# Salesforce Unlisted Unlocked Package: Auto-Registering Hosted MCP Tools (Headless 360 MCP)
 
-This directory contains the Second-Generation Unlocked Package (2GP) metadata for connecting **EXECUTOR on Cloudflare** to **Salesforce Hosted MCP** across client orgs without requiring an AppExchange Security Review queue or manually copied Client Secrets.
+This repository contains the complete Salesforce DX source code for an **Unlisted Unlocked Package** that automates the org-level configuration, metadata setup, and auto-registration for Salesforce's **Hosted MCP (Model Context Protocol)** servers—specifically targeting the **Headless 360 MCP Server**.
 
-## Package Architecture
+---
 
-This package deploys an **External Client Application (ECA)** configured as a **Public Client with PKCE**:
-- **`isConsumerSecretOptional: true`**: Configures Salesforce OAuth endpoints to allow access token generation without sending `client_secret`.
-- **`isSecretRequiredForRefreshToken: false`**: Allows background access token refresh using `refresh_token` without sending `client_secret`.
-- **`isPkceRequired: true`**: Mandates standard OAuth 2.0 PKCE (SHA-256 `code_challenge` / `code_verifier`).
-- **Scopes**: `mcp_api`, `refresh_token`, `api`, `id`.
-- **Callback URL**: `https://executor-cloudflare.emalteaproductions.workers.dev/api/oauth/callback`
+## 🌟 Solution Architecture Overview
 
-## How to Build & Publish Package Version
+Salesforce **Hosted MCP** provides built-in, managed Model Context Protocol endpoints allowing AI assistants (Claude Desktop, Cursor, Agentforce, custom LLM agents) to securely discover and invoke org-level tools, Apex actions, Flows, and data operations without requiring dedicated intermediate proxy servers.
 
-1. Install the Salesforce CLI:
-   ```bash
-   npm install -g @salesforce/cli
-   ```
+### Key Components in this Package
 
-2. Log in to your central Developer Hub org:
-   ```bash
-   sf org login web --set-default-dev-hub --alias DevHub
-   ```
+1. **`MCPAutoRegisterInstaller.cls` (Apex Post-Install Script)**
+   - Automatically executes upon package installation in target Salesforce orgs.
+   - Detects the org's My Domain URL (`https://<instance>.my.salesforce.com`).
+   - Auto-registers and provisions the Headless 360 MCP endpoint URL (`/services/mcp/v1.0/headless360`).
+   - Populates org-default configuration settings in `MCP_Config__c`.
 
-3. Run the automated package build script:
-   ```bash
-   ./scripts/build-package.sh DevHub
-   ```
+2. **`MCPHeadless360Controller.cls` (Apex Controller & REST Endpoint)**
+   - Exposes an `@AuraEnabled` method and a REST API resource (`GET /services/apexrest/mcp/v1/credentials/`).
+   - Dynamically returns the Hosted MCP Server URL, OAuth Client ID, Secret, Org ID, and activation status to authorized clients and CI/CD pipelines.
 
-4. The script will output an installation URL starting with `04t...`:
-   ```
-   https://login.salesforce.com/packaging/installPackage.apexp?p0=04t...
-   ```
+3. **`MCP_Config__c` (Hierarchy Custom Setting)**
+   - Stores org-level MCP configuration metadata (Server URL, Client ID, Client Secret, Status).
 
-5. Provide this link to client org admins. They click the link to install the package in their Salesforce org in seconds.
+4. **`MCP_Headless360_Admin` (Permission Set)**
+   - Grants administrative access to manage and query MCP Hosted Server credentials.
+
+---
+
+## 🚀 Step-by-Step Package Build & Deployment Guide
+
+### Prerequisites
+- [Salesforce CLI (`sf`)](https://developer.salesforce.com/tools/salesforcecli) installed.
+- Access to a Dev Hub org with 2nd Generation Packaging (2GP) enabled.
+
+---
+
+### Step 1: Create the Unlocked Unlisted Package
+
+Run the following command to register the unlocked package in your Dev Hub:
+
+```bash
+sf package create \
+  --name "SalesforceHostedMCPAutoRegister" \
+  --description "Auto-registering hosted MCP tools for Salesforce Headless 360" \
+  --package-type "Unlocked" \
+  --path "force-app" \
+  --target-dev-hub DevHub
+```
+
+---
+
+### Step 2: Create a Package Version
+
+Build an unlisted package version:
+
+```bash
+sf package version create \
+  --package "SalesforceHostedMCPAutoRegister" \
+  --installation-key-bypass \
+  --wait 10 \
+  --target-dev-hub DevHub
+```
+
+Upon successful creation, copy the Subscriber Package Version ID (format: `04t...`).
+
+---
+
+### Step 3: Install the Package in Target Org
+
+To install the unlocked package into your target scratch org, sandbox, or production org:
+
+```bash
+sf package install \
+  --package "04t000000000000AAA" \
+  --target-org target-org-alias \
+  --wait 10
+```
+
+> **Note:** The `MCPAutoRegisterInstaller` Apex post-install script will fire automatically upon package completion, registering the org's Headless 360 Hosted MCP endpoint and setting up default settings.
+
+---
+
+## 🔑 Retrieving MCP Server URL & OAuth Credentials
+
+### Option A: Query via cURL / REST API
+
+Send an authenticated GET request to the deployed REST endpoint:
+
+```bash
+curl -X GET "https://your-domain.my.salesforce.com/services/apexrest/mcp/v1/credentials/" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json"
+```
+
+**Sample JSON Response:**
+```json
+{
+  "mcpServerUrl": "https://your-domain.my.salesforce.com/services/mcp/v1.0/headless360",
+  "clientId": "SFDC_MCP_CLIENT_84920184",
+  "clientSecret": "sec_89f1a23b...",
+  "serverType": "Salesforce Hosted MCP (Headless 360)",
+  "status": "Active - Registered",
+  "orgId": "00D000000000001EAA",
+  "timestamp": "2026-07-21 00:20:00"
+}
+```
+
+---
+
+### Option B: Query via Salesforce CLI (`sf apex run`)
+
+Execute Apex anonymously to view the registered endpoint:
+
+```bash
+sf apex run --target-org target-org-alias --mcp-config
+```
+
+Apex script:
+```apex
+MCPHeadless360Controller.MCPCredentialsResponse creds = MCPHeadless360Controller.getMCPCredentials();
+System.debug('MCP Server URL: ' + creds.mcpServerUrl);
+System.debug('Client ID: ' + creds.clientId);
+```
+
+---
+
+## 🛠 Connecting AI Clients (Cursor / Claude Desktop / Custom Agents)
+
+Add the retrieved MCP Server details to your MCP client configuration (e.g., `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "salesforce-headless-360": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@salesforce/mcp-server-headless360",
+        "--url", "https://your-domain.my.salesforce.com/services/mcp/v1.0/headless360",
+        "--client-id", "YOUR_CLIENT_ID",
+        "--client-secret", "YOUR_CLIENT_SECRET"
+      ]
+    }
+  }
+}
+```

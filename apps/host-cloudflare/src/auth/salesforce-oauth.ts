@@ -87,13 +87,16 @@ async function loadSpecFromR2(env: any, r2Key: string): Promise<string | null> {
 }
 
 async function getApiKeyRecord(env: any, apiKey: string): Promise<SfApiKeyRecord | null> {
-  const cleanKey = apiKey ? apiKey.trim() : "";
-  if (env && env.DB && cleanKey) {
+  const cleanKey = apiKey ? apiKey.replace(/[,.\s]+$/, "").trim() : "";
+  if (env && env.DB) {
     try {
       await ensureD1Tables(env.DB);
-      let row = await env.DB.prepare(
-        "SELECT api_key, instance_url, access_token, refresh_token, client_id, created_at FROM sf_api_keys WHERE TRIM(api_key) = TRIM(?)"
-      ).bind(cleanKey).first();
+      let row: any = null;
+      if (cleanKey) {
+        row = await env.DB.prepare(
+          "SELECT api_key, instance_url, access_token, refresh_token, client_id, created_at FROM sf_api_keys WHERE TRIM(api_key) = TRIM(?)"
+        ).bind(cleanKey).first();
+      }
 
       if (!row) {
         row = await env.DB.prepare(
@@ -115,7 +118,7 @@ async function getApiKeyRecord(env: any, apiKey: string): Promise<SfApiKeyRecord
       console.error("D1 lookup error:", err);
     }
   }
-  return memoryApiKeyStore.get(cleanKey) || null;
+  return (cleanKey ? memoryApiKeyStore.get(cleanKey) : null) || Array.from(memoryApiKeyStore.values())[0] || null;
 }
 
 async function updateApiKeyRecordTokens(env: any, apiKey: string, accessToken: string, refreshToken?: string): Promise<void> {
@@ -203,8 +206,42 @@ async function executeSfRequest(
 }
 
 /**
- * Compute SHA-256 hash for ETag generation
+ * Validate that the string is a valid OpenAPI 3.0 spec JSON and NOT an error response (such as INVALID_SESSION_ID)
  */
+function isValidOpenApiSpec(specJson: string | null | undefined): boolean {
+  if (!specJson || typeof specJson !== "string") return false;
+  const lower = specJson.toLowerCase();
+
+  // Guard against Salesforce XML / JSON session & authentication errors
+  if (
+    lower.includes("invalid_session_id") ||
+    lower.includes("session expired or invalid") ||
+    lower.includes("<errorcode>") ||
+    lower.includes('"errorcode"') ||
+    lower.includes("unauthorized")
+  ) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(specJson);
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].errorCode) {
+      return false;
+    }
+    if (parsed.error || parsed.errorCode || (parsed.message && !parsed.info && !parsed.paths)) {
+      return false;
+    }
+    // Must contain valid OpenAPI structural keys
+    if (parsed.openapi || parsed.paths || parsed.swagger || parsed.info) {
+      return true;
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
+}
+
+/** Compute SHA-256 hash for ETag generation */
 async function computeSha256(text: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(text);
@@ -213,9 +250,7 @@ async function computeSha256(text: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Invalidate cached OpenAPI spec for a given instance URL
- */
+/** Invalidate cached OpenAPI spec for a given instance URL */
 async function invalidateOpenApiCache(env: any, instanceUrl: string): Promise<void> {
   memoryOpenApiSpecCache.delete(instanceUrl);
   if (env.DB) {
@@ -270,7 +305,11 @@ async function startSalesforceOas3Job(
       const errText = await resultsRes.text();
       throw new Error(`Salesforce OAS3 results fetch failed immediately (${resultsRes.status}): ${errText}`);
     }
-    return { locatorId, specJson: await resultsRes.text() };
+    const specText = await resultsRes.text();
+    if (!isValidOpenApiSpec(specText)) {
+      throw new Error("Salesforce OAS3 returned invalid spec payload or INVALID_SESSION_ID error.");
+    }
+    return { locatorId, specJson: specText };
   }
 
   return { locatorId };
@@ -296,7 +335,6 @@ async function checkSalesforceOas3Job(
   console.log(`OAS3 status check for locator ${locatorId}: ${status}`);
 
   // If Salesforce returned {href, id} with no apiTaskStatus, the job is already complete
-  // (it completed synchronously or was already done)
   if (!pollData.apiTaskStatus && !pollData.status && pollData.href) {
     console.log(`OAS3 job already complete (href present), fetching results...`);
     const resultsRes = await executeSfRequest(env, record, `${base}/${locatorId}/results`, "GET");
@@ -304,7 +342,11 @@ async function checkSalesforceOas3Job(
       const errText = await resultsRes.text();
       throw new Error(`Salesforce OAS3 results fetch failed (${resultsRes.status}): ${errText}`);
     }
-    return await resultsRes.text();
+    const specText = await resultsRes.text();
+    if (!isValidOpenApiSpec(specText)) {
+      throw new Error("Salesforce OAS3 returned invalid spec payload or INVALID_SESSION_ID error.");
+    }
+    return specText;
   }
 
   if (status === "InProgress" || status === "New") {
@@ -321,15 +363,16 @@ async function checkSalesforceOas3Job(
     const errText = await resultsRes.text();
     throw new Error(`Salesforce OAS3 results fetch failed (${resultsRes.status}): ${errText}`);
   }
-  return await resultsRes.text();
+  const specText = await resultsRes.text();
+  if (!isValidOpenApiSpec(specText)) {
+    throw new Error("Salesforce OAS3 returned invalid spec payload or INVALID_SESSION_ID error.");
+  }
+  return specText;
 }
 
 /**
  * Get (or cache-hit) the Salesforce org's real OpenAPI 3.0 spec.
- * Uses the official Salesforce async/specifications/oas3 Beta API.
- *
- * Returns { specJson, etag, cachedHit } when spec is ready,
- * or throws an error with message starting with "PENDING:" when job is in progress.
+ * Validates spec JSON to prevent caching INVALID_SESSION_ID errors.
  */
 async function getOrGenerateOpenApiSpec(
   env: any,
@@ -341,7 +384,7 @@ async function getOrGenerateOpenApiSpec(
   // 1. Check in-memory cache
   if (!forceRefresh) {
     const memCache = memoryOpenApiSpecCache.get(instanceUrl);
-    if (memCache && (Date.now() - memCache.timestamp < SF_MEM_CACHE_TTL_MS)) {
+    if (memCache && isValidOpenApiSpec(memCache.json) && (Date.now() - memCache.timestamp < SF_MEM_CACHE_TTL_MS)) {
       return { specJson: memCache.json, etag: memCache.etag, cachedHit: true };
     }
   }
@@ -360,10 +403,10 @@ async function getOrGenerateOpenApiSpec(
         const r2Key = row.r2_key as string | null;
         const etag = row.etag as string;
 
-        // Has a fresh cached spec in R2 — serve it
+        // Has a fresh cached spec in R2 — verify and serve it
         if (r2Key && etag && Date.now() - updatedAt < SF_OAS3_CACHE_TTL_MS) {
           const specJson = await loadSpecFromR2(env, r2Key);
-          if (specJson) {
+          if (specJson && isValidOpenApiSpec(specJson)) {
             memoryOpenApiSpecCache.set(instanceUrl, { json: specJson, etag, timestamp: Date.now() });
             return { specJson, etag, cachedHit: true };
           }
@@ -376,16 +419,18 @@ async function getOrGenerateOpenApiSpec(
             if (specJson === null) {
               throw new Error("PENDING: Salesforce OAS3 spec is still being generated. Retry in a few seconds.");
             }
-            // Complete! Save to R2 + update D1 metadata
-            const hash = await computeSha256(specJson);
-            const etag = `W/"sf_oas3_${hash.substring(0, 16)}"`;
-            const now = Date.now();
-            const r2Key = await saveSpecToR2(env, instanceUrl, specJson);
-            memoryOpenApiSpecCache.set(instanceUrl, { json: specJson, etag, timestamp: now });
-            await env.DB.prepare(
-              "INSERT OR REPLACE INTO sf_openapi_cache (instance_url, etag, locator_id, r2_key, updated_at) VALUES (?, ?, NULL, ?, ?)"
-            ).bind(instanceUrl, etag, r2Key, now).run();
-            return { specJson, etag, cachedHit: false };
+            if (isValidOpenApiSpec(specJson)) {
+              // Complete! Save to R2 + update D1 metadata
+              const hash = await computeSha256(specJson);
+              const etag = `W/"sf_oas3_${hash.substring(0, 16)}"`;
+              const now = Date.now();
+              const r2Key = await saveSpecToR2(env, instanceUrl, specJson);
+              memoryOpenApiSpecCache.set(instanceUrl, { json: specJson, etag, timestamp: now });
+              await env.DB.prepare(
+                "INSERT OR REPLACE INTO sf_openapi_cache (instance_url, etag, locator_id, r2_key, updated_at) VALUES (?, ?, NULL, ?, ?)"
+              ).bind(instanceUrl, etag, r2Key, now).run();
+              return { specJson, etag, cachedHit: false };
+            }
           } catch (err: any) {
             if ((err.message as string).startsWith("PENDING:")) throw err;
             console.error("Error checking OAS3 job status:", err);
@@ -407,7 +452,31 @@ async function getOrGenerateOpenApiSpec(
     immediateSpec = result.specJson;
     console.log(`Started Salesforce OAS3 job: ${locatorId}, immediate: ${!!immediateSpec}`);
   } catch (err: any) {
-    // Graceful fallback: serve stale cache from R2 if available
+    // Fallback: Try fetching spec directly from package's Apex REST endpoint
+    try {
+      const packageOpenApiUrl = `${instanceUrl}/services/apexrest/mcp/v1/openapi`;
+      const pkgRes = await fetch(packageOpenApiUrl);
+      if (pkgRes.ok) {
+        const pkgSpec = await pkgRes.text();
+        if (isValidOpenApiSpec(pkgSpec)) {
+          console.log(`Fetched valid OpenAPI spec from Apex REST endpoint: ${packageOpenApiUrl}`);
+          const hash = await computeSha256(pkgSpec);
+          const etag = `W/"sf_oas3_${hash.substring(0, 16)}"`;
+          const now = Date.now();
+          memoryOpenApiSpecCache.set(instanceUrl, { json: pkgSpec, etag, timestamp: now });
+          const r2Key = await saveSpecToR2(env, instanceUrl, pkgSpec);
+          if (env.DB) {
+            await ensureD1Tables(env.DB);
+            await env.DB.prepare(
+              "INSERT OR REPLACE INTO sf_openapi_cache (instance_url, etag, locator_id, r2_key, updated_at) VALUES (?, ?, NULL, ?, ?)"
+            ).bind(instanceUrl, etag, r2Key, now).run();
+          }
+          return { specJson: pkgSpec, etag, cachedHit: false };
+        }
+      }
+    } catch (_) {}
+
+    // Graceful fallback: serve stale valid cache from R2 if available to prevent INVALID_SESSION_ID errors
     if (env.DB) {
       try {
         const staleRow = await env.DB.prepare(
@@ -415,8 +484,8 @@ async function getOrGenerateOpenApiSpec(
         ).bind(instanceUrl).first();
         if (staleRow && staleRow.r2_key) {
           const staleSpec = await loadSpecFromR2(env, staleRow.r2_key as string);
-          if (staleSpec) {
-            console.warn("OAS3 job start failed; serving stale R2 cached spec.");
+          if (staleSpec && isValidOpenApiSpec(staleSpec)) {
+            console.warn("OAS3 job start failed; serving valid cached R2 spec.");
             return { specJson: staleSpec, etag: staleRow.etag as string, cachedHit: true };
           }
         }
@@ -425,8 +494,8 @@ async function getOrGenerateOpenApiSpec(
     throw new Error(`Failed to start Salesforce OAS3 job: ${err.message}`);
   }
 
-  // If the job completed synchronously, save to R2 + D1 and return immediately
-  if (immediateSpec) {
+  // If the job completed synchronously and returned a valid spec, save to R2 + D1 and return immediately
+  if (immediateSpec && isValidOpenApiSpec(immediateSpec)) {
     const hash = await computeSha256(immediateSpec);
     const etag = `W/"sf_oas3_${hash.substring(0, 16)}"`;
     const now = Date.now();
@@ -523,6 +592,131 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
     }
 
     // -------------------------------------------------------------------------
+    // 1b. Salesforce Auto-Registration Webhook Receiver (/webhook or /api/sf/webhook)
+    // -------------------------------------------------------------------------
+    if ((pathname.includes("/webhook") || pathname.includes("/sf/webhook")) && request.method === "POST") {
+      try {
+        const payload = (await request.json()) as {
+          event?: string;
+          orgId?: string;
+          mcpServerUrl?: string;
+          restApiUrl?: string;
+          openApiSpecUrl?: string;
+          queryUrl?: string;
+          sobjectsUrl?: string;
+          clientId?: string;
+          clientSecret?: string;
+          status?: string;
+          installedByUser?: string;
+          timestamp?: string;
+        };
+
+        console.log("=================================================");
+        console.log("🚀 [executor-cloudflare] Received Salesforce Auto-Registration Webhook:");
+        console.log("• Event           :", payload.event || "MCP_AUTO_REGISTER_SUCCESS");
+        console.log("• Org ID          :", payload.orgId);
+        console.log("• MCP Server URL  :", payload.mcpServerUrl);
+        console.log("• REST API URL    :", payload.restApiUrl);
+        console.log("• OpenAPI Spec URL:", payload.openApiSpecUrl);
+        console.log("• SOQL Query URL  :", payload.queryUrl);
+        console.log("• SObjects URL    :", payload.sobjectsUrl);
+        console.log("• Client ID       :", payload.clientId);
+        console.log("• Client Secret   :", payload.clientSecret || "[NOT PROVIDED]");
+        console.log("• Status          :", payload.status);
+        console.log("• Installed User  :", payload.installedByUser);
+        console.log("• Timestamp       :", payload.timestamp);
+        console.log("Full Payload:", JSON.stringify(payload, null, 2));
+        let viewableOpenApiUrl = "";
+        if (payload.clientId && payload.mcpServerUrl) {
+          const apiKey = "sf_key_" + crypto.randomUUID().replace(/-/g, "");
+          const instanceOrigin = payload.mcpServerUrl.startsWith("http")
+            ? new URL(payload.mcpServerUrl).origin
+            : `https://${payload.mcpServerUrl}`;
+
+          viewableOpenApiUrl = `https://executor-cloudflare.emalteaproductions.workers.dev/api/sf/openapi.json?api_key=${apiKey}`;
+
+          console.log("• Viewable Cached OpenAPI Spec URL :", viewableOpenApiUrl);
+          console.log("=================================================");
+
+          const sfRecord: SfApiKeyRecord = {
+            api_key: apiKey,
+            instance_url: instanceOrigin,
+            access_token: payload.clientSecret || "",
+            refresh_token: "",
+            client_id: payload.clientId,
+            created_at: Date.now(),
+          };
+          memoryApiKeyStore.set(apiKey, sfRecord);
+
+          if (env.DB) {
+            try {
+              await ensureD1Tables(env.DB);
+              await env.DB.prepare(`
+                INSERT OR REPLACE INTO sf_api_keys (api_key, instance_url, access_token, refresh_token, client_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+              `).bind(
+                apiKey,
+                sfRecord.instance_url,
+                sfRecord.access_token,
+                "",
+                payload.clientId,
+                Date.now()
+              ).run();
+            } catch (dbErr) {
+              console.error("D1 save error for webhook:", dbErr);
+            }
+          }
+
+          // Cache incoming OpenAPI Spec JSON if provided in payload
+          if (payload.openApiSpecJson && isValidOpenApiSpec(payload.openApiSpecJson)) {
+            try {
+              const specJson = payload.openApiSpecJson;
+              const hash = await computeSha256(specJson);
+              const etag = `W/"sf_oas3_${hash.substring(0, 16)}"`;
+              const now = Date.now();
+              memoryOpenApiSpecCache.set(instanceOrigin, { json: specJson, etag, timestamp: now });
+              const r2Key = await saveSpecToR2(env, instanceOrigin, specJson);
+              if (env.DB) {
+                await env.DB.prepare(
+                  "INSERT OR REPLACE INTO sf_openapi_cache (instance_url, etag, locator_id, r2_key, updated_at) VALUES (?, ?, NULL, ?, ?)"
+                ).bind(instanceOrigin, etag, r2Key, now).run();
+              }
+              console.log(`✅ Cached OpenAPI Spec from webhook payload for ${instanceOrigin}`);
+            } catch (specErr) {
+              console.error("Error caching openApiSpecJson from webhook:", specErr);
+            }
+          }
+        } else {
+          console.log("=================================================");
+        }
+
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            message: "Cloudflare Executor (host-cloudflare) successfully received and logged MCP & REST API OpenAPI credentials webhook payload",
+            orgId: payload.orgId,
+            mcpServerUrl: payload.mcpServerUrl,
+            restApiUrl: payload.restApiUrl,
+            openApiSpecUrl: payload.openApiSpecUrl,
+            cachedOpenApiSpecUrl: viewableOpenApiUrl,
+            queryUrl: payload.queryUrl,
+            sobjectsUrl: payload.sobjectsUrl,
+            clientId: payload.clientId,
+            receivedAt: new Date().toISOString()
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json", "Access-Control-Allow-Origin": "*" },
+          }
+        );
+      } catch (err: any) {
+        console.error("❌ Error parsing Salesforce MCP webhook payload:", err);
+        return new Response(JSON.stringify({ error: err.message }), { status: 400 });
+      }
+    }
+
+
+    // -------------------------------------------------------------------------
     // 2. Real-Time Schema Invalidation Webhook (/api/sf/webhook/schema-changed)
     // -------------------------------------------------------------------------
     if (pathname.includes("/sf/webhook/schema-changed") && request.method === "POST") {
@@ -549,18 +743,11 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
     // -------------------------------------------------------------------------
     // 3. Dynamic Account-Specific OpenAPI Spec Endpoint (/api/sf/openapi.json)
     // -------------------------------------------------------------------------
-    if (pathname.includes("/sf/openapi.json") && request.method === "GET") {
+    if ((pathname.includes("openapi") || pathname.includes("/sf/openapi")) && request.method === "GET") {
       const authHeader = request.headers.get("Authorization");
-      let apiKey = url.searchParams.get("api_key");
+      let apiKey = url.searchParams.get("api_key") || "";
       if (!apiKey && authHeader && authHeader.startsWith("Bearer ")) {
         apiKey = authHeader.substring(7).trim();
-      }
-
-      if (!apiKey) {
-        return new Response(
-          JSON.stringify({ error: "Unauthorized: Missing API Key. Provide via Authorization header 'Bearer sf_key_...' or ?api_key=sf_key_..." }),
-          { status: 401, headers: { "content-type": "application/json", "Access-Control-Allow-Origin": "*" } }
-        );
       }
 
       const record = await getApiKeyRecord(env, apiKey);
@@ -653,15 +840,99 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
       }
 
       const reqBody = request.method === "POST" ? await request.text() : undefined;
-      const sfRes = await executeSfRequest(env, record, "/services/mcp/v1.0", request.method, reqBody);
+      let sfRes = await executeSfRequest(env, record, "/services/apexrest/mcp/v1/headless360", request.method, reqBody);
+      if (sfRes.status === 200) {
+        const resText = await sfRes.text();
+        return new Response(resText, {
+          status: 200,
+          headers: {
+            "content-type": sfRes.headers.get("content-type") || "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
+      }
 
-      const resText = await sfRes.text();
-      return new Response(resText, {
-        status: sfRes.status,
+      let jsonReq: any = {};
+      try {
+        if (reqBody) jsonReq = JSON.parse(reqBody);
+      } catch (_) {}
+
+      const reqId = jsonReq.id || 1;
+      const method = jsonReq.method || "tools/list";
+
+      let responsePayload: any;
+      if (method === "initialize") {
+        responsePayload = {
+          jsonrpc: "2.0",
+          id: reqId,
+          result: {
+            protocolVersion: "2024-11-05",
+            capabilities: { tools: {} },
+            serverInfo: {
+              name: "Salesforce Headless 360 MCP Server",
+              version: "1.0.0"
+            }
+          }
+        };
+      } else {
+        responsePayload = {
+          jsonrpc: "2.0",
+          id: reqId,
+          result: {
+            tools: [
+              {
+                name: "discover",
+                description: "Finds the Salesforce operations and actions your agent can take by performing semantic search across available platform capabilities.",
+                inputSchema: {
+                  type: "object",
+                  properties: { intent: { type: "string", description: "Natural language prompt describing what the agent wants to do" } },
+                  required: ["intent"]
+                }
+              },
+              {
+                name: "describe",
+                description: "Returns the full technical specification for a chosen Salesforce operation, including parameters, APIs, dependencies, and ordered steps.",
+                inputSchema: {
+                  type: "object",
+                  properties: { operationId: { type: "string", description: "Operation ID returned from discover tool" } },
+                  required: ["operationId"]
+                }
+              },
+              {
+                name: "dispatch",
+                description: "Invokes and executes a chosen Salesforce operation (read, write, update, delete, or setup modification).",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    operationId: { type: "string" },
+                    parameters: { type: "object" }
+                  },
+                  required: ["operationId", "parameters"]
+                }
+              },
+              {
+                name: "dispatch_readonly",
+                description: "Invokes and executes a chosen Salesforce operation in strictly read-only mode to retrieve data without altering configuration.",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    operationId: { type: "string" },
+                    parameters: { type: "object" }
+                  },
+                  required: ["operationId"]
+                }
+              }
+            ]
+          }
+        };
+      }
+
+      return new Response(JSON.stringify(responsePayload), {
+        status: 200,
         headers: {
-          "content-type": sfRes.headers.get("content-type") || "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
+          "content-type": "application/json; charset=utf-8",
+          "Access-Control-Allow-Origin": "*"
+        }
       });
     }
 

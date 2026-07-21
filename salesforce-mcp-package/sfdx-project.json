@@ -1,19 +1,23 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 1.0",
-      "versionNumber": "1.0.0.NEXT",
       "path": "force-app",
       "default": true,
-      "package": "Executor-MCP-Managed",
-      "versionDescription": "Executor Cloudflare MCP Managed Package"
+      "package": "SalesforceHostedMCPAutoRegister",
+      "versionName": "Version 1.0",
+      "versionNumber": "1.0.0.NEXT"
     }
   ],
-  "name": "salesforce-mcp-package",
-  "namespace": "tubot",
+  "name": "salesforce-hosted-mcp-package",
+  "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "61.0",
+  "sourceApiVersion": "60.0",
   "packageAliases": {
-    "Executor-MCP-Managed": "0Hog50000000vuLCAQ"
+    "SalesforceHostedMCPAutoRegister": "0Hog50000000wOzCAI",
+    "SalesforceHostedMCPAutoRegister@1.0.0-1": "04tg5000000B3VdAAK",
+    "SalesforceHostedMCPAutoRegister@1.0.0-2": "04tg5000000B3dhAAC",
+    "SalesforceHostedMCPAutoRegister@1.0.0-3": "04tg5000000B3fJAAS",
+    "SalesforceHostedMCPAutoRegister@1.0.0-4": "04tg5000000B3llAAC",
+    "SalesforceHostedMCPAutoRegister@1.0.0-5": "04tg5000000B7EHAA0"
   }
 }
