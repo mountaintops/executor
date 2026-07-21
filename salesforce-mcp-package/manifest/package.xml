@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>MCPAutoRegisterInstaller</members>
+        <members>MCPAutoRegisterInstallerTest</members>
+        <members>MCPHeadless360Controller</members>
+        <members>MCPHeadless360ControllerTest</members>
+        <members>MCPOpenAPIService</members>
+        <members>MCPOpenAPIServiceTest</members>
+        <members>MCPHeadless360ToolsService</members>
+        <members>MCPHeadless360ToolsServiceTest</members>
+        <members>MCPWebhookService</members>
+        <members>MCPWebhookServiceTest</members>
+        <name>ApexClass</name>
+    </types>
+    <types>
+        <members>MCP_Config__c</members>
+        <name>CustomObject</name>
+    </types>
+    <types>
+        <members>MCP_Headless360_Admin</members>
+        <name>PermissionSet</name>
+    </types>
+    <types>
+        <members>Cloudflare_Executor_Webhook</members>
+        <name>RemoteSiteSetting</name>
+    </types>
+    <version>60.0</version>
+</Package>
