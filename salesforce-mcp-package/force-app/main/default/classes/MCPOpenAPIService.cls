@@ -1,11 +1,11 @@
 /**
- * @description Controller and REST Endpoint for Salesforce REST API OpenAPI 3.0 spec generation and retrieval.
+ * @description Controller and REST Endpoint for Salesforce REST API & SObject OpenAPI 3.0 spec generation and retrieval.
  */
 @RestResource(urlMapping='/mcp/v1/openapi/*')
 global with sharing class MCPOpenAPIService {
 
     /**
-     * REST GET endpoint to generate and return OpenAPI 3.0 JSON specification
+     * REST GET endpoint to generate and return full OpenAPI 3.0 JSON specification
      */
     @HttpGet
     global static void getOpenApiSpec() {
@@ -14,13 +14,13 @@ global with sharing class MCPOpenAPIService {
             res = new RestResponse();
             RestContext.response = res;
         }
-        res.addHeader('Content-Type', 'application/json');
+        res.addHeader('Content-Type', 'application/json; charset=utf-8');
         res.statusCode = 200;
         res.responseBody = Blob.valueOf(generateOpenApiSpecJson());
     }
 
     /**
-     * Generates OpenAPI 3.0 JSON Spec for the Org's REST API and Hosted MCP Tools
+     * Generates complete OpenAPI 3.0 JSON Spec for Org REST API, SObjects, and Hosted MCP Server
      */
     public static String generateOpenApiSpecJson() {
         String orgDomain = URL.getOrgDomainUrl().toExternalForm();
@@ -29,7 +29,7 @@ global with sharing class MCPOpenAPIService {
             'info' => new Map<String, Object>{
                 'title' => 'Salesforce Org REST API & Hosted MCP 360',
                 'version' => '1.0.0',
-                'description' => 'OpenAPI 3.0 Specification for Salesforce Org REST APIs, SOQL Query, SObjects, and Headless 360 MCP Endpoint'
+                'description' => 'Complete OpenAPI 3.0 Specification for Salesforce Org REST APIs, SObjects, SOQL Query, and Headless 360 Hosted MCP Server'
             },
             'servers' => new List<Object>{
                 new Map<String, Object>{
@@ -37,70 +37,117 @@ global with sharing class MCPOpenAPIService {
                     'description' => 'Current Salesforce Org Domain'
                 }
             },
-            'paths' => new Map<String, Object>{
-                '/services/mcp/v1.0/headless360' => new Map<String, Object>{
-                    'post' => new Map<String, Object>{
-                        'summary' => 'Salesforce Hosted MCP Headless 360 Protocol Endpoint',
-                        'operationId' => 'invokeMcpProtocol',
-                        'responses' => new Map<String, Object>{
-                            '200' => new Map<String, Object>{ 'description' => 'MCP Protocol JSON-RPC Response' }
-                        }
-                    }
-                },
-                '/services/data/v67.0/query' => new Map<String, Object>{
-                    'get' => new Map<String, Object>{
-                        'summary' => 'Execute SOQL Query',
-                        'operationId' => 'querySoql',
-                        'parameters' => new List<Object>{
-                            new Map<String, Object>{
-                                'name' => 'q',
-                                'in' => 'query',
-                                'required' => true,
-                                'schema' => new Map<String, Object>{ 'type' => 'string' },
-                                'description' => 'SOQL Query String'
-                            }
-                        },
-                        'responses' => new Map<String, Object>{
-                            '200' => new Map<String, Object>{ 'description' => 'Query Records Response' }
-                        }
-                    }
-                },
-                '/services/data/v67.0/sobjects/{sobjectName}' => new Map<String, Object>{
-                    'get' => new Map<String, Object>{
-                        'summary' => 'Describe SObject Metadata',
-                        'operationId' => 'describeSObject'
-                    },
-                    'post' => new Map<String, Object>{
-                        'summary' => 'Create SObject Record',
-                        'operationId' => 'createSObject'
-                    }
-                },
-                '/services/apexrest/mcp/v1/credentials/' => new Map<String, Object>{
-                    'get' => new Map<String, Object>{
-                        'summary' => 'Retrieve Hosted MCP Credentials & Endpoints',
-                        'operationId' => 'getMcpCredentials',
-                        'responses' => new Map<String, Object>{
-                            '200' => new Map<String, Object>{ 'description' => 'Credentials and Endpoints Payload' }
-                        }
-                    }
-                },
-                '/services/apexrest/mcp/v1/openapi/' => new Map<String, Object>{
-                    'get' => new Map<String, Object>{
-                        'summary' => 'Retrieve OpenAPI 3.0 JSON Specification',
-                        'operationId' => 'getOpenApiSpec',
-                        'responses' => new Map<String, Object>{
-                            '200' => new Map<String, Object>{ 'description' => 'OpenAPI 3.0 JSON Specification' }
-                        }
-                    }
-                }
+            'paths' => new Map<String, Object>(),
+            'components' => new Map<String, Object>{
+                'schemas' => new Map<String, Object>()
             }
         };
+
+        Map<String, Object> pathsMap = (Map<String, Object>) spec.get('paths');
+        Map<String, Object> schemasMap = (Map<String, Object>) ((Map<String, Object>) spec.get('components')).get('schemas');
+
+        // Standard MCP & Apex REST Endpoints
+        pathsMap.put('/services/apexrest/mcp/v1/headless360/', new Map<String, Object>{
+            'post' => new Map<String, Object>{
+                'summary' => 'Salesforce Hosted MCP Headless 360 Protocol Endpoint',
+                'operationId' => 'invokeMcpProtocol',
+                'responses' => new Map<String, Object>{
+                    '200' => new Map<String, Object>{ 'description' => 'MCP Protocol JSON-RPC Response' }
+                }
+            }
+        });
+
+        pathsMap.put('/services/data/v67.0/query', new Map<String, Object>{
+            'get' => new Map<String, Object>{
+                'summary' => 'Execute SOQL Query',
+                'operationId' => 'querySoql',
+                'parameters' => new List<Object>{
+                    new Map<String, Object>{
+                        'name' => 'q',
+                        'in' => 'query',
+                        'required' => true,
+                        'schema' => new Map<String, Object>{ 'type' => 'string' },
+                        'description' => 'SOQL Query String'
+                    }
+                },
+                'responses' => new Map<String, Object>{
+                    '200' => new Map<String, Object>{ 'description' => 'Query Records Response' }
+                }
+            }
+        });
+
+        pathsMap.put('/services/apexrest/mcp/v1/credentials/', new Map<String, Object>{
+            'get' => new Map<String, Object>{
+                'summary' => 'Retrieve Hosted MCP Credentials & Endpoints',
+                'operationId' => 'getMcpCredentials'
+            }
+        });
+
+        pathsMap.put('/services/apexrest/mcp/v1/openapi/', new Map<String, Object>{
+            'get' => new Map<String, Object>{
+                'summary' => 'Retrieve OpenAPI 3.0 JSON Specification',
+                'operationId' => 'getOpenApiSpec'
+            }
+        });
+
+        // Dynamically inspect SObjects in Org to build comprehensive OpenAPI schema
+        Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+        Integer count = 0;
+        for (String sName : globalDescribe.keySet()) {
+            Schema.DescribeSObjectResult d = globalDescribe.get(sName).getDescribe();
+            if (!d.isQueryable() || d.isDeprecatedAndHidden()) continue;
+            count++;
+            if (count > 200) break;
+
+            String apiName = d.getName();
+            String label = d.getLabel();
+
+            pathsMap.put('/services/data/v67.0/sobjects/' + apiName, new Map<String, Object>{
+                'get' => new Map<String, Object>{
+                    'summary' => 'List or Describe ' + label,
+                    'operationId' => 'describe_' + apiName
+                },
+                'post' => new Map<String, Object>{
+                    'summary' => 'Create ' + label + ' Record',
+                    'operationId' => 'create_' + apiName
+                }
+            });
+
+            pathsMap.put('/services/data/v67.0/sobjects/' + apiName + '/{recordId}', new Map<String, Object>{
+                'get' => new Map<String, Object>{
+                    'summary' => 'Retrieve ' + label + ' Record',
+                    'operationId' => 'get_' + apiName
+                },
+                'patch' => new Map<String, Object>{
+                    'summary' => 'Update ' + label + ' Record',
+                    'operationId' => 'update_' + apiName
+                },
+                'delete' => new Map<String, Object>{
+                    'summary' => 'Delete ' + label + ' Record',
+                    'operationId' => 'delete_' + apiName
+                }
+            });
+
+            Map<String, Object> fieldProps = new Map<String, Object>();
+            for (Schema.SObjectField f : d.fields.getMap().values()) {
+                Schema.DescribeFieldResult fd = f.getDescribe();
+                fieldProps.put(fd.getName(), new Map<String, Object>{
+                    'type' => String.valueOf(fd.getType()).toLowerCase(),
+                    'title' => fd.getLabel(),
+                    'nullable' => fd.isNillable()
+                });
+            }
+
+            schemasMap.put(apiName, new Map<String, Object>{
+                'type' => 'object',
+                'title' => label,
+                'properties' => fieldProps
+            });
+        }
+
         return JSON.serializePretty(spec);
     }
 
-    /**
-     * Triggers standard Salesforce async OAS3 Beta generation if callouts are permitted
-     */
     @future(callout=true)
     public static void triggerSalesforceOas3GenerationAsync(String sessionOrAccessToken) {
         try {

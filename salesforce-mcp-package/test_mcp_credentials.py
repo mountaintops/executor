@@ -53,16 +53,21 @@ def test_openapi_endpoint(url):
     try:
         req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req) as resp:
-            spec = json.loads(resp.read().decode("utf-8"))
+            raw_bytes = resp.read()
+            byte_size = len(raw_bytes)
+            kb_size = byte_size / 1024.0
+            spec = json.loads(raw_bytes.decode("utf-8"))
             print("  ✅ OpenAPI 3.0 Spec Successfully Retrieved:")
-            print(f"     • Title   : {spec.get('info', {}).get('title')}")
-            print(f"     • Version : {spec.get('info', {}).get('version')}")
+            print(f"     • Title          : {spec.get('info', {}).get('title')}")
+            print(f"     • Version        : {spec.get('info', {}).get('version')}")
+            print(f"     • Raw Byte Size  : {byte_size:,} bytes ({kb_size:.2f} KB)")
             paths = list(spec.get("paths", {}).keys())
-            print(f"     • Total API Paths : {len(paths)}")
-            for p in paths:
-                print(f"       - Path: {p}")
-                methods = list(spec.get("paths", {}).get(p, {}).keys())
-                print(f"         Methods: {methods}")
+            schemas = list(spec.get("components", {}).get("schemas", {}).keys())
+            print(f"     • Total API Paths: {len(paths):,}")
+            print(f"     • Total Schemas  : {len(schemas):,}")
+
+            is_greater_than_200kb = byte_size > (200 * 1024)
+            print(f"     • > 200KB Check  : {'✅ PASSED (' + str(round(kb_size, 2)) + ' KB > 200 KB)' if is_greater_than_200kb else '❌ FAILED'}")
             return spec
     except urllib.error.HTTPError as e:
         print(f"  ❌ OpenAPI Spec Endpoint returned HTTP {e.code}: {e.read().decode('utf-8')[:200]}")
