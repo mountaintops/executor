@@ -23,8 +23,8 @@ export default {
   fetch: async (request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> => {
     const url = new URL(request.url);
 
-    // Directly intercept all Salesforce OAuth, REST Proxy, MCP Proxy, Webhooks & OpenAPI Spec routes
-    if (url.pathname.includes("/sf") || url.pathname.includes("/oauth") || url.pathname.includes("/webhook") || url.pathname.includes("openapi")) {
+    // Directly intercept all Salesforce OAuth, REST Proxy, MCP Proxy, Webhooks, OpenAPI Spec & Log routes
+    if (url.pathname.includes("/sf") || url.pathname.includes("/oauth") || url.pathname.includes("/webhook") || url.pathname.includes("openapi") || url.pathname.includes("/logs")) {
       const config = loadConfig(env);
       const sfOAuthHandler = makeSalesforceOAuthHandler(config, env);
       return sfOAuthHandler(request);

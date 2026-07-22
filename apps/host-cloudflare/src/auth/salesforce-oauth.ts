@@ -46,15 +46,132 @@ async function ensureD1Tables(db: D1Database): Promise<void> {
         updated_at INTEGER NOT NULL DEFAULT 0
       )
     `).run();
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS sf_execution_logs (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        event TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        r2_key TEXT
+      )
+    `).run();
     // Migrations for existing DBs
     for (const col of ['locator_id TEXT', 'r2_key TEXT']) {
       try { await db.prepare(`ALTER TABLE sf_openapi_cache ADD COLUMN ${col}`).run(); } catch (_) {}
     }
-    // Drop the old heavy spec_json column if it exists (SQLite doesn't support DROP COLUMN in old versions, just ignore)
     d1TablesInitialized = true;
   } catch (e) {
     console.error("ensureD1Tables error:", e);
   }
+}
+
+export interface ExecutionLogRecord {
+  id: string;
+  timestamp: string;
+  expires_at: number;
+  event: string;
+  summary: string;
+  payload: any;
+}
+
+const memoryLogStore = new Map<string, ExecutionLogRecord>();
+
+async function saveExecutionLog(
+  env: any,
+  logId: string,
+  event: string,
+  summary: string,
+  payload: any
+): Promise<string> {
+  const now = Date.now();
+  const expiresAt = now + 3600 * 1000; // 1 hour TTL
+  const logRecord: ExecutionLogRecord = {
+    id: logId,
+    timestamp: new Date(now).toISOString(),
+    expires_at: expiresAt,
+    event,
+    summary,
+    payload,
+  };
+
+  memoryLogStore.set(logId, logRecord);
+
+  const payloadStr = JSON.stringify(logRecord, null, 2);
+  let r2Key: string | null = null;
+
+  if (env && env.BLOBS) {
+    try {
+      r2Key = `logs/${logId}.json`;
+      await env.BLOBS.put(r2Key, payloadStr, {
+        httpMetadata: { contentType: "application/json" },
+        customMetadata: { expiresAt: expiresAt.toString() }
+      });
+    } catch (r2Err) {
+      console.error("R2 log save error:", r2Err);
+    }
+  }
+
+  if (env && env.DB) {
+    try {
+      await ensureD1Tables(env.DB);
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO sf_execution_logs (id, timestamp, expires_at, event, summary, r2_key)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).bind(logId, logRecord.timestamp, expiresAt, event, summary, r2Key || "").run();
+    } catch (d1Err) {
+      console.error("D1 log metadata save error:", d1Err);
+    }
+  }
+
+  return logId;
+}
+
+async function getExecutionLog(env: any, logId: string): Promise<ExecutionLogRecord | null> {
+  const now = Date.now();
+
+  const mem = memoryLogStore.get(logId);
+  if (mem) {
+    if (now > mem.expires_at) {
+      memoryLogStore.delete(logId);
+      return null;
+    }
+    return mem;
+  }
+
+  if (env && env.DB) {
+    try {
+      await ensureD1Tables(env.DB);
+      const row = await env.DB.prepare(`
+        SELECT id, timestamp, expires_at, event, summary, r2_key FROM sf_execution_logs WHERE id = ?
+      `).bind(logId).first();
+
+      if (row) {
+        const expiresAt = row.expires_at as number;
+        if (now > expiresAt) {
+          try {
+            await env.DB.prepare("DELETE FROM sf_execution_logs WHERE id = ?").bind(logId).run();
+            if (env.BLOBS && row.r2_key) {
+              await env.BLOBS.delete(row.r2_key as string);
+            }
+          } catch (_) {}
+          return null;
+        }
+
+        if (env.BLOBS && row.r2_key) {
+          const r2Obj = await env.BLOBS.get(row.r2_key as string);
+          if (r2Obj) {
+            const text = await r2Obj.text();
+            return JSON.parse(text);
+          }
+        }
+      }
+    } catch (dbErr) {
+      console.error("D1 getExecutionLog error:", dbErr);
+    }
+  }
+
+  return null;
 }
 
 /** Store a large spec in R2 and return the R2 key used */
@@ -547,6 +664,48 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
     }
 
     // -------------------------------------------------------------------------
+    // 0. Cached Execution Logs Retrieval Route (/api/sf/logs/:logId or /api/logs/:logId)
+    // -------------------------------------------------------------------------
+    if ((pathname.includes("/logs/") || pathname.endsWith("/logs")) && request.method === "GET") {
+      let logId = "";
+      if (pathname.includes("/logs/")) {
+        logId = pathname.split("/logs/")[1];
+      }
+      if (!logId) {
+        logId = url.searchParams.get("id") || url.searchParams.get("logId") || "";
+      }
+
+      if (!logId) {
+        return new Response(
+          JSON.stringify({ error: "Missing log ID parameter. Usage: GET /api/sf/logs/<logId>" }),
+          { status: 400, headers: { "content-type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
+
+      const logEntry = await getExecutionLog(env, logId.trim());
+      if (!logEntry) {
+        return new Response(
+          JSON.stringify({
+            error: "Log Not Found or Expired",
+            message: `Log with ID '${logId}' was not found or has expired (execution logs are automatically purged 1 hour after creation).`,
+            logId: logId.trim()
+          }),
+          { status: 404, headers: { "content-type": "application/json", "Access-Control-Allow-Origin": "*" } }
+        );
+      }
+
+      return new Response(JSON.stringify(logEntry, null, 2), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "X-Log-Expires-At": new Date(logEntry.expires_at).toISOString(),
+        },
+      });
+    }
+
+    // -------------------------------------------------------------------------
     // 1. Initiate OAuth Login Route (/api/oauth/sf/login or /api/oauth/sf/authorize)
     // -------------------------------------------------------------------------
     if ((pathname.includes("/sf/login") || pathname.includes("/sf/authorize")) && request.method === "GET") {
@@ -602,6 +761,7 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
           mcpServerUrl?: string;
           restApiUrl?: string;
           openApiSpecUrl?: string;
+          openApiSpecJson?: string;
           queryUrl?: string;
           sobjectsUrl?: string;
           clientId?: string;
@@ -611,6 +771,12 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
           timestamp?: string;
         };
 
+        const logId = "log_" + crypto.randomUUID().replace(/-/g, "");
+        await saveExecutionLog(env, logId, payload.event || "MCP_AUTO_REGISTER_SUCCESS", "Salesforce Auto-Registration Webhook Payload", payload);
+
+        const requestWebOrigin = url.origin;
+        const logCurlUrl = `${requestWebOrigin}/api/sf/logs/${logId}`;
+
         console.log("=================================================");
         console.log("🚀 [executor-cloudflare] Received Salesforce Auto-Registration Webhook:");
         console.log("• Event           :", payload.event || "MCP_AUTO_REGISTER_SUCCESS");
@@ -618,14 +784,11 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
         console.log("• MCP Server URL  :", payload.mcpServerUrl);
         console.log("• REST API URL    :", payload.restApiUrl);
         console.log("• OpenAPI Spec URL:", payload.openApiSpecUrl);
-        console.log("• SOQL Query URL  :", payload.queryUrl);
-        console.log("• SObjects URL    :", payload.sobjectsUrl);
         console.log("• Client ID       :", payload.clientId);
-        console.log("• Client Secret   :", payload.clientSecret || "[NOT PROVIDED]");
         console.log("• Status          :", payload.status);
         console.log("• Installed User  :", payload.installedByUser);
-        console.log("• Timestamp       :", payload.timestamp);
-        console.log("Full Payload:", JSON.stringify(payload, null, 2));
+        console.log("• Log ID (1h TTL) :", logId);
+        console.log("• Retrieve via curl:", `curl -s "${logCurlUrl}"`);
         let viewableOpenApiUrl = "";
         if (payload.clientId && payload.mcpServerUrl) {
           const apiKey = "sf_key_" + crypto.randomUUID().replace(/-/g, "");
@@ -633,7 +796,7 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
             ? new URL(payload.mcpServerUrl).origin
             : `https://${payload.mcpServerUrl}`;
 
-          viewableOpenApiUrl = `https://executor-cloudflare.emalteaproductions.workers.dev/api/sf/openapi.json?api_key=${apiKey}`;
+          viewableOpenApiUrl = `${requestWebOrigin}/api/sf/openapi.json?api_key=${apiKey}`;
 
           console.log("• Viewable Cached OpenAPI Spec URL :", viewableOpenApiUrl);
           console.log("=================================================");
@@ -702,6 +865,8 @@ export function makeSalesforceOAuthHandler(config: Config, env: any) {
             queryUrl: payload.queryUrl,
             sobjectsUrl: payload.sobjectsUrl,
             clientId: payload.clientId,
+            logId: logId,
+            logUrl: logCurlUrl,
             receivedAt: new Date().toISOString()
           }),
           {
