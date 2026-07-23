@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Message_Text__c</fullName>
+    <description>The text content of the message received from external endpoint via bt-proxy.</description>
+    <externalId>false</externalId>
+    <label>Message Text</label>
+    <length>32768</length>
+    <type>LongTextArea</type>
+    <visibleLines>5</visibleLines>
+</CustomField>

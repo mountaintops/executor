@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>62.0</apiVersion>
+    <label>Route WebChat</label>
+    <processType>RoutingFlow</processType>
+    <status>Active</status>
+    <description>Omni-Channel flow for Enhanced Chat sessions. Inspects pre-chat context injected by bt-proxy and routes to Agentforce bot or Tier 2 support queues.</description>
+
+    <!-- Pre-Chat Input Variables -->
+    <variables>
+        <name>recordId</name>
+        <dataType>String</dataType>
+        <isCollection>false</isCollection>
+        <isInput>true</isInput>
+        <isOutput>false</isOutput>
+    </variables>
+    <variables>
+        <name>external_user_id</name>
+        <dataType>String</dataType>
+        <isCollection>false</isCollection>
+        <isInput>true</isInput>
+        <isOutput>false</isOutput>
+    </variables>
+    <variables>
+        <name>prechat_email</name>
+        <dataType>String</dataType>
+        <isCollection>false</isCollection>
+        <isInput>true</isInput>
+        <isOutput>false</isOutput>
+    </variables>
+    <variables>
+        <name>customer_tier</name>
+        <dataType>String</dataType>
+        <isCollection>false</isCollection>
+        <isInput>true</isInput>
+        <isOutput>false</isOutput>
+    </variables>
+    <variables>
+        <name>contactId</name>
+        <dataType>String</dataType>
+        <isCollection>false</isCollection>
+        <isInput>false</isInput>
+        <isOutput>true</isOutput>
+    </variables>
+
+    <!-- Record Lookup for Contact Linkage -->
+    <recordLookups>
+        <name>Lookup_Contact_By_Email</name>
+        <label>Lookup Contact By Email</label>
+        <locationX>176</locationX>
+        <locationY>158</locationY>
+        <assignNullValuesIfNoRecordsFound>true</assignNullValuesIfNoRecordsFound>
+        <connector>
+            <targetReference>Dispatch_System_Greeting</targetReference>
+        </connector>
+        <filterLogic>and</filterLogic>
+        <filters>
+            <field>Email</field>
+            <operator>EqualTo</operator>
+            <value>
+                <elementReference>prechat_email</elementReference>
+            </value>
+        </filters>
+        <object>Contact</object>
+        <outputAssignments>
+            <assignToReference>contactId</assignToReference>
+            <field>Id</field>
+        </outputAssignments>
+    </recordLookups>
+
+    <!-- Action: Real-Time System Message Dispatch via Connect API -->
+    <actionCalls>
+        <name>Dispatch_System_Greeting</name>
+        <label>Dispatch Omni-Channel System Message</label>
+        <locationX>176</locationX>
+        <locationY>230</locationY>
+        <actionName>MCPOmniChannelMessageDispatcher</actionName>
+        <actionType>apex</actionType>
+        <flowTransactionModel>CurrentTransaction</flowTransactionModel>
+        <inputParameters>
+            <name>messageChoice</name>
+            <value>
+                <stringValue>Greeting</stringValue>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>recordId</name>
+            <value>
+                <elementReference>recordId</elementReference>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>simulateFailure</name>
+            <value>
+                <booleanValue>false</booleanValue>
+            </value>
+        </inputParameters>
+        <connector>
+            <targetReference>Route_To_Agentforce_Or_Queue</targetReference>
+        </connector>
+        <faultConnector>
+            <targetReference>Route_To_Agentforce_Or_Queue</targetReference>
+        </faultConnector>
+    </actionCalls>
+
+    <!-- Action: Route Work Item to Agentforce Bot -->
+    <actionCalls>
+        <name>Route_To_Agentforce_Or_Queue</name>
+        <label>Route To Agentforce AI Agent</label>
+        <locationX>176</locationX>
+        <locationY>300</locationY>
+        <actionName>routeWork</actionName>
+        <actionType>routeWork</actionType>
+        <flowTransactionModel>CurrentTransaction</flowTransactionModel>
+        <inputParameters>
+            <name>recordId</name>
+            <value>
+                <elementReference>recordId</elementReference>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>serviceChannelId</name>
+            <value>
+                <stringValue>0N9g5000001rpJxCAI</stringValue>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>serviceChannelLabel</name>
+            <value>
+                <stringValue>Messaging</stringValue>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>serviceChannelDevName</name>
+            <value>
+                <stringValue>sfdc_livemessage</stringValue>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>routingType</name>
+            <value>
+                <stringValue>Bot</stringValue>
+            </value>
+        </inputParameters>
+        <inputParameters>
+            <name>botId</name>
+            <value>
+                <stringValue>0Xx000000000000AAA</stringValue>
+            </value>
+        </inputParameters>
+    </actionCalls>
+
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector>
+            <targetReference>Lookup_Contact_By_Email</targetReference>
+        </connector>
+    </start>
+</Flow>

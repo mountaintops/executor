@@ -1,0 +1,19 @@
+{
+  "packageDirectories": [
+    {
+      "path": "force-app",
+      "default": true,
+      "package": "salesforce-mcp-package",
+      "versionName": "Spring '26 Release",
+      "versionNumber": "1.0.0.NEXT",
+      "postInstallClass": "PostInstallMessagingHandler"
+    }
+  ],
+  "name": "salesforce-mcp-package",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "62.0",
+  "packageAliases": {
+    "salesforce-mcp-package": "0Ho000000000000AAA"
+  }
+}
