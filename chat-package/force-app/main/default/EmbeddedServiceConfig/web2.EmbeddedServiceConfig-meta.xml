@@ -4,6 +4,11 @@
     <branding>EmbeddedServiceConfig_BrandingSet_19f8bccd491</branding>
     <deploymentFeature>EmbeddedMessaging</deploymentFeature>
     <deploymentType>Web</deploymentType>
+    <embeddedServiceCustomComponents>
+        <componentBundleType>LightningComponentBundle</componentBundleType>
+        <customComponent>customMessageBubble</customComponent>
+        <customComponentType>MIAW_TextMessage</customComponentType>
+    </embeddedServiceCustomComponents>
     <embeddedServiceMessagingChannel>
         <isEnabled>true</isEnabled>
         <messagingChannel>web2</messagingChannel>
