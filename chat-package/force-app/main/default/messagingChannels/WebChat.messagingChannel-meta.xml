@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<MessagingChannel xmlns="http://soap.sforce.com/2006/04/metadata">
-    <masterLabel>WebChat</masterLabel>
-    <messagingChannelType>EmbeddedMessaging</messagingChannelType>
-    <sessionHandlerFlow>RouteWebChat</sessionHandlerFlow>
-    <sessionHandlerQueue>BT_Proxy_Queue</sessionHandlerQueue>
-    <sessionHandlerType>Flow</sessionHandlerType>
-</MessagingChannel>
