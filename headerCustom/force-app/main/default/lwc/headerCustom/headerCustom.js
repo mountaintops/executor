@@ -2,150 +2,194 @@ import { LightningElement, api, track } from 'lwc';
 import { dispatchMessagingEvent, assignMessagingEventHandler, MESSAGING_EVENT } from 'lightningsnapin/eventStore';
 
 function runAaScript() {
-    (function () {
-      // CSS rule ignoring dynamic hashes and targeting only standard classes
-      const HIDE_CSS = `
-        .linkIconContainer,
-        [class*="linkIconContainer"],
-        .linkUrlDomain,
-        [class*="linkUrlDomain"],
-        br:has(+ .linkUrlDomain),
-        br:has(+ [class*="linkUrlDomain"]) {
-          display: none !important;
-          visibility: hidden !important;
-          opacity: 0 !important;
-          max-height: 0 !important;
-          max-width: 0 !important;
-          height: 0 !important;
-          width: 0 !important;
-          margin: 0 !important;
-          padding: 0 !important;
-          pointer-events: none !important;
-        }
-      `;
-    
-      // WeakSet ensures each element is processed exactly ONCE (0% CPU impact)
-      const processed = new WeakSet();
-    
-      function injectCSS(docOrShadow) {
-        try {
-          if (!docOrShadow || docOrShadow.querySelector?.('#miaw-global-hide')) return;
-          const style = document.createElement('style');
-          style.id = 'miaw-global-hide';
-          style.textContent = HIDE_CSS;
-          (docOrShadow.head || docOrShadow).appendChild(style);
-        } catch (e) {}
-      }
-    
-      function cleanContainer(root) {
-        if (!root) return;
-    
-        injectCSS(root);
-    
-        // 1. Hide .linkIconContainer
-        const icons = root.querySelectorAll ? root.querySelectorAll('.linkIconContainer, [class*="linkIconContainer"]') : [];
-        icons.forEach(icon => {
-          if (!processed.has(icon)) {
-            processed.add(icon);
-            icon.style.cssText = 'display: none !important; visibility: hidden !important; width: 0 !important; height: 0 !important;';
-          }
-        });
-    
-        // 2. Hide .linkUrlDomain and preceding <br>
-        const domains = root.querySelectorAll ? root.querySelectorAll('.linkUrlDomain, [class*="linkUrlDomain"]') : [];
-        domains.forEach(domain => {
-          if (!processed.has(domain)) {
-            processed.add(domain);
-            domain.style.cssText = 'display: none !important; visibility: hidden !important; width: 0 !important; height: 0 !important;';
-    
-            let prev = domain.previousSibling;
-            while (prev && prev.nodeType === 3 && !prev.textContent.trim()) {
-              prev = prev.previousSibling;
-            }
-            if (prev && prev.nodeName === 'BR') {
-              prev.style.cssText = 'display: none !important;';
-            }
-          }
-        });
-    
-        // 3. Strip href on <a> tags inside embeddedmessaging-conversation-link-message
-        const anchors = root.querySelectorAll ? root.querySelectorAll('a') : [];
-        anchors.forEach(a => {
-          const isTarget = a.querySelector?.('.linkIconContainer, .linkUrlDomain, [class*="linkIconContainer"], [class*="linkUrlDomain"]') ||
-                           a.closest?.('embeddedmessaging-conversation-link-message, [class*="conversation-link-message"]') ||
-                           (a.parentElement && a.parentElement.tagName === 'EMBEDDEDMESSAGING-CONVERSATION-LINK-MESSAGE');
-    
-          if (isTarget && !processed.has(a)) {
-            processed.add(a);
-            a.removeAttribute('href');
-            a.removeAttribute('target');
-            a.removeAttribute('title');
-            a.removeAttribute('data-navigation-href');
-            a.style.pointerEvents = 'none';
-            a.style.cursor = 'default';
-            a.onclick = (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              return false;
-            };
-          }
-        });
-    
-        // 4. Recurse into all Shadow DOMs
-        const allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
-        allElements.forEach(el => {
-          if (el.shadowRoot) {
-            scanDocumentAndIframes(el.shadowRoot);
-          }
-        });
-      }
-    
-      function scanDocumentAndIframes(winOrDoc) {
-        let doc;
-        try {
-          doc = winOrDoc.document || winOrDoc;
-        } catch (e) {
-          return; // Cross-origin iframe boundary
-        }
-    
-        if (!doc) return;
-    
-        cleanContainer(doc);
+    try {
+        (function () {
+          if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-        // Recurse into all <iframe> containers (Salesforce chat frames)
-        try {
-          const iframes = doc.querySelectorAll('iframe, frame');
-          iframes.forEach(iframe => {
+          function getLinkMessageContainer(node) {
             try {
-              const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
-              if (frameDoc) scanDocumentAndIframes(frameDoc);
+              let curr = node;
+              while (curr) {
+                if (curr.tagName && curr.tagName.toLowerCase() === 'embeddedmessaging-conversation-link-message') {
+                  return curr;
+                }
+                if (curr.closest) {
+                  const found = curr.closest('embeddedmessaging-conversation-link-message');
+                  if (found) return found;
+                }
+                curr = curr.parentNode || (curr.getRootNode && curr.getRootNode() !== curr ? curr.getRootNode().host : null);
+              }
             } catch (e) {}
-          });
-        } catch (e) {}
-      }
+            return null;
+          }
 
-      function masterScan() {
-        scanDocumentAndIframes(window);
-      }
+          function isTubotLatMessage(container) {
+            if (!container || !container.tagName || container.tagName.toLowerCase() !== 'embeddedmessaging-conversation-link-message') {
+              return false;
+            }
+            try {
+              // 1. Check href attribute of <a> tags inside this specific link message
+              const anchors = container.querySelectorAll ? container.querySelectorAll('a') : [];
+              for (let i = 0; i < anchors.length; i++) {
+                const href = anchors[i].getAttribute('href') || anchors[i].href || '';
+                if (href.toLowerCase().includes('tubot.lat')) {
+                  return true;
+                }
+              }
 
-      // 1. Immediate execution
-      masterScan();
+              // 2. Check text content of .linkUrlDomain element
+              const domainEl = container.querySelector ? container.querySelector('.linkUrlDomain, [class*="linkUrlDomain"]') : null;
+              if (domainEl && (domainEl.textContent || '').toLowerCase().includes('tubot.lat')) {
+                return true;
+              }
 
-      // 2. MutationObserver for DOM additions
-      const observer = new MutationObserver(() => masterScan());
-      if (document.documentElement) {
-        observer.observe(document.documentElement, { childList: true, subtree: true });
-      }
+              // 3. Check visible text content of the link message (excluding script/HTML tags)
+              const visibleText = (container.textContent || container.innerText || '').toLowerCase();
+              if (visibleText.includes('tubot.lat')) {
+                return true;
+              }
+            } catch (e) {}
+            return false;
+          }
+        
+          function cleanContainer(root) {
+            if (!root) return;
+            try {
+              // 1. Process embeddedmessaging-conversation-link-message containers
+              const linkMessages = root.querySelectorAll
+                ? root.querySelectorAll('embeddedmessaging-conversation-link-message')
+                : [];
 
-      // 3. Lightweight 500ms poller (handles refreshes, iframe reloads, new chat messages)
-      setInterval(masterScan, 500);
+              linkMessages.forEach(container => {
+                try {
+                  if (isTubotLatMessage(container)) {
+                    // Remove <br> tags
+                    const brs = [];
+                    if (container.querySelectorAll) brs.push(...container.querySelectorAll('br'));
+                    if (container.shadowRoot && container.shadowRoot.querySelectorAll) brs.push(...container.shadowRoot.querySelectorAll('br'));
+                    brs.forEach(br => {
+                      try { br.remove(); } catch (e) { if (br.parentNode) br.parentNode.removeChild(br); }
+                    });
 
-      return "Universal MIAW Link Cleaner Active!";
-    })();
+                    // Remove domain text & icon containers (.linkUrlDomain, .linkIconContainer)
+                    const subElements = [];
+                    if (container.querySelectorAll) subElements.push(...container.querySelectorAll('.linkUrlDomain, [class*="linkUrlDomain"], .linkIconContainer, [class*="linkIconContainer"]'));
+                    if (container.shadowRoot && container.shadowRoot.querySelectorAll) subElements.push(...container.shadowRoot.querySelectorAll('.linkUrlDomain, [class*="linkUrlDomain"], .linkIconContainer, [class*="linkIconContainer"]'));
+                    subElements.forEach(el => {
+                      try { el.remove(); } catch (e) { if (el.parentNode) el.parentNode.removeChild(el); }
+                    });
+
+                    // Strip href and disable navigation on <a> tags without removing the <a> element (which wraps the card)
+                    const anchors = [];
+                    if (container.querySelectorAll) anchors.push(...container.querySelectorAll('a'));
+                    if (container.shadowRoot && container.shadowRoot.querySelectorAll) anchors.push(...container.shadowRoot.querySelectorAll('a'));
+                    anchors.forEach(a => {
+                      try {
+                        a.removeAttribute('href');
+                        a.removeAttribute('target');
+                        a.removeAttribute('title');
+                        a.removeAttribute('data-navigation-href');
+                        a.style.pointerEvents = 'none';
+                        a.style.cursor = 'default';
+                        a.onclick = (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          return false;
+                        };
+                      } catch (e) {}
+                    });
+                  }
+                } catch (e) {}
+              });
+
+              // 2. Also check standalone <br> elements inside matching containers
+              const brTargets = root.querySelectorAll ? root.querySelectorAll('br') : [];
+              brTargets.forEach(br => {
+                try {
+                  const container = getLinkMessageContainer(br);
+                  if (container && isTubotLatMessage(container)) {
+                    try {
+                      br.remove();
+                    } catch (e) {
+                      if (br.parentNode) br.parentNode.removeChild(br);
+                    }
+                  }
+                } catch (e) {}
+              });
+
+              // 3. Recurse into all Shadow DOMs
+              const allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+              allElements.forEach(el => {
+                try {
+                  if (el.shadowRoot) {
+                    scanDocumentAndIframes(el.shadowRoot);
+                  }
+                } catch (e) {}
+              });
+            } catch (e) {}
+          }
+        
+          function scanDocumentAndIframes(winOrDoc) {
+            let doc;
+            try {
+              doc = winOrDoc.document || winOrDoc;
+            } catch (e) {
+              return; // Cross-origin iframe boundary
+            }
+        
+            if (!doc) return;
+        
+            try {
+              cleanContainer(doc);
+            } catch (e) {}
+
+            // Recurse into all <iframe> containers (Salesforce chat frames)
+            try {
+              const iframes = doc.querySelectorAll ? doc.querySelectorAll('iframe, frame') : [];
+              iframes.forEach(iframe => {
+                try {
+                  const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                  if (frameDoc) scanDocumentAndIframes(frameDoc);
+                } catch (e) {}
+              });
+            } catch (e) {}
+          }
+
+          function masterScan() {
+            try {
+              scanDocumentAndIframes(window);
+            } catch (e) {}
+          }
+
+          // 1. Immediate execution
+          masterScan();
+
+          // 2. MutationObserver for DOM additions
+          try {
+            const observer = new MutationObserver(() => masterScan());
+            if (document.documentElement) {
+              observer.observe(document.documentElement, { childList: true, subtree: true });
+            }
+          } catch (e) {}
+
+          // 3. Lightweight 500ms poller (handles refreshes, iframe reloads, new chat messages)
+          try {
+            setInterval(masterScan, 500);
+          } catch (e) {}
+
+          return "Universal MIAW Link Cleaner Active!";
+        })();
+    } catch (e) {
+        console.error("Error executing runAaScript:", e);
+    }
 }
 
-// Execute at module load
-runAaScript();
+// Execute at module load safely
+try {
+    runAaScript();
+} catch (e) {
+    console.error("Module load runAaScript error:", e);
+}
 
 export default class HeaderCustom extends LightningElement {
     @api configuration = {};
@@ -155,15 +199,25 @@ export default class HeaderCustom extends LightningElement {
     @track isMenuOpen = false;
 
     connectedCallback() {
-        runAaScript();
+        try {
+            runAaScript();
+        } catch (e) {
+            console.error("connectedCallback runAaScript error:", e);
+        }
 
-        // Dynamically update header text when agent joins or event fires (e.g. payload: { text: "Ivan J" })
-        assignMessagingEventHandler(MESSAGING_EVENT.UPDATE_HEADER_TEXT, (payload) => {
-            console.log("Header text update event received:", payload);
-            if (payload && payload.text) {
-                this.dynamicTitle = payload.text;
+        try {
+            // Dynamically update header text when agent joins or event fires (e.g. payload: { text: "Ivan J" })
+            if (typeof assignMessagingEventHandler === 'function' && MESSAGING_EVENT?.UPDATE_HEADER_TEXT) {
+                assignMessagingEventHandler(MESSAGING_EVENT.UPDATE_HEADER_TEXT, (payload) => {
+                    console.log("Header text update event received:", payload);
+                    if (payload && payload.text) {
+                        this.dynamicTitle = payload.text;
+                    }
+                });
             }
-        });
+        } catch (e) {
+            console.error("Error setting up messaging event handler:", e);
+        }
     }
 
     get headerTitle() {
@@ -177,14 +231,32 @@ export default class HeaderCustom extends LightningElement {
     handleEndConversation() {
         this.isMenuOpen = false;
         console.log("Ending conversation...");
-        dispatchMessagingEvent(MESSAGING_EVENT.CLOSE_CONVERSATION, {});
+        try {
+            if (typeof dispatchMessagingEvent === 'function' && MESSAGING_EVENT?.CLOSE_CONVERSATION) {
+                dispatchMessagingEvent(MESSAGING_EVENT.CLOSE_CONVERSATION, {});
+            }
+        } catch (e) {
+            console.error("Error closing conversation:", e);
+        }
     }
 
     onMinimizeButtonClick() {
-        dispatchMessagingEvent(MESSAGING_EVENT.MINIMIZE_BUTTON_CLICK, {});
+        try {
+            if (typeof dispatchMessagingEvent === 'function' && MESSAGING_EVENT?.MINIMIZE_BUTTON_CLICK) {
+                dispatchMessagingEvent(MESSAGING_EVENT.MINIMIZE_BUTTON_CLICK, {});
+            }
+        } catch (e) {
+            console.error("Error minimizing:", e);
+        }
     }
 
     onCloseButtonClick() {
-        dispatchMessagingEvent(MESSAGING_EVENT.CLOSE_CONTAINER, {});
+        try {
+            if (typeof dispatchMessagingEvent === 'function' && MESSAGING_EVENT?.CLOSE_CONTAINER) {
+                dispatchMessagingEvent(MESSAGING_EVENT.CLOSE_CONTAINER, {});
+            }
+        } catch (e) {
+            console.error("Error closing container:", e);
+        }
     }
 }
