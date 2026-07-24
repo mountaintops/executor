@@ -1,10 +1,195 @@
 import { LightningElement, api, track } from 'lwc';
 import { dispatchMessagingEvent, assignMessagingEventHandler, MESSAGING_EVENT } from 'lightningsnapin/eventStore';
+import handleIncomingTurn from '@salesforce/apex/HeaderCustomController.handleIncomingTurn';
+
+/**
+ * Phase 2 Helper Function: Parses event payload produced during chat turn,
+ * extracting session identifier and raw text payload.
+ */
+function extractTurnPayload(eventOrPayload) {
+    let sessionId = '';
+    let messageText = '';
+    if (!eventOrPayload) return { sessionId, messageText };
+
+    const payload = eventOrPayload.detail || eventOrPayload;
+    sessionId = payload.conversationId || payload.sessionId || payload.recordId || payload.conversationSessionId || '';
+    messageText = payload.text || payload.message || payload.content || payload.body || '';
+
+    return { sessionId, messageText };
+}
+
+/**
+ * Phase 2 Helper Function: Bridges client-side event to Salesforce application tier
+ * over internal Lightning transport bus (0 REST API calls consumed).
+ */
+function sendApexTurnBridge(sessionId, messageText) {
+    console.log('[HeaderCustom-Debug] Invoking sendApexTurnBridge with:', { sessionId, messageText });
+    if (!sessionId || !messageText) {
+        console.warn('[HeaderCustom-Debug] Skipped sendApexTurnBridge: missing sessionId or messageText', { sessionId, messageText });
+        return;
+    }
+    handleIncomingTurn({ sessionId: sessionId, messageText: messageText })
+        .then(result => {
+            console.log('[HeaderCustom-Debug] Apex turn handler result:', result);
+        })
+        .catch(error => {
+            console.error('[HeaderCustom-Debug] Apex invocation error:', error);
+        });
+}
 
 function runAaScript() {
     try {
         (function () {
           if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+          // Attach Client-Side Event Listener for Embedded Messaging Events & PostMessage
+          try {
+            const handleTurnEvent = (evt) => {
+              try {
+                console.log('[HeaderCustom-Debug] Captured client-side event:', evt.type, evt.detail);
+                const { sessionId, messageText } = extractTurnPayload(evt);
+                const activeSession = sessionId || findSessionIdInWindow();
+                if (messageText) {
+                  sendApexTurnBridge(activeSession, messageText);
+                }
+              } catch (err) {
+                console.error('[HeaderCustom-Debug] Error processing turn event listener:', err);
+              }
+            };
+
+            window.addEventListener('embeddedmessaging-message-sent', handleTurnEvent);
+            window.addEventListener('onmessagingevent', handleTurnEvent);
+            document.addEventListener('embeddedmessaging-message-sent', handleTurnEvent);
+
+            window.addEventListener('message', (evt) => {
+              try {
+                if (!evt.data) return;
+                const data = typeof evt.data === 'string' ? JSON.parse(evt.data) : evt.data;
+                if (data.type === 'embeddedmessaging-message-sent' || data.event === 'MESSAGE_SENT' || (data.messageText && data.conversationId)) {
+                  console.log('[HeaderCustom-Debug] Captured postMessage turn event:', data);
+                  const sessionId = data.conversationId || findSessionIdInWindow();
+                  const text = data.text || data.messageText || data.message || '';
+                  if (text) {
+                    sendApexTurnBridge(sessionId, text);
+                  }
+                }
+              } catch (e) {}
+            });
+          } catch (e) {
+            console.error('[HeaderCustom-Debug] Error registering client-side turn event listeners:', e);
+          }
+
+          function findSessionIdInWindow() {
+            try {
+              if (window.embedded_svc?.settings?.conversationId) return window.embedded_svc.settings.conversationId;
+              if (window.embeddedmessaging?.conversationId) return window.embeddedmessaging.conversationId;
+              for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                if (key && key.toLowerCase().includes('conversation')) {
+                  const val = sessionStorage.getItem(key);
+                  if (val && val.length > 10) return val;
+                }
+              }
+            } catch (e) {}
+            return 'ACTIVE_SESSION';
+          }
+
+          function processUserMessages(root) {
+            if (!root || !root.querySelectorAll) return;
+            try {
+              // Target MIAW user message components / bubbles
+              const userMessages = root.querySelectorAll(
+                'embeddedmessaging-chat-message[data-message-type="user"], ' +
+                'embeddedmessaging-chat-message[data-author-type="user"], ' +
+                '[class*="userMessage"], [class*="outboundMessage"], [data-author="User"]'
+              );
+
+              userMessages.forEach(msgEl => {
+                if (msgEl.dataset && msgEl.dataset.turnProcessed) return;
+                try { msgEl.dataset.turnProcessed = 'true'; } catch (e) {}
+
+                const text = (msgEl.textContent || msgEl.innerText || '').trim();
+                const sessionId = findSessionIdInWindow();
+                if (text) {
+                  console.log('[HeaderCustom-Debug] Captured DOM user message bubble:', { text, sessionId });
+                  sendApexTurnBridge(sessionId, text);
+                }
+              });
+            } catch (e) {}
+          }
+
+          function hookChatInputs(root) {
+            if (!root || !root.querySelectorAll) return;
+            try {
+              // 1. Process user message bubbles in DOM (fail-safe fallback)
+              processUserMessages(root);
+
+              // 2. Hook Input Elements with continuous tracking & capture phase listeners
+              const inputs = root.querySelectorAll('textarea, input[type="text"], [contenteditable="true"], embeddedmessaging-chat-input');
+              inputs.forEach(el => {
+                if (el.dataset && el.dataset.turnHooked) return;
+                try { el.dataset.turnHooked = 'true'; } catch (e) {}
+
+                console.log('[HeaderCustom-Debug] Hooked chat input element:', el);
+
+                // Continuously track typed text before clearing
+                const updateTypedText = () => {
+                  const val = el.value || el.textContent || el.innerText || '';
+                  if (val && val.trim().length > 0) {
+                    el._lastTypedText = val.trim();
+                  }
+                };
+
+                el.addEventListener('input', updateTypedText, true);
+                el.addEventListener('keyup', updateTypedText, true);
+                el.addEventListener('change', updateTypedText, true);
+
+                const triggerSend = () => {
+                  const text = el.value || el._lastTypedText || el.textContent || el.innerText || '';
+                  const sessionId = findSessionIdInWindow();
+                  if (text && text.trim().length > 0) {
+                    console.log('[HeaderCustom-Debug] Captured input turn submit:', { text: text.trim(), sessionId });
+                    sendApexTurnBridge(sessionId, text.trim());
+                    el._lastTypedText = '';
+                  }
+                };
+
+                // Capture phase keydown (runs BEFORE Salesforce clears the input value!)
+                el.addEventListener('keydown', (e) => {
+                  updateTypedText();
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    triggerSend();
+                  }
+                }, true);
+              });
+
+              // 3. Hook Send Buttons with capture phase listeners
+              const sendBtns = root.querySelectorAll('button[class*="send"], button[aria-label*="Send"], button[title*="Send"], [data-id="sendMessageButton"]');
+              sendBtns.forEach(btn => {
+                if (btn.dataset && btn.dataset.btnHooked) return;
+                try { btn.dataset.btnHooked = 'true'; } catch (e) {}
+
+                console.log('[HeaderCustom-Debug] Hooked send button:', btn);
+
+                const handleBtnClick = () => {
+                  const activeDoc = btn.ownerDocument || document;
+                  const input = activeDoc.querySelector('textarea, input[type="text"], [contenteditable="true"]');
+                  const text = input ? (input.value || input._lastTypedText || input.textContent || '') : '';
+                  const sessionId = findSessionIdInWindow();
+                  if (text && text.trim().length > 0) {
+                    console.log('[HeaderCustom-Debug] Captured button turn submit:', { text: text.trim(), sessionId });
+                    sendApexTurnBridge(sessionId, text.trim());
+                    if (input) input._lastTypedText = '';
+                  }
+                };
+
+                btn.addEventListener('mousedown', handleBtnClick, true);
+                btn.addEventListener('pointerdown', handleBtnClick, true);
+                btn.addEventListener('click', handleBtnClick, true);
+              });
+            } catch (e) {}
+          }
+
 
           function getLinkMessageContainer(node) {
             try {
@@ -141,6 +326,7 @@ function runAaScript() {
         
             try {
               cleanContainer(doc);
+              hookChatInputs(doc);
             } catch (e) {}
 
             // Recurse into all <iframe> containers (Salesforce chat frames)
@@ -212,6 +398,22 @@ export default class HeaderCustom extends LightningElement {
                     console.log("Header text update event received:", payload);
                     if (payload && payload.text) {
                         this.dynamicTitle = payload.text;
+                    }
+                });
+            }
+
+            // Register turn handler for Messaging events via Lightning eventStore
+            if (typeof assignMessagingEventHandler === 'function') {
+                const turnEvents = ['MESSAGE_SENT', 'RECORD_EVENT', 'CONVERSATION_PAYLOAD'];
+                turnEvents.forEach(evtName => {
+                    if (MESSAGING_EVENT?.[evtName] || evtName) {
+                        assignMessagingEventHandler(MESSAGING_EVENT?.[evtName] || evtName, (payload) => {
+                            const { sessionId, messageText } = extractTurnPayload(payload);
+                            const activeSession = sessionId || this.configuration?.conversationId || this.configuration?.recordId;
+                            if (activeSession && messageText) {
+                                sendApexTurnBridge(activeSession, messageText);
+                            }
+                        });
                     }
                 });
             }
