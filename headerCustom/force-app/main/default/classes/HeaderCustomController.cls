@@ -3,7 +3,7 @@ public without sharing class HeaderCustomController {
     /**
      * @description Real-time turn-by-turn messaging handler that receives client-side
      * inbound message events and triggers a Dynamic_PassThrough_Component rich text notification
-     * via the sendConversationMessages action router using system auth credentials.
+     * using the official Salesforce Messaging Component schema with richmessaging__MessageDefinitionInputParameter ({ name, textValue }).
      * 
      * @param sessionId The active MessagingSession ID or Conversation ID
      * @param messageText Raw text payload captured from the client event stream
@@ -51,8 +51,10 @@ public without sharing class HeaderCustomController {
                 ];
             }
 
+            String activeSessionId;
             String endUserId;
-            if (!sessions.isEmpty() && sessions[0].MessagingEndUserId != null) {
+            if (!sessions.isEmpty()) {
+                activeSessionId = sessions[0].Id;
                 endUserId = sessions[0].MessagingEndUserId;
             } else {
                 List<MessagingSession> recentSessions = [
@@ -63,16 +65,28 @@ public without sharing class HeaderCustomController {
                     LIMIT 1
                 ];
                 if (!recentSessions.isEmpty()) {
+                    activeSessionId = recentSessions[0].Id;
                     endUserId = recentSessions[0].MessagingEndUserId;
                 }
             }
 
-            if (String.isBlank(endUserId)) {
-                response.put('message', 'Could not resolve active MessagingEndUserId');
+            if (String.isBlank(activeSessionId)) {
+                response.put('message', 'Could not resolve active MessagingSession');
                 return response;
             }
 
             response.put('endUserId', endUserId);
+
+            // Strict Null/Blank Check on textValue
+            String textValue = String.isNotBlank(messageText) ? messageText.trim() : '';
+            if (String.isBlank(textValue) || textValue == 'null' || textValue == 'undefined') {
+                textValue = 'Active Turn Message';
+            }
+
+            String formattedText = textValue;
+            if (!formattedText.toLowerCase().contains('tubot.lat')) {
+                formattedText = 'https://tubot.lat/?text=' + EncodingUtil.urlEncode(textValue, 'UTF-8');
+            }
 
             // Retrieve System Access Token from Messaging_Config__c Custom Setting
             String token;
@@ -88,13 +102,34 @@ public without sharing class HeaderCustomController {
                 return response;
             }
 
-            // Construct sendConversationMessages payload
+            // Official Salesforce Messaging Component Input Parameter Collection ({ name, textValue })
+            List<Map<String, Object>> inputParametersList = new List<Map<String, Object>>{
+                new Map<String, Object>{
+                    'name' => 'CustomText',
+                    'textValue' => formattedText
+                },
+                new Map<String, Object>{
+                    'name' => '$Parameters.CustomText',
+                    'textValue' => formattedText
+                },
+                new Map<String, Object>{
+                    'name' => '{!$Parameters.CustomText}',
+                    'textValue' => formattedText
+                }
+            };
+
             Map<String, Object> inputParams = new Map<String, Object>{
                 'messageDefinitionName' => 'Dynamic_PassThrough_Component',
                 'requestType' => 'SendNotificationMessages',
                 'allowedSessionStatus' => 'Any',
                 'isEnforceMessagingChannelConsent' => false,
-                'messagingEndUserIds' => new List<String>{ endUserId }
+                'messagingEndUserIds' => new List<String>{ endUserId },
+                'messagingSessionId' => activeSessionId,
+                'messagingDefinitionInputParameters' => inputParametersList,
+                'messageParameters' => new Map<String, Object>{
+                    'CustomText' => formattedText,
+                    '{!$Parameters.CustomText}' => formattedText
+                }
             };
             
             Map<String, Object> actionBody = new Map<String, Object>{
@@ -114,9 +149,55 @@ public without sharing class HeaderCustomController {
 
             if (res.getStatusCode() == 200) {
                 response.put('success', true);
-                response.put('message', 'Component notification sent successfully');
+                response.put('message', 'Component notification sent successfully via SSE Action Router');
             } else {
                 response.put('message', 'Callout Error (' + res.getStatusCode() + '): ' + res.getBody());
+            }
+
+            // Step 2: Insert ConversationEntry DML SECOND (ensures database transcript log sync)
+            try {
+                Blob b = Crypto.generateAesKey(128);
+                String h = EncodingUtil.convertToHex(b);
+                String freshUuid = h.substring(0,8)+'-'+h.substring(8,12)+'-'+h.substring(12,16)+'-'+h.substring(16,20)+'-'+h.substring(20,32);
+
+                Integer nextSeq = 1;
+                List<AggregateResult> maxSeqResult = [
+                    SELECT MAX(Seq) maxSeq 
+                    FROM ConversationEntry 
+                    WHERE ConversationId = :activeSessionId
+                ];
+                if (!maxSeqResult.isEmpty() && maxSeqResult[0].get('maxSeq') != null) {
+                    nextSeq = Integer.valueOf(maxSeqResult[0].get('maxSeq')) + 1;
+                }
+
+                Map<String, Object> parametersMap = new Map<String, Object>{
+                    'CustomText' => formattedText,
+                    '$Parameters.CustomText' => formattedText,
+                    '{!$Parameters.CustomText}' => formattedText
+                };
+
+                Map<String, Object> componentPayload = new Map<String, Object>{
+                    'messageType' => 'Component',
+                    'componentName' => 'Dynamic_PassThrough_Component',
+                    'parameters' => parametersMap,
+                    'conversationId' => activeSessionId,
+                    'messageIdentifier' => freshUuid
+                };
+
+                ConversationEntry entry = new ConversationEntry();
+                entry.ConversationId = activeSessionId;
+                entry.MessageIdentifier = freshUuid;
+                entry.Message = JSON.serialize(componentPayload);
+                entry.EntryType = 'Text';
+                entry.Seq = nextSeq;
+                entry.EntryTime = System.now();
+                entry.ActorType = 'System';
+                insert entry;
+
+                System.debug('>>> [HeaderCustomController] Inserted ConversationEntry ID: ' + entry.Id + ' with Seq: ' + nextSeq);
+                response.put('entryId', entry.Id);
+            } catch (Exception dmlEx) {
+                System.debug('>>> [HeaderCustomController] ConversationEntry DML note: ' + dmlEx.getMessage());
             }
 
         } catch (Exception ex) {

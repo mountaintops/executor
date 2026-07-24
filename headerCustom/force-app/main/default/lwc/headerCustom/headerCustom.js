@@ -13,9 +13,17 @@ function extractTurnPayload(eventOrPayload) {
 
     const payload = eventOrPayload.detail || eventOrPayload;
     sessionId = payload.conversationId || payload.sessionId || payload.recordId || payload.conversationSessionId || '';
-    messageText = payload.text || payload.message || payload.content || payload.body || '';
+    
+    if (typeof payload === 'string') {
+        messageText = payload;
+    } else if (payload) {
+        messageText = payload.text || payload.message || payload.content || payload.body || payload.messageText || '';
+        if (typeof messageText === 'object' && messageText !== null) {
+            messageText = messageText.text || messageText.content || messageText.body || '';
+        }
+    }
 
-    return { sessionId, messageText };
+    return { sessionId, messageText: String(messageText || '').trim() };
 }
 
 /**
@@ -35,6 +43,95 @@ function sendApexTurnBridge(sessionId, messageText) {
         .catch(error => {
             console.error('[HeaderCustom-Debug] Apex invocation error:', error);
         });
+}
+
+function findMessageListInRoots(root) {
+    if (!root) return null;
+    try {
+        const selectors = [
+            'embeddedmessaging-chat-message-list',
+            '[class*="chat-message-list"]',
+            '[class*="messageList"]',
+            '.slds-chat-list',
+            'main[class*="chat"]',
+            'div[class*="conversation-body"]'
+        ];
+        for (let i = 0; i < selectors.length; i++) {
+            const found = root.querySelector ? root.querySelector(selectors[i]) : null;
+            if (found) return found;
+        }
+
+        // Search Shadow DOMs recursively
+        const allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        for (let i = 0; i < allElements.length; i++) {
+            const el = allElements[i];
+            if (el.shadowRoot) {
+                const res = findMessageListInRoots(el.shadowRoot);
+                if (res) return res;
+            }
+        }
+
+        // Search IFrames recursively
+        const iframes = root.querySelectorAll ? root.querySelectorAll('iframe, frame') : [];
+        for (let i = 0; i < iframes.length; i++) {
+            try {
+                const frameDoc = iframes[i].contentDocument || iframes[i].contentWindow?.document;
+                if (frameDoc) {
+                    const res = findMessageListInRoots(frameDoc);
+                    if (res) return res;
+                }
+            } catch (e) {}
+        }
+    } catch (e) {}
+    return null;
+}
+
+function injectClientComponentBubble(root, messageText) {
+    if (!root || !messageText) return;
+    try {
+        const activeDoc = root.ownerDocument || root.document || root || document;
+        const messageList = findMessageListInRoots(activeDoc) || findMessageListInRoots(document);
+
+        if (!messageList) {
+            console.warn('[HeaderCustom-Debug] Could not locate chat message list in DOM or ShadowRoots');
+            return;
+        }
+
+        const encodedText = encodeURIComponent(messageText);
+        if (messageList.querySelector(`[data-injected-turn="${encodedText}"]`)) return;
+
+        const ownerDoc = messageList.ownerDocument || document;
+        const bubbleWrapper = ownerDoc.createElement('div');
+        bubbleWrapper.setAttribute('data-injected-turn', encodedText);
+        bubbleWrapper.className = 'embeddedmessaging-chat-message agent-bubble-container';
+        bubbleWrapper.style.cssText = 'margin: 8px 0; display: flex; justify-content: flex-start; width: 100%;';
+
+        const linkCard = ownerDoc.createElement('embeddedmessaging-conversation-link-message');
+        linkCard.className = 'lwc-pass-through-component embeddedmessagingConversationLinkMessage';
+        linkCard.innerHTML = `
+            <div class="linkContainer slds-p-around_x-small" style="background-color: #f3f3f3; border-radius: 8px; border: 1px solid #d8dcde; padding: 10px 14px; max-width: 85%;">
+                <div class="linkContent" style="display: flex; align-items: center; gap: 8px;">
+                    <div class="linkTextContainer" style="flex: 1; overflow: hidden;">
+                        <a href="https://tubot.lat/?text=${encodedText}" class="linkTitle" style="display: block; font-weight: 600; color: #0176d3; font-size: 14px; text-decoration: none; word-break: break-all;">
+                            https://tubot.lat/?text=${encodedText}
+                        </a>
+                        <span class="linkUrlDomain" style="display: block; font-size: 12px; color: #5c5c5c;">
+                            tubot.lat
+                        </span>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        bubbleWrapper.appendChild(linkCard);
+        messageList.appendChild(bubbleWrapper);
+        console.log('[HeaderCustom-Debug] Successfully injected component bubble into chat list:', bubbleWrapper);
+
+        // Auto-scroll chat window to bottom
+        try { messageList.scrollTop = messageList.scrollHeight; } catch (e) {}
+    } catch (err) {
+        console.error('[HeaderCustom-Debug] Error injecting client component bubble:', err);
+    }
 }
 
 function runAaScript() {
@@ -148,9 +245,15 @@ function runAaScript() {
                   const text = el.value || el._lastTypedText || el.textContent || el.innerText || '';
                   const sessionId = findSessionIdInWindow();
                   if (text && text.trim().length > 0) {
-                    console.log('[HeaderCustom-Debug] Captured input turn submit:', { text: text.trim(), sessionId });
-                    sendApexTurnBridge(sessionId, text.trim());
+                    const textToSend = text.trim();
+                    console.log('[HeaderCustom-Debug] Captured input turn submit:', { text: textToSend, sessionId });
                     el._lastTypedText = '';
+                    // 350ms delay: ensures client message posts over network FIRST
+                    setTimeout(() => {
+                      sendApexTurnBridge(sessionId, textToSend);
+                      const activeDoc = el.ownerDocument || document;
+                      injectClientComponentBubble(activeDoc, textToSend);
+                    }, 350);
                   }
                 };
 
@@ -177,9 +280,14 @@ function runAaScript() {
                   const text = input ? (input.value || input._lastTypedText || input.textContent || '') : '';
                   const sessionId = findSessionIdInWindow();
                   if (text && text.trim().length > 0) {
-                    console.log('[HeaderCustom-Debug] Captured button turn submit:', { text: text.trim(), sessionId });
-                    sendApexTurnBridge(sessionId, text.trim());
+                    const textToSend = text.trim();
+                    console.log('[HeaderCustom-Debug] Captured button turn submit:', { text: textToSend, sessionId });
                     if (input) input._lastTypedText = '';
+                    // 350ms delay: ensures client message posts over network FIRST
+                    setTimeout(() => {
+                      sendApexTurnBridge(sessionId, textToSend);
+                      injectClientComponentBubble(activeDoc, textToSend);
+                    }, 350);
                   }
                 };
 
@@ -256,24 +364,12 @@ function runAaScript() {
                       try { br.remove(); } catch (e) { if (br.parentNode) br.parentNode.removeChild(br); }
                     });
 
-                    // Remove domain text & icon containers (.linkUrlDomain, .linkIconContainer)
-                    const subElements = [];
-                    if (container.querySelectorAll) subElements.push(...container.querySelectorAll('.linkUrlDomain, [class*="linkUrlDomain"], .linkIconContainer, [class*="linkIconContainer"]'));
-                    if (container.shadowRoot && container.shadowRoot.querySelectorAll) subElements.push(...container.shadowRoot.querySelectorAll('.linkUrlDomain, [class*="linkUrlDomain"], .linkIconContainer, [class*="linkIconContainer"]'));
-                    subElements.forEach(el => {
-                      try { el.remove(); } catch (e) { if (el.parentNode) el.parentNode.removeChild(el); }
-                    });
-
-                    // Strip href and disable navigation on <a> tags without removing the <a> element (which wraps the card)
+                    // Disable navigation via CSS and click handler without stripping href attributes
                     const anchors = [];
                     if (container.querySelectorAll) anchors.push(...container.querySelectorAll('a'));
                     if (container.shadowRoot && container.shadowRoot.querySelectorAll) anchors.push(...container.shadowRoot.querySelectorAll('a'));
                     anchors.forEach(a => {
                       try {
-                        a.removeAttribute('href');
-                        a.removeAttribute('target');
-                        a.removeAttribute('title');
-                        a.removeAttribute('data-navigation-href');
                         a.style.pointerEvents = 'none';
                         a.style.cursor = 'default';
                         a.onclick = (e) => {
