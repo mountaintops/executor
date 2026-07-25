@@ -1,0 +1,44 @@
+<template>
+    <section class="header-container" aria-label="Messaging Header">
+        <div class="header-left">
+            <lightning-icon icon-name="utility:chat" size="small" class="header-icon" variant="inverse"></lightning-icon>
+            <span class="header-title">{headerTitle}</span>
+        </div>
+        <div class="header-right">
+            <!-- 3 Dots Options Menu -->
+            <div class="menu-container">
+                <button class="header-btn" onclick={toggleMenu} title="Options" aria-label="Options" aria-expanded={isMenuOpen}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="8" cy="3" r="1.5" fill="currentColor"/>
+                        <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+                        <circle cx="8" cy="13" r="1.5" fill="currentColor"/>
+                    </svg>
+                </button>
+                <template if:true={isMenuOpen}>
+                    <div class="dropdown-menu" role="menu">
+                        <button class="menu-item" onclick={handleEndConversation} role="menuitem">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="margin-right: 8px;">
+                                <path d="M4 4L12 12M4 12L12 4" stroke="#ea001e" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                            End Conversation
+                        </button>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Minimize Button -->
+            <button class="header-btn" onclick={onMinimizeButtonClick} title="Minimize" aria-label="Minimize">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+            </button>
+
+            <!-- Close Button -->
+            <button class="header-btn" onclick={onCloseButtonClick} title="Close" aria-label="Close">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M3 3L11 11M3 11L11 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+            </button>
+        </div>
+    </section>
+</template>
