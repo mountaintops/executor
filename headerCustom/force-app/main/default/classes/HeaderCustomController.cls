@@ -2,8 +2,8 @@ public without sharing class HeaderCustomController {
     
     /**
      * @description Real-time turn-by-turn messaging handler that receives client-side
-     * inbound message events and triggers a Dynamic_PassThrough_Component rich text notification
-     * using the official Salesforce Messaging Component schema with richmessaging__MessageDefinitionInputParameter ({ name, textValue }).
+     * inbound message events and triggers a Dynamic_PassThrough_Component notification
+     * with text, URL, and image parameter bindings (capped under Salesforce 10-item limit).
      * 
      * @param sessionId The active MessagingSession ID or Conversation ID
      * @param messageText Raw text payload captured from the client event stream
@@ -83,10 +83,12 @@ public without sharing class HeaderCustomController {
                 textValue = 'Active Turn Message';
             }
 
-            String formattedText = textValue;
-            if (!formattedText.toLowerCase().contains('tubot.lat')) {
-                formattedText = 'https://tubot.lat/?text=' + EncodingUtil.urlEncode(textValue, 'UTF-8');
+            String formattedUrl = textValue;
+            if (!formattedUrl.toLowerCase().contains('tubot.lat')) {
+                formattedUrl = 'https://tubot.lat/?text=' + EncodingUtil.urlEncode(textValue, 'UTF-8');
             }
+
+            String defaultImageUrl = 'https://www.salesforce.com/favicon.ico';
 
             // Retrieve System Access Token from Messaging_Config__c Custom Setting
             String token;
@@ -102,20 +104,14 @@ public without sharing class HeaderCustomController {
                 return response;
             }
 
-            // Official Salesforce Messaging Component Input Parameter Collection ({ name, textValue })
+            // Exactly 6 Parameter Items (Salesforce Limit = 10)
             List<Map<String, Object>> inputParametersList = new List<Map<String, Object>>{
-                new Map<String, Object>{
-                    'name' => 'CustomText',
-                    'textValue' => formattedText
-                },
-                new Map<String, Object>{
-                    'name' => '$Parameters.CustomText',
-                    'textValue' => formattedText
-                },
-                new Map<String, Object>{
-                    'name' => '{!$Parameters.CustomText}',
-                    'textValue' => formattedText
-                }
+                new Map<String, Object>{ 'name' => 'CustomText', 'textValue' => textValue },
+                new Map<String, Object>{ 'name' => '$Parameters.CustomText', 'textValue' => textValue },
+                new Map<String, Object>{ 'name' => '{!$Parameters.CustomText}', 'textValue' => textValue },
+                new Map<String, Object>{ 'name' => 'CustomUrl', 'textValue' => formattedUrl },
+                new Map<String, Object>{ 'name' => 'Url', 'textValue' => formattedUrl },
+                new Map<String, Object>{ 'name' => 'CustomImage', 'textValue' => defaultImageUrl }
             };
 
             Map<String, Object> inputParams = new Map<String, Object>{
@@ -127,8 +123,9 @@ public without sharing class HeaderCustomController {
                 'messagingSessionId' => activeSessionId,
                 'messagingDefinitionInputParameters' => inputParametersList,
                 'messageParameters' => new Map<String, Object>{
-                    'CustomText' => formattedText,
-                    '{!$Parameters.CustomText}' => formattedText
+                    'CustomText' => textValue,
+                    'CustomUrl' => formattedUrl,
+                    'CustomImage' => defaultImageUrl
                 }
             };
             
@@ -171,9 +168,10 @@ public without sharing class HeaderCustomController {
                 }
 
                 Map<String, Object> parametersMap = new Map<String, Object>{
-                    'CustomText' => formattedText,
-                    '$Parameters.CustomText' => formattedText,
-                    '{!$Parameters.CustomText}' => formattedText
+                    'CustomText' => textValue,
+                    'CustomUrl' => formattedUrl,
+                    'CustomImage' => defaultImageUrl,
+                    '{!$Parameters.CustomText}' => textValue
                 };
 
                 Map<String, Object> componentPayload = new Map<String, Object>{

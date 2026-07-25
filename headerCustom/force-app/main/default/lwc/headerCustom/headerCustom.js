@@ -86,51 +86,105 @@ function findMessageListInRoots(root) {
     return null;
 }
 
-function injectClientComponentBubble(root, messageText) {
-    if (!root || !messageText) return;
+/**
+ * Transforms standard Salesforce automated response notification elements
+ * in-place into clean, left-aligned Agent Message Bubbles with profile picture,
+ * agent name, and timestamp.
+ */
+function transformNotificationsToBubbles(root) {
+    if (!root || !root.querySelectorAll) return;
     try {
-        const activeDoc = root.ownerDocument || root.document || root || document;
-        const messageList = findMessageListInRoots(activeDoc) || findMessageListInRoots(document);
+        const notificationItems = root.querySelectorAll(
+            '.embedded-messaging-automated-response, ' +
+            '[class*="embedded-messaging-automated-response"], ' +
+            'li.slds-chat-listitem_event'
+        );
 
-        if (!messageList) {
-            console.warn('[HeaderCustom-Debug] Could not locate chat message list in DOM or ShadowRoots');
-            return;
-        }
+        // Helper to resolve active agent name from header or configuration
+        let agentName = 'Agent';
+        try {
+            const doc = root.ownerDocument || document;
+            const headerTitle = doc.querySelector('.header-title, [class*="header-title"]');
+            if (headerTitle && headerTitle.textContent && headerTitle.textContent.trim()) {
+                agentName = headerTitle.textContent.trim();
+            }
+        } catch (e) {}
 
-        const encodedText = encodeURIComponent(messageText);
-        if (messageList.querySelector(`[data-injected-turn="${encodedText}"]`)) return;
+        // Helper to resolve formatted time string
+        const now = new Date();
+        const defaultTimeStr = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-        const ownerDoc = messageList.ownerDocument || document;
-        const bubbleWrapper = ownerDoc.createElement('div');
-        bubbleWrapper.setAttribute('data-injected-turn', encodedText);
-        bubbleWrapper.className = 'embeddedmessaging-chat-message agent-bubble-container';
-        bubbleWrapper.style.cssText = 'margin: 8px 0; display: flex; justify-content: flex-start; width: 100%;';
+        notificationItems.forEach(el => {
+            if (el.dataset && el.dataset.bubbleTransformed === 'true') return;
 
-        const linkCard = ownerDoc.createElement('embeddedmessaging-conversation-link-message');
-        linkCard.className = 'lwc-pass-through-component embeddedmessagingConversationLinkMessage';
-        linkCard.innerHTML = `
-            <div class="linkContainer slds-p-around_x-small" style="background-color: #f3f3f3; border-radius: 8px; border: 1px solid #d8dcde; padding: 10px 14px; max-width: 85%;">
-                <div class="linkContent" style="display: flex; align-items: center; gap: 8px;">
-                    <div class="linkTextContainer" style="flex: 1; overflow: hidden;">
-                        <a href="https://tubot.lat/?text=${encodedText}" class="linkTitle" style="display: block; font-weight: 600; color: #0176d3; font-size: 14px; text-decoration: none; word-break: break-all;">
-                            https://tubot.lat/?text=${encodedText}
-                        </a>
-                        <span class="linkUrlDomain" style="display: block; font-size: 12px; color: #5c5c5c;">
-                            tubot.lat
-                        </span>
+            // Find parent li element
+            let li = el.tagName && el.tagName.toLowerCase() === 'li' ? el : el.closest('li');
+            if (!li && el.parentNode) {
+                li = el.parentNode;
+            }
+
+            if (!li) return;
+            if (li.dataset && li.dataset.bubbleTransformed === 'true') return;
+
+            // Mark both elements to prevent re-processing
+            try {
+                if (el.dataset) el.dataset.bubbleTransformed = 'true';
+                if (li.dataset) li.dataset.bubbleTransformed = 'true';
+            } catch (e) {}
+
+            // Locate target text span inside automated response container
+            const autoResp = li.querySelector ? (li.querySelector('.embedded-messaging-automated-response, [class*="embedded-messaging-automated-response"]') || el) : el;
+            const span = autoResp.querySelector ? autoResp.querySelector('span') : null;
+            const rawText = span ? span.innerHTML : (autoResp.textContent || '').trim();
+
+            if (!rawText) return;
+
+            // Check if there is an existing timestamp in the li or preceding element
+            let timeStr = defaultTimeStr;
+            try {
+                const timeEl = li.querySelector('lightning-formatted-date-time, [class*="timestamp"]');
+                if (timeEl && timeEl.textContent && timeEl.textContent.trim()) {
+                    timeStr = timeEl.textContent.trim();
+                }
+            } catch (e) {}
+
+            // Remove default event alignment styles on li
+            li.classList.remove('slds-chat-listitem_event');
+            li.classList.add('slds-chat-listitem_inbound');
+            li.style.display = 'block';
+            li.style.width = '100%';
+            li.style.margin = '4px 0';
+            li.style.padding = '0';
+            li.style.textAlign = 'left';
+
+            // Construct new left-aligned agent bubble container HTML in-place
+            const bubbleContainer = (li.ownerDocument || document).createElement('div');
+            bubbleContainer.className = 'custom-transformed-agent-bubble';
+            bubbleContainer.style.cssText = 'display: flex; align-items: flex-start; gap: 8px; margin: 4px 0; width: 100%; justify-content: flex-start;';
+
+            bubbleContainer.innerHTML = `
+                <div class="custom-agent-avatar" style="width: 28px; height: 28px; border-radius: 50%; background-color: #0176d3; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px; box-shadow: 0 1px 2px rgba(0,0,0,0.15);">
+                    <svg width="16" height="16" viewBox="0 0 520 520" fill="#ffffff" style="display: block;">
+                        <path d="M260 40C127 40 21 138 21 259c0 38 11 74 29 106 3 5 4 11 2 17l-31 85c-3 8 5 15 13 13l86-33c5-2 11-1 17 2 36 20 79 32 125 32 131-1 238-98 238-220-1-123-108-221-240-221M140 300c-22 0-40-18-40-40s18-40 40-40 40 18 40 40-18 40-40 40m120 0c-22 0-40-18-40-40s18-40 40-40 40 18 40 40-18 40-40 40m120 0c-22 0-40-18-40-40s18-40 40-40 40 18 40 40-18 40-40 40"></path>
+                    </svg>
+                </div>
+                <div class="custom-agent-bubble-wrapper" style="display: flex; flex-direction: column; align-items: flex-start; max-width: 82%;">
+                    <div class="custom-agent-bubble-body" style="background-color: #f3f3f3; color: #181818; padding: 10px 14px; border-radius: 14px 14px 14px 2px; font-size: 14px; line-height: 1.45; word-break: break-word; border: 1px solid #e0e0e0; box-shadow: 0 1px 2px rgba(0,0,0,0.04);">
+                        <span>${rawText}</span>
+                    </div>
+                    <div class="custom-agent-bubble-meta" style="font-size: 11px; color: #706e6b; margin-top: 3px; padding-left: 2px;">
+                        <span style="font-weight: 600;">${agentName}</span> • <span>${timeStr}</span>
                     </div>
                 </div>
-            </div>
-        `;
+            `;
 
-        bubbleWrapper.appendChild(linkCard);
-        messageList.appendChild(bubbleWrapper);
-        console.log('[HeaderCustom-Debug] Successfully injected component bubble into chat list:', bubbleWrapper);
-
-        // Auto-scroll chat window to bottom
-        try { messageList.scrollTop = messageList.scrollHeight; } catch (e) {}
+            // Clear original inner markup of li and append transformed bubble in exact row spot
+            li.innerHTML = '';
+            li.appendChild(bubbleContainer);
+            console.log('[HeaderCustom-Debug] Transformed notification to Agent Bubble in-place:', { rawText, agentName, timeStr });
+        });
     } catch (err) {
-        console.error('[HeaderCustom-Debug] Error injecting client component bubble:', err);
+        console.error('[HeaderCustom-Debug] Error transforming notification to bubble:', err);
     }
 }
 
@@ -251,8 +305,6 @@ function runAaScript() {
                     // 350ms delay: ensures client message posts over network FIRST
                     setTimeout(() => {
                       sendApexTurnBridge(sessionId, textToSend);
-                      const activeDoc = el.ownerDocument || document;
-                      injectClientComponentBubble(activeDoc, textToSend);
                     }, 350);
                   }
                 };
@@ -286,7 +338,6 @@ function runAaScript() {
                     // 350ms delay: ensures client message posts over network FIRST
                     setTimeout(() => {
                       sendApexTurnBridge(sessionId, textToSend);
-                      injectClientComponentBubble(activeDoc, textToSend);
                     }, 350);
                   }
                 };
@@ -297,7 +348,6 @@ function runAaScript() {
               });
             } catch (e) {}
           }
-
 
           function getLinkMessageContainer(node) {
             try {
@@ -321,7 +371,6 @@ function runAaScript() {
               return false;
             }
             try {
-              // 1. Check href attribute of <a> tags inside this specific link message
               const anchors = container.querySelectorAll ? container.querySelectorAll('a') : [];
               for (let i = 0; i < anchors.length; i++) {
                 const href = anchors[i].getAttribute('href') || anchors[i].href || '';
@@ -330,13 +379,11 @@ function runAaScript() {
                 }
               }
 
-              // 2. Check text content of .linkUrlDomain element
               const domainEl = container.querySelector ? container.querySelector('.linkUrlDomain, [class*="linkUrlDomain"]') : null;
               if (domainEl && (domainEl.textContent || '').toLowerCase().includes('tubot.lat')) {
                 return true;
               }
 
-              // 3. Check visible text content of the link message (excluding script/HTML tags)
               const visibleText = (container.textContent || container.innerText || '').toLowerCase();
               if (visibleText.includes('tubot.lat')) {
                 return true;
@@ -348,7 +395,10 @@ function runAaScript() {
           function cleanContainer(root) {
             if (!root) return;
             try {
-              // 1. Process embeddedmessaging-conversation-link-message containers
+              // 1. Transform text notifications to Agent Bubbles in-place
+              transformNotificationsToBubbles(root);
+
+              // 2. Process embeddedmessaging-conversation-link-message containers
               const linkMessages = root.querySelectorAll
                 ? root.querySelectorAll('embeddedmessaging-conversation-link-message')
                 : [];
@@ -383,7 +433,7 @@ function runAaScript() {
                 } catch (e) {}
               });
 
-              // 2. Also check standalone <br> elements inside matching containers
+              // 3. Check standalone <br> elements inside matching containers
               const brTargets = root.querySelectorAll ? root.querySelectorAll('br') : [];
               brTargets.forEach(br => {
                 try {
@@ -398,7 +448,7 @@ function runAaScript() {
                 } catch (e) {}
               });
 
-              // 3. Recurse into all Shadow DOMs
+              // 4. Recurse into all Shadow DOMs
               const allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
               allElements.forEach(el => {
                 try {
@@ -459,7 +509,7 @@ function runAaScript() {
             setInterval(masterScan, 500);
           } catch (e) {}
 
-          return "Universal MIAW Link Cleaner Active!";
+          return "Universal MIAW Link Cleaner & Notification-to-Bubble Transformer Active!";
         })();
     } catch (e) {
         console.error("Error executing runAaScript:", e);
