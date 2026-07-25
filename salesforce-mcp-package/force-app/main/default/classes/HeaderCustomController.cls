@@ -260,13 +260,16 @@ public without sharing class HeaderCustomController {
                 System.debug('>>> [HeaderCustomController] ConversationEntry DML note: ' + dmlEx.getMessage());
             }
 
-            // Step 3: Dispatch CustomNotification THIRD (ONLY FOR INBOUND USER MESSAGES asking for "agent")
-            if (isUserInboundMessage && String.isNotBlank(messageText) && messageText.toLowerCase().contains('agent')) {
+            // Step 3: Dispatch Top Notification Bar Broadcast (ONLY FOR INBOUND USER MESSAGES asking for "agent" or custom keyword)
+            if (isUserInboundMessage && String.isNotBlank(messageText)) {
                 try {
-                    Id notifTypeId = getAgentNotificationTypeId();
-                    Set<String> recipientIds = getChatQueueUserIds();
+                    String keyword = (config != null && String.isNotBlank(config.Agent_Keyword__c)) ? config.Agent_Keyword__c : 'agent';
 
-                    if (notifTypeId != null && !recipientIds.isEmpty()) {
+                    if (messageText.toLowerCase().contains(keyword.toLowerCase())) {
+                        Boolean detectJoinedAgent = (config != null && config.Detect_Joined_Agent__c != null) ? config.Detect_Joined_Agent__c : true;
+                        Boolean isGlobalDefault = (config != null && config.Is_Global_Default__c != null) ? config.Is_Global_Default__c : false;
+                        Boolean autoQueueDetector = (config != null && config.Auto_Queue_Detector__c != null) ? config.Auto_Queue_Detector__c : true;
+
                         String customerName = 'Customer';
                         if (String.isNotBlank(endUserId)) {
                             List<MessagingEndUser> endUsers = [
@@ -280,19 +283,64 @@ public without sharing class HeaderCustomController {
                             }
                         }
 
-                        Messaging.CustomNotification notif = new Messaging.CustomNotification();
-                        notif.setNotificationTypeId(notifTypeId);
-                        notif.setTitle('Agent Requested');
-                        notif.setBody(customerName + ' has asked for an agent');
-                        notif.setTargetId(activeSessionId);
-                        notif.send(recipientIds);
-                        System.debug('>>> [HeaderCustomController] Sent CustomNotification "Agent" to queue recipients for INBOUND user message: ' + recipientIds);
+                        // Inspect MessagingSession owner to check if an agent has joined
+                        String joinedAgentId = null;
+                        Boolean hasAgentJoined = false;
+
+                        if (detectJoinedAgent && String.isNotBlank(activeSessionId)) {
+                            List<MessagingSession> msList = [
+                                SELECT Id, OwnerId FROM MessagingSession WHERE Id = :activeSessionId LIMIT 1
+                            ];
+                            if (!msList.isEmpty()) {
+                                String ownerIdStr = String.valueOf(msList[0].OwnerId);
+                                if (String.isNotBlank(ownerIdStr) && ownerIdStr.startsWith('005')) {
+                                    joinedAgentId = ownerIdStr;
+                                    hasAgentJoined = true;
+                                }
+                            }
+                        }
+
+                        Map<String, Object> payload = new Map<String, Object>();
+                        payload.put('deactivateOthers', true);
+                        payload.put('isDismissible', true);
+                        payload.put('theme', 'warning');
+
+                        if (hasAgentJoined) {
+                            // IF AGENT HAS JOINED: ONLY BROADCAST TOP BAR TO THAT JOINED AGENT
+                            payload.put('title', '📢 Customer Requested Assistance');
+                            payload.put('message', customerName + ' requested assistance in your assigned messaging session.');
+                            payload.put('isGlobal', false);
+                            payload.put('targetUserIds', joinedAgentId);
+                            System.debug('>>> [HeaderCustomController] Joined Agent detected (' + joinedAgentId + '). Broadcasting top bar to joined agent only.');
+                        } else {
+                            // IF NO AGENT HAS JOINED: BROADCAST TO ALL IN QUEUE (or target group)
+                            payload.put('title', '📢 Customer Requested Agent in Queue');
+                            payload.put('message', customerName + ' has asked for an agent in Chat Queue.');
+
+                            if (isGlobalDefault) {
+                                payload.put('isGlobal', true);
+                            } else if (autoQueueDetector) {
+                                payload.put('isGlobal', false);
+                                Set<String> queueUserIds = getChatQueueUserIds();
+                                payload.put('targetUserIds', String.join(new List<String>(queueUserIds), ','));
+                            } else if (config != null && String.isNotBlank(config.Target_Group_Id__c)) {
+                                payload.put('isGlobal', false);
+                                payload.put('targetGroupIds', config.Target_Group_Id__c);
+                            } else {
+                                payload.put('isGlobal', false);
+                                Set<String> queueUserIds = getChatQueueUserIds();
+                                payload.put('targetUserIds', String.join(new List<String>(queueUserIds), ','));
+                            }
+                        }
+
+                        TopNotificationController.saveAndActivateNotification(payload);
+                        System.debug('>>> [HeaderCustomController] Top Notification Bar broadcast activated for keyword "' + keyword + '".');
                     }
                 } catch (Exception notifEx) {
-                    System.debug('>>> [HeaderCustomController] CustomNotification dispatch note: ' + notifEx.getMessage());
+                    System.debug('>>> [HeaderCustomController] Top notification bar dispatch error: ' + notifEx.getMessage());
                 }
             } else if (!isUserInboundMessage) {
-                System.debug('>>> [HeaderCustomController] Skipped CustomNotification "Agent" because message is OUTBOUND.');
+                System.debug('>>> [HeaderCustomController] Skipped Top Notification Bar because message is OUTBOUND.');
             }
 
         } catch (Exception ex) {

@@ -1,0 +1,120 @@
+<template>
+    <c-top-notification-bar></c-top-notification-bar>
+
+    <lightning-card title="Agent Top Notification Bar Admin" icon-name="standard:announcement">
+        <div class="slds-p-around_medium">
+
+            <!-- Status Feedback Alert Banner -->
+            <template if:true={statusAlertMessage}>
+                <div class="slds-scoped-notification slds-media slds-media_center slds-m-bottom_medium slds-theme_alert-texture" role="status">
+                    <div class="slds-media__body">
+                        <p>{statusAlertMessage}</p>
+                    </div>
+                </div>
+            </template>
+
+            <div class="slds-grid slds-gutters slds-wrap">
+                
+                <!-- Left Column: Keyword & Session Detection -->
+                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12">
+                    <div class="slds-card slds-card_boundary slds-p-around_medium">
+                        <h3 class="slds-text-heading_small slds-m-bottom_small">1. Inbound Keyword Customizer</h3>
+                        
+                        <lightning-input 
+                            label="Substring Keyword Customizer" 
+                            value={agentKeyword} 
+                            onchange={handleKeywordChange} 
+                            placeholder="e.g. agent"
+                            help-text="Inbound customer messages containing this substring keyword (case-insensitive) will activate the top notification bar across agent screens.">
+                        </lightning-input>
+
+                        <div class="slds-m-top_medium slds-p-top_small slds-border_top">
+                            <h3 class="slds-text-heading_small slds-m-bottom_small">2. Joined Agent Session Detector</h3>
+                            
+                            <lightning-input 
+                                type="toggle" 
+                                label="Detect Joined Agent in Messaging Session" 
+                                checked={detectJoinedAgent} 
+                                onchange={handleDetectJoinedAgentToggle}
+                                message-toggle-active="Enabled (If an agent has joined the session, broadcast ONLY to that assigned agent)" 
+                                message-toggle-inactive="Disabled (Broadcast top bar to all queue members regardless of session assignment)">
+                            </lightning-input>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column: User Destination Selector -->
+                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12">
+                    <div class="slds-card slds-card_boundary slds-p-around_medium">
+                        <h3 class="slds-text-heading_small slds-m-bottom_small">3. User Destination Selector</h3>
+
+                        <div class="slds-m-bottom_small">
+                            <lightning-input 
+                                type="checkbox" 
+                                label="Broadcast Globally to ALL Users (Is Global)" 
+                                checked={isGlobal} 
+                                onchange={handleGlobalToggle}
+                                help-text="Disabled by default. If enabled, top bar broadcasts to all logged-in users across the org regardless of queue membership.">
+                            </lightning-input>
+                        </div>
+
+                        <template if:false={isGlobal}>
+                            <div class="slds-m-bottom_small">
+                                <lightning-input 
+                                    type="checkbox" 
+                                    label="Automatic Chat Queue Detector (Recommended)" 
+                                    checked={autoQueueDetector} 
+                                    onchange={handleAutoQueueToggle}
+                                    help-text="Automatically queries Chat Queue members dynamically from Apex without requiring manual group IDs.">
+                                </lightning-input>
+                            </div>
+
+                            <template if:false={autoQueueDetector}>
+                                <div class="slds-m-top_small border-box-target">
+                                    <lightning-combobox
+                                        name="targetGroup"
+                                        label="Specific Target Queue / Public Group"
+                                        value={targetGroupId}
+                                        placeholder="Select a Queue or Group"
+                                        options={groupOptions}
+                                        onchange={handleTargetGroupChange}>
+                                    </lightning-combobox>
+                                </div>
+                            </template>
+                        </template>
+
+                        <div class="slds-m-top_large slds-text-align_right">
+                            <lightning-button 
+                                label="Simulate Test Broadcast" 
+                                onclick={handleTestBroadcast} 
+                                icon-name="utility:announcement" 
+                                class="slds-m-right_small">
+                            </lightning-button>
+
+                            <lightning-button 
+                                variant="brand" 
+                                label="Save Settings" 
+                                onclick={handleSaveConfig} 
+                                icon-name="utility:save">
+                            </lightning-button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Active & Historical Top Notification Banners -->
+            <div class="slds-m-top_large">
+                <h3 class="slds-text-heading_small slds-m-bottom_small">Broadcast History & Active Banners</h3>
+                <lightning-datatable
+                    key-field="id"
+                    data={broadcastTableData}
+                    columns={columns}
+                    onrowaction={handleRowAction}
+                    hide-checkbox-column>
+                </lightning-datatable>
+            </div>
+
+        </div>
+    </lightning-card>
+</template>

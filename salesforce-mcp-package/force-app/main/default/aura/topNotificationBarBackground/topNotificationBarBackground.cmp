@@ -1,0 +1,3 @@
+<aura:component implements="lightning:backgroundUtilityItem" description="Native Background Utility Item Wrapper for Top Notification Bar">
+    <c:topNotificationBar />
+</aura:component>

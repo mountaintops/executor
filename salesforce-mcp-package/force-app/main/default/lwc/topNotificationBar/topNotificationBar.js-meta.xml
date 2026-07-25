@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>60.0</apiVersion>
+    <isExposed>true</isExposed>
+    <masterLabel>Global Top Notification Bar</masterLabel>
+    <description>Lightweight background component that renders full-width top notification banners across Lightning Applications and Utility Bars.</description>
+    <targets>
+        <target>lightning__AppPage</target>
+        <target>lightning__RecordPage</target>
+        <target>lightning__HomePage</target>
+        <target>lightning__UtilityBar</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__UtilityBar">
+            <property name="label" type="String" label="Label" default="Top Notification Bar"/>
+            <property name="icon" type="String" label="Icon" default="utility:announcement"/>
+        </targetConfig>
+        <targetConfig targets="lightning__AppPage,lightning__RecordPage,lightning__HomePage">
+            <property name="label" type="String" label="Label" default="Top Notification Bar"/>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

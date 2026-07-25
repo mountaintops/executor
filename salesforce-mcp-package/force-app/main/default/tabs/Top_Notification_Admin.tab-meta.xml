@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomTab xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>Enterprise Top Notification Control Center for real-time banner administration.</description>
+    <label>Top Notification Admin</label>
+    <flexiPage>Top_Notification_Admin</flexiPage>
+    <motif>Custom53: Bell</motif>
+</CustomTab>

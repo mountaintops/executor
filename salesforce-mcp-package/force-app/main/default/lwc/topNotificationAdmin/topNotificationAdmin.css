@@ -1,0 +1,132 @@
+.theme-selector-grid {
+    margin-top: 6px;
+}
+
+.theme-btn {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.2s ease-in-out;
+}
+
+.theme-btn-info {
+    background-color: #e0f2fe;
+    color: #0369a1;
+    border-color: #bae6fd;
+}
+.theme-btn-info.selected {
+    background-color: #0176d3;
+    color: #ffffff;
+    border-color: #004494;
+    box-shadow: 0 0 0 2px #0176d3;
+}
+
+.theme-btn-warning {
+    background-color: #fef3c7;
+    color: #b45309;
+    border-color: #fde68a;
+}
+.theme-btn-warning.selected {
+    background-color: #dd7a01;
+    color: #ffffff;
+    border-color: #92400e;
+    box-shadow: 0 0 0 2px #dd7a01;
+}
+
+.theme-btn-error {
+    background-color: #fee2e2;
+    color: #b91c1c;
+    border-color: #fca5a5;
+}
+.theme-btn-error.selected {
+    background-color: #ea001e;
+    color: #ffffff;
+    border-color: #991b1b;
+    box-shadow: 0 0 0 2px #ea001e;
+}
+
+.theme-btn-success {
+    background-color: #dcfce7;
+    color: #15803d;
+    border-color: #86efac;
+}
+.theme-btn-success.selected {
+    background-color: #2e844a;
+    color: #ffffff;
+    border-color: #166534;
+    box-shadow: 0 0 0 2px #2e844a;
+}
+
+.border-box-target {
+    border: 1px dashed #c9c7c5;
+    border-radius: 6px;
+    padding: 12px;
+    background-color: #fafaf9;
+}
+
+/* Banner Preview Style */
+.top-notification-bar {
+    width: 100%;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.banner-content-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 18px;
+    gap: 10px;
+}
+
+.banner-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.banner-text-body {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+}
+
+.banner-title {
+    font-weight: 700;
+}
+
+.banner-message {
+    font-weight: 400;
+}
+
+.banner-dismiss-btn {
+    margin-left: auto;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+.theme-info {
+    background: linear-gradient(135deg, #0176d3 0%, #0b5cab 100%);
+    color: #ffffff;
+}
+
+.theme-warning {
+    background: linear-gradient(135deg, #fe9339 0%, #dd7a01 100%);
+    color: #080707;
+}
+
+.theme-error {
+    background: linear-gradient(135deg, #ea001e 0%, #ba0517 100%);
+    color: #ffffff;
+}
+
+.theme-success {
+    background: linear-gradient(135deg, #2e844a 0%, #1b5e20 100%);
+    color: #ffffff;
+}

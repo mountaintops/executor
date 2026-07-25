@@ -1,0 +1,43 @@
+<template>
+    <template if:true={isVisible}>
+        <div class={containerClass} role="alert" style={containerStyle}>
+            <div class="banner-content-wrapper">
+                <div class="banner-icon">
+                    <template if:true={isInfo}>
+                        <svg width="20" height="20" viewBox="0 0 520 520" fill="currentColor">
+                            <path d="M260 40C138 40 40 138 40 260s98 220 220 220 220-98 220-220S382 40 260 40zm0 80c22 0 40 18 40 40s-18 40-40 40-40-18-40-40 18-40 40-40zm40 280c0 11-9 20-20 20h-40c-11 0-20-9-20-20v-120c0-11 9-20 20-20h40c11 0 20 9 20 20v120z"></path>
+                        </svg>
+                    </template>
+                    <template if:true={isWarning}>
+                        <svg width="20" height="20" viewBox="0 0 520 520" fill="currentColor">
+                            <path d="M495 390L295 45c-15-26-55-26-70 0L25 390c-15 26 4 60 35 60h400c31 0 50-34 35-60zM260 380c-17 0-30-13-30-30s13-30 30-30 30 13 30 30-13 30-30 30zm20-90c0 11-9 20-20 20s-20-9-20-20v-80c0-11 9-20 20-20s20 9 20 20v80z"></path>
+                        </svg>
+                    </template>
+                    <template if:true={isError}>
+                        <svg width="20" height="20" viewBox="0 0 520 520" fill="currentColor">
+                            <path d="M260 40C138 40 40 138 40 260s98 220 220 220 220-98 220-220S382 40 260 40zm100 280c11 11 11 29 0 40s-29 11-40 0l-60-60-60 60c-11 11-29 11-40 0s-11-29 0-40l60-60-60-60c-11-11-11-29 0-40s29-11 40 0l60 60 60-60c11-11 29-11 40 0s11 29 0 40l-60 60 60 60z"></path>
+                        </svg>
+                    </template>
+                    <template if:true={isSuccess}>
+                        <svg width="20" height="20" viewBox="0 0 520 520" fill="currentColor">
+                            <path d="M260 40C138 40 40 138 40 260s98 220 220 220 220-98 220-220S382 40 260 40zm115 155L240 330c-9 9-23 9-32 0l-63-63c-9-9-9-23 0-32s23-9 32 0l47 47 120-120c9-9 23-9 32 0s9 24 0 33z"></path>
+                        </svg>
+                    </template>
+                </div>
+                <div class="banner-text-body">
+                    <template if:true={title}>
+                        <strong class="banner-title">{title}</strong>
+                    </template>
+                    <span class="banner-message">{message}</span>
+                </div>
+                <template if:true={isDismissible}>
+                    <button class="banner-dismiss-btn" title="Dismiss notification" onclick={handleDismiss}>
+                        <svg width="14" height="14" viewBox="0 0 520 520" fill="currentColor">
+                            <path d="M260 40C138 40 40 138 40 260s98 220 220 220 220-98 220-220S382 40 260 40zm100 280c11 11 11 29 0 40s-29 11-40 0l-60-60-60 60c-11 11-29 11-40 0s-11-29 0-40l60-60-60-60c-11-11-11-29 0-40s29-11 40 0l60 60 60-60c11-11 29-11 40 0s11 29 0 40l-60 60 60 60z"></path>
+                        </svg>
+                    </button>
+                </template>
+            </div>
+        </div>
+    </template>
+</template>

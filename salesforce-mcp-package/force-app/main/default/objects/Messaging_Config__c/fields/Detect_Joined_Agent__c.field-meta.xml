@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Detect_Joined_Agent__c</fullName>
+    <defaultValue>true</defaultValue>
+    <description>If true, detects if an agent has joined the MessagingSession and targets only that assigned agent.</description>
+    <externalId>false</externalId>
+    <label>Detect Joined Agent</label>
+    <trackTrending>false</trackTrending>
+    <type>Checkbox</type>
+</CustomField>

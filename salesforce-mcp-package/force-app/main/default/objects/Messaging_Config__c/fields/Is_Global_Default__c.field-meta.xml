@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Is_Global_Default__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>If true, top notification bar broadcasts globally to all logged-in users across the org.</description>
+    <externalId>false</externalId>
+    <label>Is Global Default</label>
+    <trackTrending>false</trackTrending>
+    <type>Checkbox</type>
+</CustomField>
