@@ -36,7 +36,7 @@ function sendApexTurnBridge(sessionId, messageText) {
         console.warn('[HeaderCustom-Debug] Skipped sendApexTurnBridge: missing sessionId or messageText', { sessionId, messageText });
         return;
     }
-    handleIncomingTurn({ sessionId: sessionId, messageText: messageText, isInbound: true })
+    handleIncomingTurn({ sessionId: sessionId, messageText: messageText })
         .then(result => {
             console.log('[HeaderCustom-Debug] Apex turn handler result:', result);
         })
@@ -131,31 +131,20 @@ function transformNotificationsToBubbles(root) {
             const span = autoResp.querySelector ? autoResp.querySelector('span') : null;
             const rawText = span ? span.innerHTML : (autoResp.textContent || '').trim();
 
-            let extractedText = rawText;
-            try {
-                const unescaped = rawText.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-                if (unescaped.trim().startsWith('{') && unescaped.trim().endsWith('}')) {
-                    const parsed = JSON.parse(unescaped.trim());
-                    if (parsed.parameters && parsed.parameters.CustomText) {
-                        extractedText = parsed.parameters.CustomText;
-                    } else if (parsed.CustomText) {
-                        extractedText = parsed.CustomText;
-                    }
-                }
-            } catch (e) {}
+            if (!rawText) return;
 
-            // ONLY affect text notifications that contain "tubot.lat" or component markers
-            if (!rawText.toLowerCase().includes('tubot.lat') && !extractedText.toLowerCase().includes('tubot.lat') && !rawText.includes('Dynamic_PassThrough_Component')) return;
+            // ONLY affect text notifications that contain "tubot.lat"
+            if (!rawText.toLowerCase().includes('tubot.lat')) return;
 
-            // Mark both elements to prevent re-processing
+            // Mark both elements to prevent re-processing only after verifying "tubot.lat" presence
             try {
                 if (el.dataset) el.dataset.bubbleTransformed = 'true';
                 if (li.dataset) li.dataset.bubbleTransformed = 'true';
             } catch (e) {}
 
             // Remove "tubot.lat" text marker from final displayed message
-            let cleanText = extractedText.replace(/tubot\.lat/gi, '').trim();
-            if (!cleanText) cleanText = extractedText;
+            let cleanText = rawText.replace(/tubot\.lat/gi, '').trim();
+            if (!cleanText) cleanText = rawText;
 
             // Check localStorage for existing message hour / timestamp to prevent fake hours from being put
             let timeStr = '';
@@ -280,23 +269,11 @@ function runAaScript() {
             try {
               if (window.embedded_svc?.settings?.conversationId) return window.embedded_svc.settings.conversationId;
               if (window.embeddedmessaging?.conversationId) return window.embeddedmessaging.conversationId;
-              if (window.embedded_svc?.liveAgentAPI?.getSessionId) {
-                const sId = window.embedded_svc.liveAgentAPI.getSessionId();
-                if (sId) return sId;
-              }
-
-              // Inspect sessionStorage & localStorage
-              const storages = [sessionStorage, localStorage];
-              for (const store of storages) {
-                if (!store) continue;
-                for (let i = 0; i < store.length; i++) {
-                  const key = store.key(i);
-                  if (key && (key.toLowerCase().includes('conversation') || key.toLowerCase().includes('session') || key.toLowerCase().includes('messaging'))) {
-                    const val = store.getItem(key);
-                    if (val && typeof val === 'string' && val.length >= 15 && (val.startsWith('0Mw') || val.startsWith('00G') || val.startsWith('0PA'))) {
-                      return val;
-                    }
-                  }
+              for (let i = 0; i < sessionStorage.length; i++) {
+                const key = sessionStorage.key(i);
+                if (key && key.toLowerCase().includes('conversation')) {
+                  const val = sessionStorage.getItem(key);
+                  if (val && val.length > 10) return val;
                 }
               }
             } catch (e) {}

@@ -1905,8 +1905,7 @@ public with sharing class TopNotificationController {
     }
 
     /**
-     * @description Dispatches a headercustom component notification (with Parameter.CustomText)
-     * to selected Embedded Chat Channels Users (MessagingEndUsers / MessagingSessions).
+     * @description Dispatches an outbound campaign notification to targeted recipients.
      */
     @AuraEnabled
     public static Map<String, Object> sendOutboundCampaign(
@@ -1927,141 +1926,36 @@ public with sharing class TopNotificationController {
                 return res;
             }
 
-            Integer successCount = 0;
-            String token = getApiSessionId();
+            Notification_Broadcast__c bc = new Notification_Broadcast__c(
+                Title__c = title,
+                Message__c = messageTemplate,
+                Theme__c = String.isNotBlank(theme) ? theme : 'info',
+                Is_Active__c = true,
+                Is_Global__c = false,
+                Is_Dismissible__c = (isDismissible == true),
+                Target_User_Ids__c = String.join(targetUserIds, ','),
+                Start_DateTime__c = Datetime.now(),
+                Expiration_DateTime__c = Datetime.now().addDays(7)
+            );
+            insert bc;
 
-            for (String recipientId : targetUserIds) {
-                if (String.isBlank(recipientId)) continue;
-
-                // Resolve MessagingSession and MessagingEndUser for recipientId
-                List<MessagingSession> sessions = [
-                    SELECT Id, MessagingEndUserId, MessagingEndUser.Name, MessagingEndUser.Contact.Name, MessagingEndUser.Lead.Name 
-                    FROM MessagingSession 
-                    WHERE MessagingEndUserId = :recipientId OR Id = :recipientId 
-                    ORDER BY CreatedDate DESC 
-                    LIMIT 1
-                ];
-
-                String sessionId = null;
-                String endUserId = recipientId;
-                String recipientName = 'Customer';
-
-                if (!sessions.isEmpty()) {
-                    sessionId = String.valueOf(sessions[0].Id);
-                    endUserId = String.valueOf(sessions[0].MessagingEndUserId);
-                    if (sessions[0].MessagingEndUser.ContactId != null && String.isNotBlank(sessions[0].MessagingEndUser.Contact.Name)) {
-                        recipientName = sessions[0].MessagingEndUser.Contact.Name;
-                    } else if (sessions[0].MessagingEndUser.LeadId != null && String.isNotBlank(sessions[0].MessagingEndUser.Lead.Name)) {
-                        recipientName = sessions[0].MessagingEndUser.Lead.Name;
-                    } else if (String.isNotBlank(sessions[0].MessagingEndUser.Name)) {
-                        recipientName = sessions[0].MessagingEndUser.Name;
-                    }
-                } else {
-                    List<MessagingEndUser> endUsers = [
-                        SELECT Id, Name, Contact.Name, Lead.Name 
-                        FROM MessagingEndUser 
-                        WHERE Id = :recipientId 
-                        LIMIT 1
-                    ];
-                    if (!endUsers.isEmpty()) {
-                        if (endUsers[0].ContactId != null && String.isNotBlank(endUsers[0].Contact.Name)) {
-                            recipientName = endUsers[0].Contact.Name;
-                        } else if (endUsers[0].LeadId != null && String.isNotBlank(endUsers[0].Lead.Name)) {
-                            recipientName = endUsers[0].Lead.Name;
-                        } else if (String.isNotBlank(endUsers[0].Name)) {
-                            recipientName = endUsers[0].Name;
-                        }
-                    }
-                }
-
-                // Format merge fields in campaign template text
-                String textValue = messageTemplate
-                    .replace('{Name}', recipientName)
-                    .replace('{DateTime}', Datetime.now().format('yyyy-MM-dd HH:mm'));
-
-                // 1. Dispatch sendConversationMessages Callout FIRST (before DML insert)
-                try {
-                    List<Map<String, Object>> inputParametersList = new List<Map<String, Object>>{
-                        new Map<String, Object>{ 'name' => 'CustomText', 'textValue' => textValue },
-                        new Map<String, Object>{ 'name' => '$Parameters.CustomText', 'textValue' => textValue },
-                        new Map<String, Object>{ 'name' => '{!$Parameters.CustomText}', 'textValue' => textValue }
-                    };
-
-                    Map<String, Object> inputParams = new Map<String, Object>{
-                        'messageDefinitionName' => 'Dynamic_PassThrough_Component',
-                        'requestType' => 'SendNotificationMessages',
-                        'allowedSessionStatus' => 'Any',
-                        'isEnforceMessagingChannelConsent' => false,
-                        'messagingEndUserIds' => new List<String>{ endUserId },
-                        'messagingDefinitionInputParameters' => inputParametersList,
-                        'messageParameters' => new Map<String, Object>{
-                            'CustomText' => textValue
-                        }
-                    };
-                    if (String.isNotBlank(sessionId)) {
-                        inputParams.put('messagingSessionId', sessionId);
-                    }
-
-                    Map<String, Object> actionBody = new Map<String, Object>{
-                        'inputs' => new List<Map<String, Object>>{ inputParams }
-                    };
-
-                    HttpRequest req = new HttpRequest();
-                    req.setEndpoint(Url.getOrgDomainUrl().toExternalForm() + '/services/data/v61.0/actions/standard/sendConversationMessages');
-                    req.setMethod('POST');
-                    req.setHeader('Authorization', 'Bearer ' + token);
-                    req.setHeader('Content-Type', 'application/json');
-                    req.setBody(JSON.serialize(actionBody));
-
-                    Http http = new Http();
-                    HttpResponse resCallout = http.send(req);
-                    System.debug('>>> [TopNotificationController] Action Callout Status: ' + resCallout.getStatusCode() + ' | Body: ' + resCallout.getBody());
-                } catch (Exception calloutEx) {
-                    System.debug('>>> [TopNotificationController] sendConversationMessages callout note: ' + calloutEx.getMessage());
-                }
-
-                // 2. Insert ConversationEntry DML SECOND (after callout)
-                try {
-                    Blob b = Crypto.generateAesKey(128);
-                    String h = EncodingUtil.convertToHex(b);
-                    String freshUuid = h.substring(0,8)+'-'+h.substring(8,12)+'-'+h.substring(12,16)+'-'+h.substring(16,20)+'-'+h.substring(20,32);
-
-                    Map<String, Object> parametersMap = new Map<String, Object>{
-                        'CustomText' => textValue,
-                        '$Parameters.CustomText' => textValue,
-                        '{!$Parameters.CustomText}' => textValue
-                    };
-
-                    Map<String, Object> componentPayload = new Map<String, Object>{
-                        'messageType' => 'Component',
-                        'componentName' => 'Dynamic_PassThrough_Component',
-                        'parameters' => parametersMap,
-                        'messageIdentifier' => freshUuid
-                    };
-
-                    if (String.isNotBlank(sessionId)) {
-                        componentPayload.put('conversationId', sessionId);
-                    }
-
-                    ConversationEntry entry = new ConversationEntry();
-                    if (String.isNotBlank(sessionId)) {
-                        entry.ConversationId = sessionId;
-                    }
-                    entry.MessageIdentifier = freshUuid;
-                    entry.Message = JSON.serialize(componentPayload);
-                    entry.EntryType = 'Text';
-                    entry.EntryTime = System.now();
-                    entry.ActorType = 'System';
-                    insert entry;
-                    successCount++;
-                } catch (Exception dmlEx) {
-                    System.debug('>>> [TopNotificationController] ConversationEntry insert note: ' + dmlEx.getMessage());
-                }
-            }
+            // Publish Platform Event for real-time delivery
+            Notification_Broadcast_Event__e evt = new Notification_Broadcast_Event__e(
+                Notification_Id__c = bc.Id,
+                Title__c = bc.Title__c,
+                Message__c = bc.Message__c,
+                Theme__c = bc.Theme__c,
+                Is_Global__c = false,
+                Target_User_Ids__c = bc.Target_User_Ids__c,
+                Is_Active__c = true,
+                Is_Dismissible__c = (isDismissible == true)
+            );
+            EventBus.publish(evt);
 
             res.put('success', true);
+            res.put('broadcastId', bc.Id);
             res.put('recipientCount', targetUserIds.size());
-            res.put('message', '🚀 HeaderCustom Component Notification (' + title + ') dispatched successfully to ' + targetUserIds.size() + ' embedded chat channel users!');
+            res.put('message', '🚀 Campaign "' + title + '" dispatched successfully to ' + targetUserIds.size() + ' recipients!');
         } catch (Exception ex) {
             res.put('success', false);
             res.put('message', 'Error launching campaign: ' + ex.getMessage());
