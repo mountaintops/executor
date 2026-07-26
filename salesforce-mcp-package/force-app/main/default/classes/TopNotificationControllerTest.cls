@@ -91,15 +91,23 @@ private class TopNotificationControllerTest {
             'agentKeyword' => 'human',
             'isGlobal' => false,
             'autoQueueDetector' => true,
-            'detectJoinedAgent' => true
+            'detectJoinedAgent' => true,
+            'useFlowRouting' => true,
+            'selectedMessagingChannelId' => 'ALL'
         };
         Map<String, Object> saveRes = TopNotificationController.saveAgentNotificationConfig(savePayload);
+        Map<String, Object> simRes = TopNotificationController.getSimulatedAgentTargetingDetails();
+        Map<String, Object> sysDetRes = TopNotificationController.getRealSystemDetections();
         Test.stopTest();
 
         System.assertNotEquals(null, options);
         System.assertNotEquals(null, broadcasts);
         System.assertNotEquals(null, agentConfig);
+        System.assertNotEquals(null, simRes);
+        System.assertNotEquals(null, sysDetRes);
         System.assertEquals(true, saveRes.get('success'));
+        System.assertEquals(true, sysDetRes.get('success'));
     }
 }
+
 

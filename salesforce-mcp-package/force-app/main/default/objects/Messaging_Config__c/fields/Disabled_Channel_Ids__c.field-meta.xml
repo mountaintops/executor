@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Disabled_Channel_Ids__c</fullName>
+    <businessStatus>Active</businessStatus>
+    <description>Comma-separated list of MessagingChannel Record IDs to ignore/disable topbar and HeaderCustom system for.</description>
+    <externalId>false</externalId>
+    <label>Disabled Channel IDs</label>
+    <length>255</length>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

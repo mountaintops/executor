@@ -9,6 +9,16 @@
         <enabled>true</enabled>
     </classAccesses>
 
+    <userPermissions>
+        <enabled>true</enabled>
+        <name>ViewSetup</name>
+    </userPermissions>
+
+    <userPermissions>
+        <enabled>true</enabled>
+        <name>RunFlow</name>
+    </userPermissions>
+
     <tabSettings>
         <tab>Top_Notification_Admin</tab>
         <visibility>Visible</visibility>

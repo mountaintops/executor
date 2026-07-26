@@ -1,7 +1,7 @@
 <template>
     <c-top-notification-bar></c-top-notification-bar>
 
-    <lightning-card title="Agent Top Notification Bar Admin" icon-name="standard:announcement">
+    <lightning-card title="Agent Top Notification Bar — Admin" icon-name="standard:announcement">
         <div class="slds-p-around_medium">
 
             <!-- Status Feedback Alert Banner -->
@@ -13,107 +13,788 @@
                 </div>
             </template>
 
-            <div class="slds-grid slds-gutters slds-wrap">
-                
-                <!-- Left Column: Keyword & Session Detection -->
-                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12">
-                    <div class="slds-card slds-card_boundary slds-p-around_medium">
-                        <h3 class="slds-text-heading_small slds-m-bottom_small">1. Inbound Keyword Customizer</h3>
-                        
-                        <lightning-input 
-                            label="Substring Keyword Customizer" 
-                            value={agentKeyword} 
-                            onchange={handleKeywordChange} 
-                            placeholder="e.g. agent"
-                            help-text="Inbound customer messages containing this substring keyword (case-insensitive) will activate the top notification bar across agent screens.">
-                        </lightning-input>
+            <!-- ── TABSET NAVIGATION ── -->
+            <lightning-tabset selected-tab-value="campaigns">
 
-                        <div class="slds-m-top_medium slds-p-top_small slds-border_top">
-                            <h3 class="slds-text-heading_small slds-m-bottom_small">2. Joined Agent Session Detector</h3>
-                            
-                            <lightning-input 
-                                type="toggle" 
-                                label="Detect Joined Agent in Messaging Session" 
-                                checked={detectJoinedAgent} 
-                                onchange={handleDetectJoinedAgentToggle}
-                                message-toggle-active="Enabled (If an agent has joined the session, broadcast ONLY to that assigned agent)" 
-                                message-toggle-inactive="Disabled (Broadcast top bar to all queue members regardless of session assignment)">
+                <!-- TAB 1: OUTBOUND CAMPAIGNS -->
+                <lightning-tab label="📢 Outbound Campaigns" value="campaigns">
+                    <div class="slds-p-around_small">
+                        <div class="slds-grid slds-gutters slds-wrap">
+
+                            <!-- LEFT COLUMN: Recipient Selection List -->
+                            <div class="slds-col slds-size_1-of-1 slds-medium-size_5-of-12 slds-m-bottom_medium">
+                                <div class="slds-card slds-card_boundary slds-p-around_medium" style="height: 100%;">
+                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_small">
+                                        <div>
+                                            <h3 class="slds-text-heading_small">👥 Campaign Recipients</h3>
+                                            <p class="slds-text-body_small slds-text-color_weak">
+                                                Selected ({selectedRecipientCount} / {campaignRecipients.length})
+                                            </p>
+                                        </div>
+                                        <lightning-button-icon
+                                            icon-name="utility:refresh"
+                                            alternative-text="Refresh Recipients"
+                                            onclick={loadCampaignRecipients}
+                                            title="Refresh List">
+                                        </lightning-button-icon>
+                                    </div>
+
+                                    <!-- Search Input -->
+                                    <div class="slds-m-bottom_small">
+                                        <lightning-input
+                                            type="search"
+                                            label="Filter Recipients"
+                                            variant="label-hidden"
+                                            placeholder="Search name, email, or role..."
+                                            value={campaignSearchTerm}
+                                            onchange={handleCampaignSearchChange}>
+                                        </lightning-input>
+                                    </div>
+
+                                    <!-- Select All Header Row -->
+                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-p-around_x-small slds-m-bottom_x-small" style="background: #f8fafc; border-radius: 4px; border: 1px solid #e2e8f0;">
+                                        <lightning-input
+                                            type="checkbox"
+                                            label="Select All Filtered"
+                                            checked={isAllCampaignRecipientsSelected}
+                                            onchange={handleToggleSelectAllRecipients}>
+                                        </lightning-input>
+                                        <span class="slds-badge slds-badge_lightweight">{filteredCampaignRecipients.length} Found</span>
+                                    </div>
+
+                                    <!-- Recipients List -->
+                                    <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 4px;" class="slds-p-around_xx-small">
+                                        <template if:true={isLoadingCampaignRecipients}>
+                                            <lightning-spinner alternative-text="Loading recipients..." size="small"></lightning-spinner>
+                                        </template>
+                                        <template for:each={filteredCampaignRecipients} for:item="rec">
+                                            <div key={rec.id} class="slds-p-around_x-small slds-m-bottom_xx-small" style="border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between;">
+                                                <div style="display: flex; align-items: center;">
+                                                    <lightning-input
+                                                        type="checkbox"
+                                                        data-id={rec.id}
+                                                        checked={rec.selected}
+                                                        onchange={handleToggleRecipient}
+                                                        class="slds-m-right_x-small">
+                                                    </lightning-input>
+                                                    <div>
+                                                        <div style="font-weight: 600; color: #1e293b;">{rec.name}</div>
+                                                        <div style="font-size: 0.75rem; color: #64748b;">{rec.email}</div>
+                                                    </div>
+                                                </div>
+                                                <span class="slds-badge slds-theme_shade" style="font-size: 0.7rem;">{rec.type}</span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- RIGHT COLUMN: Campaign Composer & Template Builder -->
+                            <div class="slds-col slds-size_1-of-1 slds-medium-size_7-of-12 slds-m-bottom_medium">
+                                <div class="slds-card slds-card_boundary slds-p-around_medium">
+                                    <h3 class="slds-text-heading_small slds-m-bottom_small">✍️ Campaign Composer &amp; Templates</h3>
+
+                                    <!-- Template Quick Selector -->
+                                    <div class="slds-m-bottom_small">
+                                        <lightning-combobox
+                                            label="Choose Quick Template"
+                                            value={selectedTemplate}
+                                            options={templateOptions}
+                                            onchange={handleTemplateSelect}>
+                                        </lightning-combobox>
+                                    </div>
+
+                                    <!-- Campaign Title & Theme -->
+                                    <div class="slds-grid slds-gutters slds-m-bottom_small">
+                                        <div class="slds-col slds-size_1-of-1 slds-medium-size_8-of-12">
+                                            <lightning-input
+                                                label="Campaign Title"
+                                                value={campaignTitle}
+                                                onchange={handleCampaignTitleChange}>
+                                            </lightning-input>
+                                        </div>
+                                        <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12">
+                                            <lightning-combobox
+                                                label="Theme"
+                                                value={campaignTheme}
+                                                options={campaignThemeOptions}
+                                                onchange={handleCampaignThemeChange}>
+                                            </lightning-combobox>
+                                        </div>
+                                    </div>
+
+                                    <!-- Variable Pills helper -->
+                                    <div class="slds-m-bottom_x-small">
+                                        <span class="slds-text-title_bold slds-m-right_small" style="font-size: 0.75rem;">Click to insert merge field:</span>
+                                        <span class="slds-badge slds-m-right_xx-small" style="cursor: pointer; background: #e0f2fe; color: #0369a1;" data-tag="{Name}" onclick={insertCampaignVariable}>{Name}</span>
+                                        <span class="slds-badge slds-m-right_xx-small" style="cursor: pointer; background: #e0f2fe; color: #0369a1;" data-tag="{Email}" onclick={insertCampaignVariable}>{Email}</span>
+                                        <span class="slds-badge slds-m-right_xx-small" style="cursor: pointer; background: #e0f2fe; color: #0369a1;" data-tag="{DateTime}" onclick={insertCampaignVariable}>{DateTime}</span>
+                                    </div>
+
+                                    <!-- Message Body Textarea -->
+                                    <div class="slds-m-bottom_small">
+                                        <lightning-textarea
+                                            label="Campaign Message Body"
+                                            value={campaignMessage}
+                                            onchange={handleCampaignMessageChange}
+                                            rows="6">
+                                        </lightning-textarea>
+                                    </div>
+
+                                    <!-- Launch Controls -->
+                                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
+                                        <lightning-input
+                                            type="checkbox"
+                                            label="Dismissible Notification Banner"
+                                            checked={campaignIsDismissible}
+                                            onchange={handleCampaignDismissibleChange}>
+                                        </lightning-input>
+
+                                        <lightning-button
+                                            variant="brand"
+                                            label="🚀 Launch Outbound Campaign"
+                                            icon-name="utility:send"
+                                            onclick={handleLaunchCampaign}
+                                            disabled={isSendingCampaign}>
+                                        </lightning-button>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </lightning-tab>
+
+                <!-- TAB 2: GENERAL CONTROLS & TRIGGER RULES -->
+                <lightning-tab label="🔑 Trigger & Inactivity Controls" value="general">
+            <div class="slds-m-bottom_large">
+                <div class="slds-card slds-card_boundary slds-p-around_medium">
+                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_small">
+                        <div>
+                            <h3 class="slds-text-heading_small">🔑 Agent Trigger, Confirmation &amp; Reactivation Controls</h3>
+                            <p class="slds-text-body_small slds-text-color_weak">
+                                Configure inbound trigger keywords, automated customer confirmation messages, and single-trigger reactivation rules.
+                            </p>
+                        </div>
+                        <lightning-button
+                            variant="brand"
+                            label="Save Trigger Rules"
+                            onclick={handleSaveConfig}
+                            icon-name="utility:save">
+                        </lightning-button>
+                    </div>
+
+                    <div class="slds-grid slds-gutters slds-wrap">
+                        <!-- Agent Trigger Keyword -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                            <lightning-input
+                                label="Agent Trigger Keyword"
+                                value={agentKeyword}
+                                onchange={handleKeywordChange}
+                                placeholder="e.g. agent"
+                                help-text="Inbound customer message keyword that triggers top bar notification.">
+                            </lightning-input>
+                        </div>
+
+                        <!-- Confirmation Text -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                            <lightning-input
+                                label="Customer Confirmation Response Text"
+                                value={confirmationText}
+                                onchange={handleConfirmationTextChange}
+                                placeholder="e.g. transmited notification"
+                                help-text="Automated message sent back to customer in chat feed when trigger fires.">
+                            </lightning-input>
+                        </div>
+
+                        <!-- Reactivation Keyword -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                            <lightning-input
+                                label="Reactivation Keyword (Reset Trigger)"
+                                value={reactivationKeyword}
+                                onchange={handleReactivationKeywordChange}
+                                placeholder="e.g. reset"
+                                help-text="Keyword sent by customer/user to re-arm the agent notification trigger after it has fired once.">
                             </lightning-input>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Right Column: User Destination Selector -->
-                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12">
-                    <div class="slds-card slds-card_boundary slds-p-around_medium">
-                        <h3 class="slds-text-heading_small slds-m-bottom_small">3. User Destination Selector</h3>
-
-                        <div class="slds-m-bottom_small">
-                            <lightning-input 
-                                type="checkbox" 
-                                label="Broadcast Globally to ALL Users (Is Global)" 
-                                checked={isGlobal} 
-                                onchange={handleGlobalToggle}
-                                help-text="Disabled by default. If enabled, top bar broadcasts to all logged-in users across the org regardless of queue membership.">
-                            </lightning-input>
+            <!-- ── ROW 1B: Inactivity / Reminder System ── -->
+            <div class="slds-m-bottom_large">
+                <div class="slds-card slds-card_boundary slds-p-around_medium">
+                    <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_small">
+                        <div>
+                            <h3 class="slds-text-heading_small">⏱️ Automated Inactivity / Idle Reminder System</h3>
+                            <p class="slds-text-body_small slds-text-color_weak">
+                                Automatically calculate idle time after a customer's last message and send a custom templated reminder.
+                            </p>
                         </div>
-
-                        <template if:false={isGlobal}>
-                            <div class="slds-m-bottom_small">
-                                <lightning-input 
-                                    type="checkbox" 
-                                    label="Automatic Chat Queue Detector (Recommended)" 
-                                    checked={autoQueueDetector} 
-                                    onchange={handleAutoQueueToggle}
-                                    help-text="Automatically queries Chat Queue members dynamically from Apex without requiring manual group IDs.">
-                                </lightning-input>
-                            </div>
-
-                            <template if:false={autoQueueDetector}>
-                                <div class="slds-m-top_small border-box-target">
-                                    <lightning-combobox
-                                        name="targetGroup"
-                                        label="Specific Target Queue / Public Group"
-                                        value={targetGroupId}
-                                        placeholder="Select a Queue or Group"
-                                        options={groupOptions}
-                                        onchange={handleTargetGroupChange}>
-                                    </lightning-combobox>
-                                </div>
-                            </template>
-                        </template>
-
-                        <div class="slds-m-top_large slds-text-align_right">
-                            <lightning-button 
-                                label="Simulate Test Broadcast" 
-                                onclick={handleTestBroadcast} 
-                                icon-name="utility:announcement" 
+                        <div class="slds-grid slds-grid_vertical-align-center">
+                            <lightning-button
+                                variant="outline-brand"
+                                label="⚡ Run Inactivity Check Now"
+                                onclick={handleRunInactivityCheck}
+                                icon-name="utility:clock"
                                 class="slds-m-right_small">
                             </lightning-button>
-
-                            <lightning-button 
-                                variant="brand" 
-                                label="Save Settings" 
-                                onclick={handleSaveConfig} 
+                            <lightning-button
+                                variant="brand"
+                                label="Save Reminder Settings"
+                                onclick={handleSaveConfig}
                                 icon-name="utility:save">
                             </lightning-button>
                         </div>
                     </div>
+
+                    <div class="slds-grid slds-gutters slds-wrap slds-m-bottom_small">
+                        <!-- Enable Reminder Toggle -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
+                            <lightning-input
+                                type="toggle"
+                                label="Enable Automated Inactivity Reminders"
+                                checked={reminderEnabled}
+                                onchange={handleReminderEnabledChange}
+                                message-toggle-active="Enabled (Sends Idle Messages)"
+                                message-toggle-inactive="Disabled">
+                            </lightning-input>
+                        </div>
+
+                        <!-- Inactivity Delay Minutes -->
+                        <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
+                            <lightning-input
+                                type="number"
+                                label="Inactivity Delay Threshold (Minutes)"
+                                value={reminderMinutes}
+                                onchange={handleReminderMinutesChange}
+                                min="1"
+                                max="1440"
+                                help-text="Minutes of idle wait time before sending reminder message. Defaults to 5 minutes.">
+                            </lightning-input>
+                        </div>
+                    </div>
+
+                    <!-- Reminder Template & Variable System -->
+                    <div class="slds-m-bottom_small">
+                        <lightning-textarea
+                            label="Custom Reminder Message Template"
+                            value={reminderTemplate}
+                            onchange={handleReminderTemplateChange}
+                            rows="3"
+                            help-text="Customize text sent to customer when idle threshold is reached.">
+                        </lightning-textarea>
+                    </div>
+
+                    <!-- Variable Tokens Legend -->
+                    <div class="slds-box slds-box_x-small slds-theme_shade">
+                        <span class="slds-text-title_bold slds-m-right_small">Available Custom Variables (Click to Insert):</span>
+                        <template for:each={availableTemplateVariables} for:item="vObj">
+                            <span
+                                key={vObj.tag}
+                                data-tag={vObj.tag}
+                                onclick={handleInsertVariableTag}
+                                class="slds-badge slds-m-right_xx-small"
+                                style="cursor: pointer; background-color: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc;"
+                                title="Click to insert variable into template">
+                                {vObj.label}
+                            </span>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── ROW 2: Channel Inspector ── -->
+            <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-bottom_large">
+                <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_small">
+                    <div>
+                        <h3 class="slds-text-heading_small">📡 Messaging Channels — Inspection &amp; Controls</h3>
+                        <p class="slds-text-body_small slds-text-color_weak">Inspect linked queue, routing configuration, presence status, and deployment settings per channel in a dynamic popup modal.</p>
+                    </div>
+                    <lightning-button
+                        variant="brand"
+                        label="⚡ Setup Omni-Channel Suite"
+                        icon-name="utility:setup"
+                        onclick={openSetupWizard}>
+                    </lightning-button>
                 </div>
 
+                <template if:true={systemDetections}>
+                    <div class="channel-inspector-container">
+                        <template for:each={systemDetections.channels} for:item="ch">
+                            <div key={ch.id} class="slds-box slds-box_x-small channel-inspect-card slds-m-bottom_small">
+
+                                <!-- Channel Name & Controls Row -->
+                                <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
+                                    <div class="slds-grid slds-grid_vertical-align-center">
+                                        <lightning-icon icon-name="utility:chat" size="x-small" class="slds-m-right_x-small"></lightning-icon>
+                                        <span class="slds-text-title_bold slds-text-heading_small" style="color: #0176d3;">{ch.label}</span>
+                                        <span class="slds-badge slds-badge_lightweight slds-m-left_x-small">{ch.messageType}</span>
+                                    </div>
+                                    <div class="slds-grid slds-grid_vertical-align-center">
+                                        <lightning-button
+                                            label="Inspect Channel Setup"
+                                            icon-name="utility:preview"
+                                            variant="neutral"
+                                            data-id={ch.id}
+                                            onclick={openInspectModal}
+                                            class="slds-m-right_small">
+                                        </lightning-button>
+
+                                        <lightning-input
+                                            type="toggle"
+                                            label="Disable System for Channel"
+                                            data-id={ch.id}
+                                            checked={ch.isDisabled}
+                                            onchange={handleToggleChannelDisabled}
+                                            message-toggle-active="Disabled / Ignored"
+                                            message-toggle-inactive="Active (Pings Topbar)">
+                                        </lightning-input>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </template>
+                    </div>
+                </template>
             </div>
 
-            <!-- Active & Historical Top Notification Banners -->
-            <div class="slds-m-top_large">
-                <h3 class="slds-text-heading_small slds-m-bottom_small">Broadcast History & Active Banners</h3>
-                <lightning-datatable
-                    key-field="id"
-                    data={broadcastTableData}
-                    columns={columns}
-                    onrowaction={handleRowAction}
-                    hide-checkbox-column>
-                </lightning-datatable>
+            <!-- ── ROW 3: Active Sessions Target Simulator ── -->
+            <div class="slds-card slds-card_boundary slds-p-around_medium">
+                <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
+                    <div>
+                        <h3 class="slds-text-heading_small">Active Sessions — Target Resolution Simulator</h3>
+                        <p class="slds-text-body_small slds-text-color_weak">
+                            Inspect active sessions and resolve which person will be pinged when a customer says <strong>&quot;{agentKeyword}&quot;</strong>.
+                        </p>
+                    </div>
+                    <div>
+                        <lightning-button
+                            variant="brand-outline"
+                            label="Check Active Sessions"
+                            onclick={handleSimulateSessionTargeting}
+                            icon-name="utility:preview">
+                        </lightning-button>
+                    </div>
+                </div>
+
+                <!-- Simulation Results -->
+                <template if:true={simulationResult}>
+                    <div class="slds-m-top_medium slds-p-around_small border-box-simulation">
+                        <template if:false={simulationResult.hasSessions}>
+                            <div class="slds-scoped-notification slds-theme_info" role="status">
+                                <p>{simulationResult.message}</p>
+                            </div>
+                        </template>
+
+                        <template if:true={simulationResult.hasSessions}>
+                            <h4 class="slds-text-title_bold slds-m-bottom_small">
+                                Active Messaging Sessions Target Evaluation ({simulationResult.sessions.length} sessions evaluated):
+                            </h4>
+
+                            <div class="slds-grid slds-gutters slds-wrap">
+                                <template for:each={simulationResult.sessions} for:item="sim">
+                                    <div key={sim.sessionId} class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_small">
+                                        <div class="slds-box slds-box_x-small session-card">
+                                            <div class="slds-grid slds-grid_align-spread slds-m-bottom_xx-small">
+                                                <span class="slds-text-title_bold">Session #{sim.sessionName}</span>
+                                                <span class="slds-badge slds-theme_default">{sim.status}</span>
+                                            </div>
+                                            <p class="slds-text-body_small"><strong>Customer:</strong> {sim.customerName}</p>
+                                            <p class="slds-text-body_small"><strong>Current Owner:</strong> {sim.ownerName}</p>
+
+                                            <div class="slds-m-top_x-small slds-p-around_xx-small border-highlight-target">
+                                                <div class="slds-grid slds-grid_align-spread align-center">
+                                                    <span class="slds-text-body_small"><strong>Target Recipient:</strong></span>
+                                                    <span class={sim.badgeClass}>{sim.broadcastTargetType}</span>
+                                                </div>
+                                                <p class="slds-text-title_bold slds-m-top_xx-small" style="color: #0176d3;">
+                                                    👉 {sim.broadcastTargetName}
+                                                </p>
+                                                <p class="slds-text-body_small slds-text-color_weak slds-m-top_xx-small">
+                                                    {sim.targetDetails}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </template>
             </div>
+            </lightning-tab>
+
+            </lightning-tabset>
+
+            <!-- ── DYNAMIC INSPECTION POPUP MODAL ── -->
+            <template if:true={isInspectModalOpen}>
+                <section role="dialog" tabindex="-1" aria-modal="true" class="slds-modal slds-fade-in-open slds-modal_medium">
+                    <div class="slds-modal__container">
+
+                        <!-- Modal Header -->
+                        <header class="slds-modal__header slds-theme_brand">
+                            <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close" onclick={closeInspectModal}>
+                                <lightning-icon icon-name="utility:close" alternative-text="close" variant="inverse" size="small"></lightning-icon>
+                                <span class="slds-assistive-text">Close</span>
+                            </button>
+                            <h2 class="slds-modal__title slds-hyphenate slds-text-heading_medium">
+                                📡 Inspection &amp; Controls: {selectedChannel.label}
+                            </h2>
+                            <p class="slds-m-top_xx-small slds-text-body_small">
+                                Channel Type: <strong>{selectedChannel.messageType}</strong> &nbsp;|&nbsp; Developer Name: <strong>{selectedChannel.developerName}</strong>
+                            </p>
+                        </header>
+
+                        <!-- Modal Body -->
+                        <div class="slds-modal__content slds-p-around_medium">
+                            <div class="slds-grid slds-gutters slds-wrap">
+
+                                <!-- 1. Queue Item -->
+                                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_medium">
+                                    <div class="slds-box slds-box_x-small popup-item-card slds-p-around_small">
+                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_xx-small">
+                                            <span class="slds-text-title_bold slds-text-heading_small">🔀 Linked Queue</span>
+                                            <template if:true={selectedChannel.queueInfo.exists}>
+                                                <span class="slds-badge slds-theme_success">Detected</span>
+                                            </template>
+                                            <template if:false={selectedChannel.queueInfo.exists}>
+                                                <span class="slds-badge slds-theme_warning">Not Found</span>
+                                            </template>
+                                        </div>
+
+                                        <template if:true={selectedChannel.queueInfo.exists}>
+                                            <p class="slds-text-body_small"><strong>Detected Queue:</strong> {selectedChannel.queueInfo.name} ({selectedChannel.queueInfo.developerName})</p>
+                                        </template>
+
+                                        <div class="slds-m-top_x-small">
+                                            <lightning-combobox
+                                                label="Queue Selection & Actions"
+                                                value={selectedQueueValue}
+                                                options={queueOptions}
+                                                onchange={handleQueueComboboxChange}
+                                                placeholder="Select Queue or Action...">
+                                            </lightning-combobox>
+                                        </div>
+
+                                        <template if:true={selectedChannel.queueInfo.exists}>
+                                            <div class="slds-m-top_x-small">
+                                                <a href={selectedChannel.queueInfo.url} target="_blank" rel="noopener" class="slds-button slds-button_neutral slds-full-width">
+                                                    <lightning-icon icon-name="utility:open" size="x-small" class="slds-m-right_xx-small"></lightning-icon>
+                                                    Edit Queue in Salesforce Panel
+                                                </a>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <!-- 2. Routing Configuration Item -->
+                                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_medium">
+                                    <div class="slds-box slds-box_x-small popup-item-card slds-p-around_small">
+                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_xx-small">
+                                            <span class="slds-text-title_bold slds-text-heading_small">⚡ Routing Config</span>
+                                            <template if:true={selectedChannel.routingInfo.exists}>
+                                                <span class="slds-badge slds-theme_success">Detected</span>
+                                            </template>
+                                            <template if:false={selectedChannel.routingInfo.exists}>
+                                                <span class="slds-badge slds-theme_warning">Not Found</span>
+                                            </template>
+                                        </div>
+
+                                        <template if:true={selectedChannel.routingInfo.exists}>
+                                            <p class="slds-text-body_small"><strong>Detected Config:</strong> {selectedChannel.routingInfo.name} ({selectedChannel.routingInfo.developerName})</p>
+                                        </template>
+
+                                        <div class="slds-m-top_x-small">
+                                            <lightning-combobox
+                                                label="Routing Config Selection & Actions"
+                                                value={selectedRoutingValue}
+                                                options={routingConfigOptions}
+                                                onchange={handleRoutingComboboxChange}
+                                                placeholder="Select Routing Config (Chat_Routing_Config, t3)...">
+                                            </lightning-combobox>
+                                        </div>
+
+                                        <template if:true={selectedChannel.routingInfo.exists}>
+                                            <div class="slds-m-top_x-small">
+                                                <a href={selectedChannel.routingInfo.url} target="_blank" rel="noopener" class="slds-button slds-button_neutral slds-full-width">
+                                                    <lightning-icon icon-name="utility:open" size="x-small" class="slds-m-right_xx-small"></lightning-icon>
+                                                    Edit Routing Config in Salesforce Panel
+                                                </a>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <!-- 3. Deployments-Linked Item -->
+                                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_medium">
+                                    <div class="slds-box slds-box_x-small popup-item-card slds-p-around_small">
+                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_xx-small">
+                                            <span class="slds-text-title_bold slds-text-heading_small">📡 Deployments-Linked</span>
+                                            <span class="slds-badge slds-theme_success">Active</span>
+                                        </div>
+
+                                        <p class="slds-text-body_small"><strong>Deployment Channel:</strong> {selectedChannel.deploymentInfo.name} ({selectedChannel.developerName})</p>
+
+                                        <div class="slds-m-top_x-small">
+                                            <lightning-combobox
+                                                label="Deployment Selection & Actions"
+                                                value={selectedDeploymentValue}
+                                                options={deploymentOptions}
+                                                onchange={handleDeploymentComboboxChange}
+                                                placeholder="Select Deployment Action...">
+                                            </lightning-combobox>
+                                        </div>
+
+                                        <div class="slds-m-top_x-small">
+                                            <a href={selectedChannel.deploymentInfo.url} target="_blank" rel="noopener" class="slds-button slds-button_neutral slds-full-width">
+                                                <lightning-icon icon-name="utility:open" size="x-small" class="slds-m-right_xx-small"></lightning-icon>
+                                                Edit Deployment in Salesforce Panel
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 4. Presence Status Item -->
+                                <div class="slds-col slds-size_1-of-1 slds-medium-size_6-of-12 slds-m-bottom_medium">
+                                    <div class="slds-box slds-box_x-small popup-item-card slds-p-around_small">
+                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_xx-small">
+                                            <span class="slds-text-title_bold slds-text-heading_small">🟢 Presence Status</span>
+                                            <template if:true={selectedChannel.presenceInfo.exists}>
+                                                <span class="slds-badge slds-theme_success">Detected</span>
+                                            </template>
+                                            <template if:false={selectedChannel.presenceInfo.exists}>
+                                                <span class="slds-badge slds-theme_warning">Not Found</span>
+                                            </template>
+                                        </div>
+
+                                        <template if:true={selectedChannel.presenceInfo.exists}>
+                                            <p class="slds-text-body_small"><strong>Detected Presence:</strong> {selectedChannel.presenceInfo.name} ({selectedChannel.presenceInfo.developerName})</p>
+                                        </template>
+
+                                        <div class="slds-m-top_x-small">
+                                            <lightning-combobox
+                                                label="Presence Status Selection & Actions"
+                                                value={selectedPresenceValue}
+                                                options={presenceOptions}
+                                                onchange={handlePresenceComboboxChange}
+                                                placeholder="Select Presence Status...">
+                                            </lightning-combobox>
+                                        </div>
+
+                                        <template if:true={selectedChannel.presenceInfo.exists}>
+                                            <div class="slds-m-top_x-small">
+                                                <a href={selectedChannel.presenceInfo.url} target="_blank" rel="noopener" class="slds-button slds-button_neutral slds-full-width">
+                                                    <lightning-icon icon-name="utility:open" size="x-small" class="slds-m-right_xx-small"></lightning-icon>
+                                                    Edit Presence in Salesforce Panel
+                                                </a>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+
+                        <!-- Modal Footer -->
+                        <footer class="slds-modal__footer slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
+                            <a href="/lightning/setup/EmbeddedServiceMessaging/home" target="_blank" rel="noopener" class="slds-button slds-button_brand">
+                                <lightning-icon icon-name="utility:send" size="x-small" class="slds-m-right_xx-small" variant="inverse"></lightning-icon>
+                                🌐 Launch Web Chat Test Deployment Setup
+                            </a>
+                            <lightning-button label="Close" onclick={closeInspectModal}></lightning-button>
+                        </footer>
+
+                    </div>
+                </section>
+                <div class="slds-backdrop slds-backdrop_open"></div>
+            </template>
+
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <!-- ⚡ SETUP WIZARD POPUP MODAL                                  -->
+            <!-- ════════════════════════════════════════════════════════════ -->
+            <template if:true={isSetupWizardOpen}>
+                <section role="dialog" tabindex="-1" aria-modal="true" class="slds-modal slds-fade-in-open slds-modal_medium">
+                    <div class="slds-modal__container">
+
+                        <!-- Modal Header -->
+                        <header class="slds-modal__header" style="background: linear-gradient(135deg, #0176d3 0%, #0b5cab 100%); color: white;">
+                            <lightning-button-icon
+                                icon-name="utility:close"
+                                alternative-text="Close"
+                                variant="bare-inverse"
+                                onclick={closeSetupWizard}
+                                class="slds-modal__close">
+                            </lightning-button-icon>
+                            <h2 class="slds-text-heading_medium slds-hyphenate" style="color: white; font-weight: 700;">
+                                ⚡ Omni-Channel Setup Suite Wizard
+                            </h2>
+                            <p class="slds-m-top_x-small slds-text-color_weak" style="color: #e0f2fe;">
+                                Easily create or configure Queues, Routing, Channels, Presence Statuses, and Omni-Channel Permission Sets.
+                            </p>
+                        </header>
+
+                        <!-- Modal Body -->
+                        <div class="slds-modal__content slds-p-around_medium">
+
+                            <!-- Spinner during background execution -->
+                            <template if:true={isExecutingSetup}>
+                                <div class="slds-align_absolute-center slds-p-around_large" style="flex-direction: column;">
+                                    <lightning-spinner alternative-text="Executing Automated Setup..." size="medium"></lightning-spinner>
+                                    <p class="slds-text-heading_small slds-m-top_medium">Executing automated background setup suite...</p>
+                                </div>
+                            </template>
+
+                            <template if:false={isExecutingSetup}>
+
+                                <!-- STEP 1: Setup Scope / Mode -->
+                                <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-bottom_medium">
+                                    <h3 class="slds-text-heading_small slds-m-bottom_xx-small">1️⃣ Select Setup Scope</h3>
+                                    <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_small">Choose whether to create missing items or build a brand new suite.</p>
+
+                                    <lightning-radio-group
+                                        name="setupModeGroup"
+                                        label="Scope"
+                                        variant="label-hidden"
+                                        options={setupModeOptions}
+                                        value={setupMode}
+                                        onchange={handleSetupModeChange}
+                                        type="radio"
+                                        class="slds-m-bottom_small">
+                                    </lightning-radio-group>
+
+                                    <div class="slds-box slds-box_x-small slds-m-bottom_small" style="background-color: #f1f5f9; border-radius: 6px;">
+                                        <lightning-input
+                                            type="checkbox"
+                                            label="✨ Create New Messaging Channel along with Queue &amp; Routing Suite"
+                                            checked={createNewChannel}
+                                            onchange={handleCreateNewChannelChange}
+                                            help-text="When checked, automatically provisions a new Messaging Channel in Salesforce for WebChat.">
+                                        </lightning-input>
+                                    </div>
+
+                                    <div class="slds-box slds-box_x-small" style="background-color: #f1f5f9; border-radius: 6px;">
+                                        <lightning-input
+                                            type="checkbox"
+                                            label="🌐 Use Shared/Global Service Presence Status (Recommended — Prevents duplicate presence statuses)"
+                                            checked={useGlobalPresence}
+                                            onchange={handleUseGlobalPresenceChange}
+                                            help-text="When checked, reuses the existing Service Presence Status in Salesforce instead of creating a new one.">
+                                        </lightning-input>
+                                    </div>
+                                </div>
+
+                                <!-- STEP 2: Creation Method -->
+                                <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-bottom_medium">
+                                    <h3 class="slds-text-heading_small slds-m-bottom_xx-small">2️⃣ Select Creation Method</h3>
+                                    <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_small">
+                                        <strong>Automatically (Recommended)</strong> creates all items in the background, creates &amp; assigns permission sets, and adds users to queue.
+                                    </p>
+
+                                    <lightning-radio-group
+                                        name="setupMethodGroup"
+                                        label="Method"
+                                        variant="label-hidden"
+                                        options={setupMethodOptions}
+                                        value={setupMethod}
+                                        onchange={handleSetupMethodChange}
+                                        type="radio">
+                                    </lightning-radio-group>
+                                </div>
+
+                                <!-- AUTOMATIC METHOD PANEL: User Selector & Permission Set Assignment -->
+                                <template if:true={isAutoSetupMethod}>
+                                    <div class="slds-card slds-card_boundary slds-p-around_medium" style="background-color: #f8fafc;">
+                                        <div class="slds-grid slds-grid_vertical-align-center slds-m-bottom_small">
+                                            <lightning-icon icon-name="standard:user" size="small" class="slds-m-right_small"></lightning-icon>
+                                            <div>
+                                                <h3 class="slds-text-heading_small">3️⃣ Select Users to Add to Queue &amp; Assign Permission Set</h3>
+                                                <p class="slds-text-body_small slds-text-color_weak">
+                                                    Selected users will be automatically added as <strong>Queue Members</strong> and assigned the <strong>Omni-Channel Agent Access Permission Set</strong>.
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        <lightning-dual-listbox
+                                            name="userSelectionList"
+                                            label="Active Org Users"
+                                            source-label="Available Active Users"
+                                            selected-label="Selected Queue & Permission Set Members"
+                                            options={userOptions}
+                                            value={selectedUserIds}
+                                            onchange={handleUserSelectionChange}
+                                            size="5">
+                                        </lightning-dual-listbox>
+                                    </div>
+                                </template>
+
+                                <!-- MANUAL METHOD PANEL: Setup Page Links -->
+                                <template if:true={isManualSetupMethod}>
+                                    <div class="slds-card slds-card_boundary slds-p-around_medium" style="background-color: #fffaf0;">
+                                        <h3 class="slds-text-heading_small slds-m-bottom_small">🛠️ Open Salesforce Setup Pages in New Tabs</h3>
+                                        <p class="slds-text-body_small slds-text-color_weak slds-m-bottom_medium">
+                                            Click any of the buttons below to open the corresponding Salesforce Setup page:
+                                        </p>
+                                        <div class="slds-grid slds-wrap slds-gutters">
+                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_small">
+                                                <lightning-button label="↗️ Open Queues Setup" variant="outline-brand" onclick={openQueueSetup} class="slds-size_1-of-1"></lightning-button>
+                                            </div>
+                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_small">
+                                                <lightning-button label="↗️ Open Routing Configurations Setup" variant="outline-brand" onclick={openRoutingSetup} class="slds-size_1-of-1"></lightning-button>
+                                            </div>
+                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_small">
+                                                <lightning-button label="↗️ Open Messaging Channels Setup" variant="outline-brand" onclick={openChannelSetup} class="slds-size_1-of-1"></lightning-button>
+                                            </div>
+                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_small">
+                                                <lightning-button label="↗️ Open Presence Statuses Setup" variant="outline-brand" onclick={openPresenceSetup} class="slds-size_1-of-1"></lightning-button>
+                                            </div>
+                                            <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_small">
+                                                <lightning-button label="↗️ Open Permission Sets Setup" variant="outline-brand" onclick={openPermSetSetup} class="slds-size_1-of-1"></lightning-button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+
+                                <!-- EXECUTION LOGS PANEL -->
+                                <template if:true={hasExecutionLogs}>
+                                    <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-top_medium" style="background-color: #1e293b; color: #f8fafc; border-radius: 8px;">
+                                        <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_x-small">
+                                            <h3 class="slds-text-title_bold" style="color: #38bdf8; font-size: 0.95rem;">📜 Automated Execution Logs</h3>
+                                            <span class="slds-badge slds-theme_inverse">Live Diagnostics Trace</span>
+                                        </div>
+                                        <div class="execution-log-box" style="font-family: monospace; font-size: 0.85rem; max-height: 220px; overflow-y: auto; background-color: #0f172a; padding: 12px; border-radius: 6px; border: 1px solid #334155;">
+                                            <template for:each={executionLogs} for:item="log">
+                                                <div key={log.message} class="slds-m-bottom_xx-small" style="line-height: 1.5;">
+                                                    <span style="color: #94a3b8; font-size: 0.75rem;">[{log.time}]</span>
+                                                    <span style="color: #38bdf8; font-weight: 600; margin-left: 6px;">[{log.step}]</span>
+                                                    <span style="margin-left: 8px; color: #f1f5f9;">{log.message}</span>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+
+                            </template>
+                        </div>
+
+                        <!-- Modal Footer -->
+                        <footer class="slds-modal__footer">
+                            <lightning-button label="Cancel" variant="neutral" onclick={closeSetupWizard} class="slds-m-right_small"></lightning-button>
+                            <template if:true={isAutoSetupMethod}>
+                                <lightning-button
+                                    label="🚀 Execute Automated Setup Suite"
+                                    variant="brand"
+                                    onclick={handleExecuteSetupSuite}
+                                    disabled={isExecutingSetup}
+                                    icon-name="utility:play">
+                                </lightning-button>
+                            </template>
+                        </footer>
+
+                    </div>
+                </section>
+                <div class="slds-backdrop slds-backdrop_open"></div>
+            </template>
 
         </div>
     </lightning-card>

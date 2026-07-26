@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Reactivation_Keyword__c</fullName>
+    <defaultValue>"reset"</defaultValue>
+    <description>Keyword that reactivates/re-arms the agent notification trigger after it has been muted.</description>
+    <externalId>false</externalId>
+    <label>Reactivation Keyword</label>
+    <length>100</length>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Selected_Messaging_Channel_Id__c</fullName>
+    <defaultValue>"ALL"</defaultValue>
+    <description>MessagingChannel ID to filter notifications for. Set to "ALL" or blank to automatically follow all deployments.</description>
+    <externalId>false</externalId>
+    <label>Selected Messaging Channel ID</label>
+    <length>255</length>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

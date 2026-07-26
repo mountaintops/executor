@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Reminder_Message_Template__c</fullName>
+    <defaultValue>"Hello {customer_name}, we noticed you have been waiting for {minutes_passed} minutes. An agent will be with you shortly!"</defaultValue>
+    <description>Customizable message template sent to customer when idle threshold is reached. Supports variables: {customer_name}, {minutes_passed}, {agent_keyword}, {channel_name}.</description>
+    <externalId>false</externalId>
+    <label>Reminder Message Template</label>
+    <length>255</length>
+    <required>false</required>
+    <trackTrending>false</trackTrending>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

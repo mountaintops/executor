@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Use_Flow_Routing__c</fullName>
+    <defaultValue>true</defaultValue>
+    <description>If true, inspects Omni-Channel Flow Routing (PendingServiceRouting / Queue assignment) for the messaging session and broadcasts top bar to the dynamically routed queue.</description>
+    <externalId>false</externalId>
+    <label>Use Queues &amp; Flow Routing</label>
+    <trackTrending>false</trackTrending>
+    <type>Checkbox</type>
+</CustomField>
