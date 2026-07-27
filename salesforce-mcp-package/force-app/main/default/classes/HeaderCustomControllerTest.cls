@@ -70,4 +70,54 @@ private class HeaderCustomControllerTest {
         System.assertNotEquals(null, resultInbound, 'Inbound result should not be null');
         System.assertNotEquals(null, resultOutbound, 'Outbound result should not be null');
     }
+
+    /**
+     * @description Test direct invocation of sendDynamicPassThroughComponent method.
+     */
+    @isTest
+    static void testSendDynamicPassThroughComponent_DirectCall() {
+        Test.startTest();
+        Map<String, Object> result = HeaderCustomController.sendDynamicPassThroughComponent(
+            'ACTIVE_SESSION', 
+            'Test Component Text', 
+            'https://example.com/custom-url', 
+            'https://example.com/thumb.jpg', 
+            'Dynamic_PassThrough_Component'
+        );
+        Test.stopTest();
+
+        System.assertNotEquals(null, result, 'Result map should not be null');
+        System.assertEquals('Dynamic_PassThrough_Component', result.get('componentName'), 'Component name should match');
+    }
+
+    /**
+     * @description Test REST API doPost endpoint for proxy integration.
+     */
+    @isTest
+    static void testDoPost_RestResourceEndpoint() {
+        RestRequest req = new RestRequest();
+        RestResponse res = new RestResponse();
+
+        req.requestURI = '/services/apexrest/HeaderCustomController/v1/sendComponent';
+        req.httpMethod = 'POST';
+        req.requestBody = Blob.valueOf('{' +
+            '"sessionId": "ACTIVE_SESSION",' +
+            '"textValue": "Proxy Component Message",' +
+            '"customUrl": "https://example.com",' +
+            '"customImageUrl": "https://example.com/img.png",' +
+            '"componentName": "Dynamic_PassThrough_Component"' +
+        '}');
+
+        RestContext.request = req;
+        RestContext.response = res;
+
+        Test.startTest();
+        String jsonResult = HeaderCustomController.doPost();
+        Map<String, Object> result = (Map<String, Object>) JSON.deserializeUntyped(jsonResult);
+        Test.stopTest();
+
+        System.assertNotEquals(null, result, 'REST doPost result should not be null');
+        System.assertEquals('Dynamic_PassThrough_Component', result.get('componentName'), 'Component name should match');
+    }
 }
+

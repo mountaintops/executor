@@ -24,7 +24,7 @@
         <type>Region</type>
     </flexiPageRegions>
     <flexiPageRegions>
-                <itemInstances>
+        <itemInstances>
             <componentInstance>
                 <componentName>topNotificationBarBackground</componentName>
                 <identifier>topNotificationBarBackground_bg</identifier>

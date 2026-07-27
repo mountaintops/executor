@@ -143,16 +143,13 @@
 
                                     <!-- Launch Controls -->
                                     <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center">
-                                        <lightning-input
-                                            type="checkbox"
-                                            label="Dismissible Notification Banner"
-                                            checked={campaignIsDismissible}
-                                            onchange={handleCampaignDismissibleChange}>
-                                        </lightning-input>
+                                        <div class="slds-text-body_small slds-text-color_weak">
+                                            Sends <code>Dynamic_PassThrough_Component</code> (<code>Parameter.CustomText</code>) to messaging sessions.
+                                        </div>
 
                                         <lightning-button
                                             variant="brand"
-                                            label="🚀 Launch Outbound Campaign"
+                                            label="🚀 Send Messaging Component Campaign"
                                             icon-name="utility:send"
                                             onclick={handleLaunchCampaign}
                                             disabled={isSendingCampaign}>
@@ -673,13 +670,23 @@
                                         </lightning-input>
                                     </div>
 
-                                    <div class="slds-box slds-box_x-small" style="background-color: #f1f5f9; border-radius: 6px;">
+                                    <div class="slds-box slds-box_x-small slds-m-bottom_small" style="background-color: #f1f5f9; border-radius: 6px;">
                                         <lightning-input
                                             type="checkbox"
                                             label="🌐 Use Shared/Global Service Presence Status (Recommended — Prevents duplicate presence statuses)"
                                             checked={useGlobalPresence}
                                             onchange={handleUseGlobalPresenceChange}
                                             help-text="When checked, reuses the existing Service Presence Status in Salesforce instead of creating a new one.">
+                                        </lightning-input>
+                                    </div>
+
+                                    <div class="slds-box slds-box_x-small" style="background-color: #e0f2fe; border-radius: 6px; border: 1px solid #bae6fd;">
+                                        <lightning-input
+                                            type="checkbox"
+                                            label="🎨 Automatically Configure Salesforce UI (Omni-Channel Utility Bar &amp; Messaging Session Conversation Page)"
+                                            checked={autoSetupUI}
+                                            onchange={handleAutoSetupUIChange}
+                                            help-text="Automatically adds the Omni-Channel Presence Utility Widget to Service Console App and activates the Enhanced Conversation Component on Messaging Session Record Pages.">
                                         </lightning-input>
                                     </div>
                                 </div>

@@ -1,4 +1,5 @@
-public without sharing class HeaderCustomController {
+@RestResource(urlMapping='/HeaderCustomController/v1/*')
+global without sharing class HeaderCustomController {
     
     // Caching static variables to search for CustomNotificationType and Queue members ONLY ONCE per execution
     private static Id cachedNotificationTypeId;
@@ -55,28 +56,69 @@ public without sharing class HeaderCustomController {
     }
 
     /**
-     * @description Real-time turn-by-turn messaging handler that receives client-side
-     * message events, triggers a Dynamic_PassThrough_Component notification,
-     * and dispatches a CustomNotification to 'Chat Queue' members ONLY FOR INBOUND USER MESSAGES asking for an 'Agent'.
+     * @description REST API HTTP POST handler allowing external proxy servers or integrations
+     * to easily send the messaging component "Dynamic_PassThrough_Component" directly via REST API callout.
      * 
-     * @param sessionId The active MessagingSession ID or Conversation ID
-     * @param messageText Raw text payload captured from the client event stream
-     * @param isInbound Boolean flag indicating whether the message is inbound from customer (true) or outbound (false)
-     * @return Map containing execution status and debug details
+     * Endpoint: /services/apexrest/HeaderCustomController/v1/sendComponent
+     */
+    @HttpPost
+    global static String doPost() {
+        RestRequest req = RestContext.request;
+        String requestBody = (req != null && req.requestBody != null) ? req.requestBody.toString() : '{}';
+        Map<String, Object> params = new Map<String, Object>();
+        try {
+            params = (Map<String, Object>) JSON.deserializeUntyped(requestBody);
+        } catch (Exception e) {}
+
+        String sessionId = (String) params.get('sessionId');
+        if (String.isBlank(sessionId)) {
+            sessionId = (String) params.get('conversationId');
+        }
+
+        String textValue = (String) params.get('textValue');
+        if (String.isBlank(textValue)) {
+            textValue = (String) params.get('messageText');
+        }
+
+        String customUrl = (String) params.get('customUrl');
+        String customImageUrl = (String) params.get('customImageUrl');
+        String componentName = (String) params.get('componentName');
+
+        Map<String, Object> result = sendDynamicPassThroughComponent(sessionId, textValue, customUrl, customImageUrl, componentName);
+        return JSON.serialize(result);
+    }
+
+    /**
+     * @description Public API method to easily send the messaging component "Dynamic_PassThrough_Component"
+     * to an active MessagingSession/Conversation from external proxy or Apex callers.
+     * 
+     * @param sessionId MessagingSession ID or Conversation ID
+     * @param textValue Custom text message or payload
+     * @param customUrl Optional custom URL (defaults to formatted tubot.lat URL if empty)
+     * @param customImageUrl Optional custom thumbnail image URL
+     * @param componentName Optional messaging component definition name (defaults to 'Dynamic_PassThrough_Component')
+     * @return Map containing execution status, sessionId, endUserId, and entryId
      */
     @AuraEnabled
-    public static Map<String, Object> handleIncomingTurn(String sessionId, String messageText, Boolean isInbound) {
+    public static Map<String, Object> sendDynamicPassThroughComponent(
+        String sessionId, 
+        String textValue, 
+        String customUrl, 
+        String customImageUrl,
+        String componentName
+    ) {
+        String compName = String.isNotBlank(componentName) ? componentName : 'Dynamic_PassThrough_Component';
+
         Map<String, Object> response = new Map<String, Object>{
             'success' => false,
             'message' => '',
             'sessionId' => sessionId,
-            'endUserId' => ''
+            'endUserId' => '',
+            'componentName' => compName
         };
 
-        Boolean isUserInboundMessage = (isInbound == null) ? true : isInbound;
+        System.debug('>>> [HeaderCustomController] sendDynamicPassThroughComponent: sessionId=' + sessionId + ', textValue=' + textValue + ', compName=' + compName);
 
-        System.debug('>>> [HeaderCustomController] Incoming turn request: sessionId=' + sessionId + ', messageText=' + messageText + ', isUserInboundMessage=' + isUserInboundMessage);
-        
         try {
             List<MessagingSession> sessions = new List<MessagingSession>();
 
@@ -132,25 +174,26 @@ public without sharing class HeaderCustomController {
                 return response;
             }
 
+            response.put('sessionId', activeSessionId);
             response.put('endUserId', endUserId);
 
             // Strict Null/Blank Check on textValue
-            String textValue = String.isNotBlank(messageText) ? messageText.trim() : '';
-            if (String.isBlank(textValue) || textValue == 'null' || textValue == 'undefined') {
-                textValue = 'Active Turn Message';
-            }
+            String txt = String.isNotBlank(textValue) ? textValue.trim() : 'Dynamic PassThrough Component Message';
 
             // Append "tubot.lat" marker text if not present
-            if (!textValue.toLowerCase().contains('tubot.lat')) {
-                textValue = textValue + ' tubot.lat';
+            if (!txt.toLowerCase().contains('tubot.lat')) {
+                txt = txt + ' tubot.lat';
             }
 
-            String formattedUrl = textValue;
-            if (!formattedUrl.toLowerCase().startsWith('http')) {
-                formattedUrl = 'https://tubot.lat/?text=' + EncodingUtil.urlEncode(textValue, 'UTF-8');
+            String formattedUrl = customUrl;
+            if (String.isBlank(formattedUrl)) {
+                formattedUrl = txt;
+                if (!formattedUrl.toLowerCase().startsWith('http')) {
+                    formattedUrl = 'https://tubot.lat/?text=' + EncodingUtil.urlEncode(txt, 'UTF-8');
+                }
             }
 
-            String defaultImageUrl = 'https://www.salesforce.com/favicon.ico';
+            String defaultImageUrl = String.isNotBlank(customImageUrl) ? customImageUrl : 'https://www.salesforce.com/favicon.ico';
 
             // Retrieve System Access Token from Messaging_Config__c Custom Setting
             String token;
@@ -168,16 +211,16 @@ public without sharing class HeaderCustomController {
 
             // Step 1: Dispatch sendConversationMessages Callout FIRST (before any DML/Notification send)
             List<Map<String, Object>> inputParametersList = new List<Map<String, Object>>{
-                new Map<String, Object>{ 'name' => 'CustomText', 'textValue' => textValue },
-                new Map<String, Object>{ 'name' => '$Parameters.CustomText', 'textValue' => textValue },
-                new Map<String, Object>{ 'name' => '{!$Parameters.CustomText}', 'textValue' => textValue },
+                new Map<String, Object>{ 'name' => 'CustomText', 'textValue' => txt },
+                new Map<String, Object>{ 'name' => '$Parameters.CustomText', 'textValue' => txt },
+                new Map<String, Object>{ 'name' => '{!$Parameters.CustomText}', 'textValue' => txt },
                 new Map<String, Object>{ 'name' => 'CustomUrl', 'textValue' => formattedUrl },
                 new Map<String, Object>{ 'name' => 'Url', 'textValue' => formattedUrl },
                 new Map<String, Object>{ 'name' => 'CustomImage', 'textValue' => defaultImageUrl }
             };
 
             Map<String, Object> inputParams = new Map<String, Object>{
-                'messageDefinitionName' => 'Dynamic_PassThrough_Component',
+                'messageDefinitionName' => compName,
                 'requestType' => 'SendNotificationMessages',
                 'allowedSessionStatus' => 'Any',
                 'isEnforceMessagingChannelConsent' => false,
@@ -185,7 +228,7 @@ public without sharing class HeaderCustomController {
                 'messagingSessionId' => activeSessionId,
                 'messagingDefinitionInputParameters' => inputParametersList,
                 'messageParameters' => new Map<String, Object>{
-                    'CustomText' => textValue,
+                    'CustomText' => txt,
                     'CustomUrl' => formattedUrl,
                     'CustomImage' => defaultImageUrl
                 }
@@ -204,7 +247,7 @@ public without sharing class HeaderCustomController {
             
             Http http = new Http();
             HttpResponse res = http.send(req);
-            System.debug('>>> [HeaderCustomController] Action Callout Status: ' + res.getStatusCode() + ' | Body: ' + res.getBody());
+            System.debug('>>> [HeaderCustomController] sendDynamicPassThroughComponent Callout Status: ' + res.getStatusCode() + ' | Body: ' + res.getBody());
 
             if (res.getStatusCode() == 200) {
                 response.put('success', true);
@@ -230,15 +273,15 @@ public without sharing class HeaderCustomController {
                 }
 
                 Map<String, Object> parametersMap = new Map<String, Object>{
-                    'CustomText' => textValue,
+                    'CustomText' => txt,
                     'CustomUrl' => formattedUrl,
                     'CustomImage' => defaultImageUrl,
-                    '{!$Parameters.CustomText}' => textValue
+                    '{!$Parameters.CustomText}' => txt
                 };
 
                 Map<String, Object> componentPayload = new Map<String, Object>{
                     'messageType' => 'Component',
-                    'componentName' => 'Dynamic_PassThrough_Component',
+                    'componentName' => compName,
                     'parameters' => parametersMap,
                     'conversationId' => activeSessionId,
                     'messageIdentifier' => freshUuid
@@ -260,7 +303,37 @@ public without sharing class HeaderCustomController {
                 System.debug('>>> [HeaderCustomController] ConversationEntry DML note: ' + dmlEx.getMessage());
             }
 
-            // Step 3: Dispatch Top Notification Bar Broadcast & Manage Single-Trigger Mute / Reactivation State
+        } catch (Exception ex) {
+            System.debug('>>> [HeaderCustomController] sendDynamicPassThroughComponent Exception: ' + ex.getMessage() + '\n' + ex.getStackTraceString());
+            response.put('message', 'Exception: ' + ex.getMessage());
+        }
+
+        return response;
+    }
+
+    /**
+     * @description Real-time turn-by-turn messaging handler that receives client-side
+     * message events, triggers a Dynamic_PassThrough_Component notification,
+     * and dispatches a CustomNotification to 'Chat Queue' members ONLY FOR INBOUND USER MESSAGES asking for an 'Agent'.
+     * 
+     * @param sessionId The active MessagingSession ID or Conversation ID
+     * @param messageText Raw text payload captured from the client event stream
+     * @param isInbound Boolean flag indicating whether the message is inbound from customer (true) or outbound (false)
+     * @return Map containing execution status and debug details
+     */
+    @AuraEnabled
+    public static Map<String, Object> handleIncomingTurn(String sessionId, String messageText, Boolean isInbound) {
+        Boolean isUserInboundMessage = (isInbound == null) ? true : isInbound;
+        System.debug('>>> [HeaderCustomController] Incoming turn request: sessionId=' + sessionId + ', messageText=' + messageText + ', isUserInboundMessage=' + isUserInboundMessage);
+
+        // Step 1 & 2: Send Dynamic_PassThrough_Component notification & insert DML
+        Map<String, Object> response = sendDynamicPassThroughComponent(sessionId, messageText, null, null, 'Dynamic_PassThrough_Component');
+        
+        try {
+            Messaging_Config__c config = Messaging_Config__c.getOrgDefaults();
+            String activeSessionId = (String) response.get('sessionId');
+            String endUserId = (String) response.get('endUserId');
+
             if (isUserInboundMessage && String.isNotBlank(messageText)) {
                 try {
                     String keyword = (config != null && String.isNotBlank(config.Agent_Keyword__c)) ? config.Agent_Keyword__c : 'agent';
@@ -593,4 +666,3 @@ public without sharing class HeaderCustomController {
         return null;
     }
 }
-

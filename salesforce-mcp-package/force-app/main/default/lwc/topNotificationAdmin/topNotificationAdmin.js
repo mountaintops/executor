@@ -386,6 +386,10 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
         this.isSetupWizardOpen = false;
     }
 
+    @track createNewChannel = false;
+    @track useGlobalPresence = true;
+    @track autoSetupUI = true;
+
     handleSetupModeChange(event) {
         this.setupMode = event.detail.value;
     }
@@ -402,6 +406,10 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
         this.useGlobalPresence = event.target.checked;
     }
 
+    handleAutoSetupUIChange(event) {
+        this.autoSetupUI = event.target.checked;
+    }
+
     handleUserSelectionChange(event) {
         this.selectedUserIds = event.detail.value;
     }
@@ -415,7 +423,8 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
                 mode: this.setupMode,
                 selectedUserIds: this.selectedUserIds,
                 createNewChannel: this.createNewChannel,
-                useGlobalPresence: this.useGlobalPresence
+                useGlobalPresence: this.useGlobalPresence,
+                autoSetupUI: this.autoSetupUI
             });
             if (res && res.logs) {
                 this.executionLogs = res.logs;
