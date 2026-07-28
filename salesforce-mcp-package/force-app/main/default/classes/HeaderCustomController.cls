@@ -206,19 +206,8 @@ global without sharing class HeaderCustomController {
 
             String defaultImageUrl = String.isNotBlank(customImageUrl) ? customImageUrl : 'https://www.salesforce.com/favicon.ico';
 
-            // Retrieve System Access Token from Messaging_Config__c Custom Setting
-            String token;
-            Messaging_Config__c config = Messaging_Config__c.getOrgDefaults();
-            if (config != null && String.isNotBlank(config.Api_Token__c)) {
-                token = config.Api_Token__c;
-            } else {
-                token = UserInfo.getSessionId();
-            }
-
-            if (String.isBlank(token)) {
-                response.put('message', 'System API Token is missing in Messaging_Config__c');
-                return response;
-            }
+            // Retrieve System Access Token dynamically from UserInfo session or Named Credential callout (Solution A)
+            String token = UserInfo.getSessionId();
 
             // Step 1: Dispatch sendConversationMessages Callout FIRST (before any DML/Notification send)
             List<Map<String, Object>> inputParametersList = new List<Map<String, Object>>{
@@ -250,9 +239,13 @@ global without sharing class HeaderCustomController {
             };
             
             HttpRequest req = new HttpRequest();
-            req.setEndpoint(Url.getOrgDomainUrl().toExternalForm() + '/services/data/v61.0/actions/standard/sendConversationMessages');
+            if (String.isNotBlank(token)) {
+                req.setEndpoint(Url.getOrgDomainUrl().toExternalForm() + '/services/data/v61.0/actions/standard/sendConversationMessages');
+                req.setHeader('Authorization', 'Bearer ' + token);
+            } else {
+                req.setEndpoint('callout:Salesforce_Org_NC/services/data/v61.0/actions/standard/sendConversationMessages');
+            }
             req.setMethod('POST');
-            req.setHeader('Authorization', 'Bearer ' + token);
             req.setHeader('Content-Type', 'application/json');
             req.setBody(JSON.serialize(actionBody));
             
