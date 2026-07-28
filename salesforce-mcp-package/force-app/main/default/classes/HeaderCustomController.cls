@@ -59,6 +59,7 @@ global without sharing class HeaderCustomController {
      * @description REST API HTTP POST handler allowing external proxy servers or integrations
      * to easily send the messaging component "Dynamic_PassThrough_Component" directly via REST API callout.
      * 
+     * When Parameters.CustomText or proxy calls this endpoint, tubot.lat text is NOT appended.
      * Endpoint: /services/apexrest/HeaderCustomController/v1/sendComponent
      */
     @HttpPost
@@ -79,12 +80,20 @@ global without sharing class HeaderCustomController {
         if (String.isBlank(textValue)) {
             textValue = (String) params.get('messageText');
         }
+        if (String.isBlank(textValue)) {
+            textValue = (String) params.get('Parameters.CustomText');
+        }
 
         String customUrl = (String) params.get('customUrl');
         String customImageUrl = (String) params.get('customImageUrl');
         String componentName = (String) params.get('componentName');
 
-        Map<String, Object> result = sendDynamicPassThroughComponent(sessionId, textValue, customUrl, customImageUrl, componentName);
+        Boolean skipMarker = true; // Proxy calls default to skipping tubot.lat marker text
+        if (params.containsKey('skipMarker')) {
+            skipMarker = (Boolean) params.get('skipMarker');
+        }
+
+        Map<String, Object> result = sendDynamicPassThroughComponent(sessionId, textValue, customUrl, customImageUrl, componentName, skipMarker);
         return JSON.serialize(result);
     }
 
@@ -97,17 +106,19 @@ global without sharing class HeaderCustomController {
      * @param customUrl Optional custom URL (defaults to formatted tubot.lat URL if empty)
      * @param customImageUrl Optional custom thumbnail image URL
      * @param componentName Optional messaging component definition name (defaults to 'Dynamic_PassThrough_Component')
+     * @param skipMarker Boolean flag; when true (e.g. from proxy or explicit Parameters.CustomText), tubot.lat is NOT appended.
      * @return Map containing execution status, sessionId, endUserId, and entryId
      */
-    @AuraEnabled
     public static Map<String, Object> sendDynamicPassThroughComponent(
         String sessionId, 
         String textValue, 
         String customUrl, 
         String customImageUrl,
-        String componentName
+        String componentName,
+        Boolean skipMarker
     ) {
         String compName = String.isNotBlank(componentName) ? componentName : 'Dynamic_PassThrough_Component';
+        Boolean shouldSkipMarker = (skipMarker != null) ? skipMarker : false;
 
         Map<String, Object> response = new Map<String, Object>{
             'success' => false,
@@ -117,7 +128,7 @@ global without sharing class HeaderCustomController {
             'componentName' => compName
         };
 
-        System.debug('>>> [HeaderCustomController] sendDynamicPassThroughComponent: sessionId=' + sessionId + ', textValue=' + textValue + ', compName=' + compName);
+        System.debug('>>> [HeaderCustomController] sendDynamicPassThroughComponent: sessionId=' + sessionId + ', textValue=' + textValue + ', compName=' + compName + ', shouldSkipMarker=' + shouldSkipMarker);
 
         try {
             List<MessagingSession> sessions = new List<MessagingSession>();
@@ -180,8 +191,8 @@ global without sharing class HeaderCustomController {
             // Strict Null/Blank Check on textValue
             String txt = String.isNotBlank(textValue) ? textValue.trim() : 'Dynamic PassThrough Component Message';
 
-            // Append "tubot.lat" marker text if not present
-            if (!txt.toLowerCase().contains('tubot.lat')) {
+            // Append "tubot.lat" marker text ONLY IF not requested from proxy / skipMarker is false
+            if (!shouldSkipMarker && !txt.toLowerCase().contains('tubot.lat')) {
                 txt = txt + ' tubot.lat';
             }
 
@@ -312,6 +323,20 @@ global without sharing class HeaderCustomController {
     }
 
     /**
+     * @description Overloaded helper method for sendDynamicPassThroughComponent.
+     */
+    @AuraEnabled
+    public static Map<String, Object> sendDynamicPassThroughComponent(
+        String sessionId, 
+        String textValue, 
+        String customUrl, 
+        String customImageUrl,
+        String componentName
+    ) {
+        return sendDynamicPassThroughComponent(sessionId, textValue, customUrl, customImageUrl, componentName, false);
+    }
+
+    /**
      * @description Real-time turn-by-turn messaging handler that receives client-side
      * message events, triggers a Dynamic_PassThrough_Component notification,
      * and dispatches a CustomNotification to 'Chat Queue' members ONLY FOR INBOUND USER MESSAGES asking for an 'Agent'.
@@ -327,7 +352,7 @@ global without sharing class HeaderCustomController {
         System.debug('>>> [HeaderCustomController] Incoming turn request: sessionId=' + sessionId + ', messageText=' + messageText + ', isUserInboundMessage=' + isUserInboundMessage);
 
         // Step 1 & 2: Send Dynamic_PassThrough_Component notification & insert DML
-        Map<String, Object> response = sendDynamicPassThroughComponent(sessionId, messageText, null, null, 'Dynamic_PassThrough_Component');
+        Map<String, Object> response = sendDynamicPassThroughComponent(sessionId, messageText, null, null, 'Dynamic_PassThrough_Component', false);
         
         try {
             Messaging_Config__c config = Messaging_Config__c.getOrgDefaults();
