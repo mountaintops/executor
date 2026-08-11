@@ -13,11 +13,23 @@ import checkAndSendInactivityReminders from '@salesforce/apex/TopNotificationCon
 import executeOmniChannelSetupSuite from '@salesforce/apex/TopNotificationController.executeOmniChannelSetupSuite';
 import getInteractedRecipients from '@salesforce/apex/TopNotificationController.getInteractedRecipients';
 import sendOutboundCampaign from '@salesforce/apex/TopNotificationController.sendOutboundCampaign';
+import exportAgentforceData from '@salesforce/apex/TopNotificationController.exportAgentforceData';
+import exportAgentforceZip from '@salesforce/apex/TopNotificationController.exportAgentforceZip';
+import importAgentforceData from '@salesforce/apex/TopNotificationController.importAgentforceData';
+import setupAgentforceExample from '@salesforce/apex/TopNotificationController.setupAgentforceExample';
 
 export default class TopNotificationAdmin extends NavigationMixin(LightningElement) {
     @track agentKeyword = 'agent';
     @track confirmationText = 'transmited notification';
     @track reactivationKeyword = 'reset';
+
+    // Agentforce Data & Setup State
+    @track isExportingAgentforce = false;
+    @track isImportingAgentforce = false;
+    @track isSettingUpAgentforce = false;
+    @track agentforceExportData = '';
+    @track agentforceExportSummary = '';
+    @track agentforceImportPayload = '';
 
     // Outbound Campaign State
     @track campaignRecipients = [];
@@ -66,6 +78,10 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
     @track customSelectedRoutingId = null;
     @track customSelectedDeploymentValue = null;
     @track customSelectedPresenceId = null;
+
+    // Agentforce Deployment Enable/Disable Instructions Modal State
+    @track isAgentforceInstructionsModalOpen = false;
+    @track selectedInstructionChannel = null;
 
     get availableTemplateVariables() {
         return [
@@ -592,6 +608,47 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
         this.selectedChannel = null;
     }
 
+    openAgentforceInstructionsModal(event) {
+        const channelId = event.target.dataset.id;
+        if (this.systemDetections && this.systemDetections.channels) {
+            const match = this.systemDetections.channels.find(c => c.id === channelId);
+            if (match) {
+                this.selectedInstructionChannel = match;
+            } else {
+                this.selectedInstructionChannel = { id: channelId, label: 'Selected Channel' };
+            }
+        } else {
+            this.selectedInstructionChannel = { id: channelId, label: 'Selected Channel' };
+        }
+        this.isAgentforceInstructionsModalOpen = true;
+    }
+
+    closeAgentforceInstructionsModal() {
+        this.isAgentforceInstructionsModalOpen = false;
+        this.selectedInstructionChannel = null;
+    }
+
+    navigateToAgentforceSetup() {
+        const url = '/lightning/setup/EinsteinCopilot/home';
+        this.openSetupUrl(url);
+        this.showStatusAlert('↗️ Navigated to Agentforce / Einstein Setup Page.');
+    }
+
+    navigateToEmbeddedMessagingSetup() {
+        let url = '/lightning/setup/EmbeddedServiceMessaging/home';
+        if (this.selectedInstructionChannel && this.selectedInstructionChannel.id && this.selectedInstructionChannel.id !== 'GLOBAL') {
+            url = `/lightning/setup/EmbeddedServiceMessaging/page?address=%2F${this.selectedInstructionChannel.id}`;
+        }
+        this.openSetupUrl(url);
+        this.showStatusAlert('↗️ Navigated to Embedded Service Messaging Setup.');
+    }
+
+    navigateToMessagingChannelSetup() {
+        const url = '/lightning/setup/MessagingChannels/home';
+        this.openSetupUrl(url);
+        this.showStatusAlert('↗️ Navigated to Messaging Channels Setup.');
+    }
+
     // Safe Navigation helper opening in new browser tab
     openSetupUrl(url) {
         if (!url) return;
@@ -889,6 +946,122 @@ export default class TopNotificationAdmin extends NavigationMixin(LightningEleme
         } catch (err) {
             console.error('[TopNotificationAdmin] Error simulating session targeting:', err);
             this.showStatusAlert('❌ Exception evaluating active sessions: ' + (err.body ? err.body.message : err.message));
+        }
+    }
+
+    async handleExportAgentforceData() {
+        this.isExportingAgentforce = true;
+        this.statusAlertMessage = '';
+        try {
+            const res = await exportAgentforceData();
+            if (res && res.success) {
+                this.agentforceExportData = res.data;
+                this.agentforceExportSummary = res.summary;
+                this.agentforceImportPayload = res.data;
+                this.showStatusAlert('📦 ' + res.summary);
+            } else {
+                this.showStatusAlert('❌ Failed to export Agentforce data: ' + (res ? res.message : 'Unknown error'));
+            }
+        } catch (err) {
+            console.error('[TopNotificationAdmin] Error exporting Agentforce data:', err);
+            this.showStatusAlert('❌ Exception exporting Agentforce data: ' + (err.body ? err.body.message : err.message));
+        } finally {
+            this.isExportingAgentforce = false;
+        }
+    }
+
+    async handleExportAgentforceZip() {
+        this.isExportingAgentforce = true;
+        this.statusAlertMessage = '';
+        try {
+            this.showStatusAlert('⏳ Generating complete Agentforce PKZip Archive in pure Apex...');
+            const res = await exportAgentforceZip({ agentName: 'Test' });
+            if (res && res.success) {
+                // Download ZIP directly in browser
+                if (res.zipBase64) {
+                    const byteCharacters = atob(res.zipBase64);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: 'application/zip' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = (res.zipTitle ? res.zipTitle : 'Agentforce_Export') + '.zip';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+
+                this.showStatusAlert('📦 ' + res.message + ' (Saved to Salesforce Files: ' + res.contentVersionId + ')');
+            } else {
+                this.showStatusAlert('❌ Failed to export ZIP: ' + (res ? res.message : 'Unknown error'));
+            }
+        } catch (err) {
+            console.error('[TopNotificationAdmin] Error exporting Agentforce ZIP:', err);
+            this.showStatusAlert('❌ Exception exporting ZIP: ' + (err.body ? err.body.message : err.message));
+        } finally {
+            this.isExportingAgentforce = false;
+        }
+    }
+
+    handleImportPayloadChange(event) {
+        this.agentforceImportPayload = event.target.value;
+    }
+
+    async handleImportAgentforceData() {
+        if (!this.agentforceImportPayload || !this.agentforceImportPayload.trim()) {
+            this.showStatusAlert('⚠️ Please paste or load Agentforce JSON data in the payload editor first.');
+            return;
+        }
+        this.isImportingAgentforce = true;
+        this.statusAlertMessage = '';
+        try {
+            const res = await importAgentforceData({ jsonPayload: this.agentforceImportPayload });
+            if (res && res.success) {
+                this.showStatusAlert('📥 ' + res.message);
+                await this.loadAdminConfig();
+            } else {
+                this.showStatusAlert('❌ Import failed: ' + (res ? res.message : 'Unknown error'));
+            }
+        } catch (err) {
+            console.error('[TopNotificationAdmin] Error importing Agentforce data:', err);
+            this.showStatusAlert('❌ Exception importing Agentforce data: ' + (err.body ? err.body.message : err.message));
+        } finally {
+            this.isImportingAgentforce = false;
+        }
+    }
+
+    async handleSetupAgentforceExample() {
+        this.isSettingUpAgentforce = true;
+        this.statusAlertMessage = '';
+        try {
+            const res = await setupAgentforceExample();
+            if (res && res.success) {
+                this.showStatusAlert('⚡ ' + res.message);
+                await this.loadAdminConfig();
+                await this.loadRealSystemDetections();
+            } else {
+                this.showStatusAlert('❌ Setup failed: ' + (res ? res.message : 'Unknown error'));
+            }
+        } catch (err) {
+            console.error('[TopNotificationAdmin] Error setting up Agentforce example:', err);
+            this.showStatusAlert('❌ Exception setting up Agentforce example: ' + (err.body ? err.body.message : err.message));
+        } finally {
+            this.isSettingUpAgentforce = false;
+        }
+    }
+
+    handleCopyExportData() {
+        if (this.agentforceExportData) {
+            navigator.clipboard.writeText(this.agentforceExportData)
+                .then(() => {
+                    this.showStatusAlert('📋 Agentforce JSON manifest copied to clipboard!');
+                })
+                .catch(err => {
+                    console.error('Could not copy text: ', err);
+                });
         }
     }
 

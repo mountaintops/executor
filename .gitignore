@@ -114,3 +114,14 @@ scratch/
 
 # Throwaway UX prototype (not part of the app)
 ux-demo/
+
+# Salesforce exports and scratch
+salesforce-mcp-package/exports/
+salesforce-mcp-package/.sf/
+salesforce-mcp-package/.sfdx/
+salesforce-mcp-package/*.apex
+salesforce-mcp-package/*.sh
+salesforce-mcp-package/*.py
+salesforce-mcp-package/*.pdf
+salesforce-mcp-package/scratch_*
+

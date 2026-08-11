@@ -11,7 +11,7 @@
   "name": "salesforce-hosted-mcp-package",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "60.0",
+  "sourceApiVersion": "64.0",
   "packageAliases": {
     "SalesforceHostedMCPAutoRegister": "0Hog50000000wOzCAI",
     "SalesforceHostedMCPAutoRegister@1.0.0-1": "04tg5000000B3VdAAK",

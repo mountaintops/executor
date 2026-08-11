@@ -330,6 +330,15 @@
                                     </div>
                                     <div class="slds-grid slds-grid_vertical-align-center">
                                         <lightning-button
+                                            label="📖 Agentforce Instructions"
+                                            icon-name="utility:info"
+                                            variant="outline-brand"
+                                            data-id={ch.id}
+                                            onclick={openAgentforceInstructionsModal}
+                                            class="slds-m-right_small">
+                                        </lightning-button>
+
+                                        <lightning-button
                                             label="Inspect Channel Setup"
                                             icon-name="utility:preview"
                                             variant="neutral"
@@ -421,6 +430,135 @@
                 </template>
             </div>
             </lightning-tab>
+
+                <!-- TAB 3: AGENTFORCE MANAGEMENT (EXPORT / IMPORT / SEED SETUP) -->
+                <lightning-tab label="🤖 Agentforce Data & Setup" value="agentforce">
+                    <div class="slds-p-around_small">
+                        
+                        <!-- Top Toolbar / Action Cards -->
+                        <div class="slds-grid slds-gutters slds-wrap slds-m-bottom_medium">
+                            
+                            <!-- Card 1: Export Agentforce Data -->
+                            <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                                <div class="slds-card slds-card_boundary slds-p-around_medium" style="height: 100%; border-top: 4px solid #0176d3;">
+                                    <div class="slds-media slds-m-bottom_small">
+                                        <div class="slds-media__figure">
+                                            <lightning-icon icon-name="utility:download" size="medium" variant="brand"></lightning-icon>
+                                        </div>
+                                        <div class="slds-media__body">
+                                            <h3 class="slds-text-heading_small">Export Agentforce Data</h3>
+                                            <p class="slds-text-body_small slds-text-color_weak">No SF CLI required. Export behavior, topics, actions, utterances &amp; docs via Apex &amp; Metadata APIs.</p>
+                                        </div>
+                                    </div>
+                                    <div class="slds-grid slds-gutters slds-m-top_x-small">
+                                        <div class="slds-col slds-size_1-of-2">
+                                            <lightning-button
+                                                variant="brand"
+                                                label="Export JSON"
+                                                icon-name="utility:export"
+                                                onclick={handleExportAgentforceData}
+                                                disabled={isExportingAgentforce}
+                                                class="slds-size_1-of-1">
+                                            </lightning-button>
+                                        </div>
+                                        <div class="slds-col slds-size_1-of-2">
+                                            <lightning-button
+                                                variant="brand-outline"
+                                                label="Export to ZIP"
+                                                icon-name="utility:zipped_folder"
+                                                onclick={handleExportAgentforceZip}
+                                                disabled={isExportingAgentforce}
+                                                class="slds-size_1-of-1">
+                                            </lightning-button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Card 2: Import Agentforce Data -->
+                            <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                                <div class="slds-card slds-card_boundary slds-p-around_medium" style="height: 100%; border-top: 4px solid #2e7d32;">
+                                    <div class="slds-media slds-m-bottom_small">
+                                        <div class="slds-media__figure">
+                                            <lightning-icon icon-name="utility:upload" size="medium" style="--slds-c-icon-color-foreground: #2e7d32;"></lightning-icon>
+                                        </div>
+                                        <div class="slds-media__body">
+                                            <h3 class="slds-text-heading_small">Import Agentforce Data</h3>
+                                            <p class="slds-text-body_small slds-text-color_weak">Restore or apply exported Agentforce JSON configuration payloads directly into this org.</p>
+                                        </div>
+                                    </div>
+                                    <lightning-button
+                                        variant="success"
+                                        label="Import Agentforce JSON"
+                                        icon-name="utility:import"
+                                        onclick={handleImportAgentforceData}
+                                        disabled={isImportingAgentforce}
+                                        class="slds-size_1-of-1">
+                                    </lightning-button>
+                                </div>
+                            </div>
+
+                            <!-- Card 3: Setup Agentforce Example (Seed Data) -->
+                            <div class="slds-col slds-size_1-of-1 slds-medium-size_4-of-12 slds-m-bottom_small">
+                                <div class="slds-card slds-card_boundary slds-p-around_medium" style="height: 100%; border-top: 4px solid #9c27b0;">
+                                    <div class="slds-media slds-m-bottom_small">
+                                        <div class="slds-media__figure">
+                                            <lightning-icon icon-name="utility:magicwarnd" size="medium" style="--slds-c-icon-color-foreground: #9c27b0;"></lightning-icon>
+                                        </div>
+                                        <div class="slds-media__body">
+                                            <h3 class="slds-text-heading_small">Setup Agentforce Example</h3>
+                                            <p class="slds-text-body_small slds-text-color_weak">Automated 1-Click setup: creates seed data, agent triggers &amp; Omni-Channel queues.</p>
+                                        </div>
+                                    </div>
+                                    <lightning-button
+                                        variant="neutral"
+                                        label="⚡ Setup Agentforce Example"
+                                        icon-name="utility:play"
+                                        onclick={handleSetupAgentforceExample}
+                                        disabled={isSettingUpAgentforce}
+                                        class="slds-size_1-of-1"
+                                        style="border-color: #9c27b0; color: #9c27b0;">
+                                    </lightning-button>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <!-- Import Payload Textarea Section -->
+                        <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-bottom_medium">
+                            <h3 class="slds-text-heading_small slds-m-bottom_x-small">📥 Import Payload Editor / Data Inspector</h3>
+                            <lightning-textarea
+                                label="Agentforce Data Payload (JSON)"
+                                value={agentforceImportPayload}
+                                onchange={handleImportPayloadChange}
+                                placeholder="Paste exported Agentforce JSON payload here to import..."
+                                rows="6">
+                            </lightning-textarea>
+                        </div>
+
+                        <!-- Export Results / Summary Inspector Panel -->
+                        <template if:true={agentforceExportSummary}>
+                            <div class="slds-card slds-card_boundary slds-p-around_medium" style="background-color: #0f172a; color: #f8fafc; border-radius: 8px;">
+                                <div class="slds-grid slds-grid_align-spread slds-grid_vertical-align-center slds-m-bottom_small">
+                                    <div>
+                                        <h3 class="slds-text-title_bold" style="color: #38bdf8; font-size: 1rem;">📦 Agentforce Export Manifest Summary</h3>
+                                        <p style="color: #94a3b8; font-size: 0.8rem;">{agentforceExportSummary}</p>
+                                    </div>
+                                    <lightning-button
+                                        label="📋 Copy JSON to Clipboard"
+                                        variant="outline-brand"
+                                        icon-name="utility:copy"
+                                        onclick={handleCopyExportData}>
+                                    </lightning-button>
+                                </div>
+                                <div style="font-family: monospace; font-size: 0.85rem; max-height: 300px; overflow-y: auto; background-color: #1e293b; padding: 12px; border-radius: 6px; border: 1px solid #334155; white-space: pre-wrap; color: #38bdf8;">
+                                    {agentforceExportData}
+                                </div>
+                            </div>
+                        </template>
+
+                    </div>
+                </lightning-tab>
 
             </lightning-tabset>
 
@@ -796,6 +934,119 @@
                                     icon-name="utility:play">
                                 </lightning-button>
                             </template>
+                        </footer>
+
+                    </div>
+                </section>
+                <div class="slds-backdrop slds-backdrop_open"></div>
+            </template>
+
+            <!-- ── AGENTFORCE ENABLE / DISABLE INSTRUCTIONS POPUP MODAL ── -->
+            <template if:true={isAgentforceInstructionsModalOpen}>
+                <section role="dialog" tabindex="-1" aria-modal="true" class="slds-modal slds-fade-in-open slds-modal_medium">
+                    <div class="slds-modal__container">
+
+                        <!-- Modal Header -->
+                        <header class="slds-modal__header slds-theme_brand">
+                            <button class="slds-button slds-button_icon slds-modal__close slds-button_icon-inverse" title="Close" onclick={closeAgentforceInstructionsModal}>
+                                <lightning-icon icon-name="utility:close" alternative-text="close" variant="inverse" size="small"></lightning-icon>
+                                <span class="slds-assistive-text">Close</span>
+                            </button>
+                            <h2 class="slds-modal__title slds-hyphenate slds-text-heading_medium">
+                                🤖 Agentforce Channel Management Instructions
+                            </h2>
+                            <template if:true={selectedInstructionChannel}>
+                                <p class="slds-m-top_xx-small slds-text-body_small">
+                                    Target Deployment Channel: <strong>{selectedInstructionChannel.label}</strong> (ID: {selectedInstructionChannel.id})
+                                </p>
+                            </template>
+                        </header>
+
+                        <!-- Modal Body -->
+                        <div class="slds-modal__content slds-p-around_medium">
+                            <div class="slds-m-bottom_medium slds-p-around_small" style="background-color: #f0f9ff; border-left: 4px solid #0284c7; border-radius: 4px;">
+                                <h3 class="slds-text-heading_small" style="color: #0369a1;">💡 Quick Overview</h3>
+                                <p class="slds-text-body_small slds-m-top_xx-small" style="color: #0f172a;">
+                                    Agentforce agents interact with web &amp; mobile users through <strong>Embedded Messaging Deployments</strong> and <strong>Messaging Channels</strong>. Follow the instructions below to enable or disable Agentforce routing for specific deployment channels without modifying global code.
+                                </p>
+                            </div>
+
+                            <!-- STEP 1: Enable Agentforce -->
+                            <div class="slds-card slds-card_boundary slds-p-around_medium slds-m-bottom_medium" style="border-top: 3px solid #2e7d32;">
+                                <div class="slds-grid slds-grid_vertical-align-center slds-m-bottom_small">
+                                    <span class="slds-badge slds-theme_success slds-m-right_small">ENABLE</span>
+                                    <h3 class="slds-text-heading_small">How to Enable Agentforce on this Channel</h3>
+                                </div>
+                                <ol class="slds-list_ordered slds-m-left_medium slds-m-bottom_medium" style="line-height: 1.6; color: #1e293b;">
+                                    <li>Ensure <strong>Einstein Agentforce / Copilot</strong> is toggled to <em>ON</em> in Salesforce Setup.</li>
+                                    <li>Navigate to <strong>Embedded Service Deployments</strong> and select your deployment channel.</li>
+                                    <li>Under <strong>Chat Routing &amp; Agent Rules</strong>, assign your <strong>Agentforce Bot / Agent Assistant</strong> as the primary handling engine.</li>
+                                    <li>Set up fallback Omni-Channel Queue routing to pass unresolved customer sessions to human agents.</li>
+                                </ol>
+
+                                <!-- Direct Shortcut Buttons -->
+                                <div class="slds-grid slds-wrap slds-gutters">
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_x-small">
+                                        <lightning-button
+                                            label="↗️ Open Agentforce Setup Page"
+                                            variant="brand"
+                                            icon-name="utility:open"
+                                            onclick={navigateToAgentforceSetup}
+                                            class="slds-size_1-of-1">
+                                        </lightning-button>
+                                    </div>
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_x-small">
+                                        <lightning-button
+                                            label="↗️ Open Embedded Messaging Channel"
+                                            variant="outline-brand"
+                                            icon-name="utility:open"
+                                            onclick={navigateToEmbeddedMessagingSetup}
+                                            class="slds-size_1-of-1">
+                                        </lightning-button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- STEP 2: Disable Agentforce -->
+                            <div class="slds-card slds-card_boundary slds-p-around_medium" style="border-top: 3px solid #c62828;">
+                                <div class="slds-grid slds-grid_vertical-align-center slds-m-bottom_small">
+                                    <span class="slds-badge slds-theme_error slds-m-right_small">DISABLE</span>
+                                    <h3 class="slds-text-heading_small">How to Disable Agentforce on this Channel</h3>
+                                </div>
+                                <ol class="slds-list_ordered slds-m-left_medium slds-m-bottom_medium" style="line-height: 1.6; color: #1e293b;">
+                                    <li><strong>1-Click Toggle:</strong> Click <em>"Disable System for Channel"</em> directly on the channel card to immediately ignore and bypass top-bar notifications for this deployment.</li>
+                                    <li><strong>Remove Agent Assignment:</strong> In <strong>Embedded Service Deployments</strong>, detach the Agentforce Bot definition from the deployment settings to revert to direct queue routing.</li>
+                                    <li><strong>Omni-Channel Flow:</strong> Route incoming messaging sessions directly to human queues (e.g. <em>Chat Queue</em>) instead of the Agentforce planner.</li>
+                                </ol>
+
+                                <!-- Direct Shortcut Buttons -->
+                                <div class="slds-grid slds-wrap slds-gutters">
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_x-small">
+                                        <lightning-button
+                                            label="↗️ Open Messaging Channels Setup"
+                                            variant="neutral"
+                                            icon-name="utility:open"
+                                            onclick={navigateToMessagingChannelSetup}
+                                            class="slds-size_1-of-1">
+                                        </lightning-button>
+                                    </div>
+                                    <div class="slds-col slds-size_1-of-1 slds-medium-size_1-of-2 slds-m-bottom_x-small">
+                                        <lightning-button
+                                            label="↗️ Open Channel Setup Detail"
+                                            variant="neutral"
+                                            icon-name="utility:open"
+                                            onclick={navigateToEmbeddedMessagingSetup}
+                                            class="slds-size_1-of-1">
+                                        </lightning-button>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <!-- Modal Footer -->
+                        <footer class="slds-modal__footer">
+                            <lightning-button label="Close Instructions" variant="brand" onclick={closeAgentforceInstructionsModal}></lightning-button>
                         </footer>
 
                     </div>
